@@ -1,0 +1,11 @@
+server:
+  listen: ":8080"
+storage:
+  data_dir: "/var/lib/homeagent"
+ssh:
+  private_key: "/var/lib/homeagent/keys/admin_ed25519"
+  connect_timeout: "5s"
+auth:
+  join_token: "CHANGE_ME"
+sync:
+  enabled: true

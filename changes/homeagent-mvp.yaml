@@ -1,0 +1,18 @@
+task: homeagent-mvp
+description: Implement the HomeAgent centralized device enrollment and SSH key management MVP.
+allowed_paths:
+  - changes/homeagent-mvp.yaml
+  - cmd/homeagent-server/**
+  - cmd/homeagent-agent/**
+  - internal/device/**
+  - internal/registry/**
+  - internal/auth/**
+  - internal/acl/**
+  - internal/sshsync/**
+  - internal/api/**
+  - scripts/install.sh
+  - scripts/install.ps1
+  - configs/config.example.yaml
+  - go.mod
+  - go.sum
+  - README.md
