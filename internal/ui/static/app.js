@@ -17,6 +17,9 @@
   const deviceContainer = document.getElementById('deviceContainer');
   const deviceListCount = document.getElementById('deviceListCount');
   const searchInput = document.getElementById('deviceSearchInput');
+  const btnSyncAll = document.getElementById('btnSyncAll');
+  const syncAllIcon = document.getElementById('syncAllIcon');
+  const syncAllBtnText = document.getElementById('syncAllBtnText');
   const refreshBtn = document.getElementById('refreshBtn');
   const refreshIcon = document.getElementById('refreshIcon');
   const liveStatusText = document.getElementById('liveStatusText');
@@ -62,6 +65,10 @@
     setInterval(fetchDevices, 4000);
 
     // Event listeners
+    if (btnSyncAll) {
+      btnSyncAll.addEventListener('click', handleSyncAll);
+    }
+
     refreshBtn.addEventListener('click', () => {
       spinRefresh();
       fetchDevices();
@@ -144,7 +151,16 @@
         return;
       }
 
-      // 4. Click on Delete button
+      // 4. Click on per-device Sync button
+      const syncBtn = e.target.closest('.btn-sync-device');
+      if (syncBtn && syncBtn.dataset.id) {
+        e.preventDefault();
+        e.stopPropagation();
+        syncDevice(syncBtn);
+        return;
+      }
+
+      // 5. Click on Delete button
       const delBtn = e.target.closest('.btn-del');
       if (delBtn && delBtn.dataset.id) {
         e.preventDefault();
@@ -209,6 +225,47 @@
     closeTokenModal();
     showToast('Token 与服务端地址已保存');
     fetchDevices();
+  }
+
+  async function handleSyncAll() {
+    if (!btnSyncAll || btnSyncAll.disabled) return;
+    btnSyncAll.disabled = true;
+    if (syncAllIcon) syncAllIcon.classList.add('spinning');
+    if (syncAllBtnText) syncAllBtnText.innerText = '同步中...';
+
+    try {
+      const headers = {};
+      if (joinToken) {
+        headers['Authorization'] = `Bearer ${joinToken}`;
+      }
+      const resp = await fetch('/api/v1/sync', {
+        method: 'POST',
+        headers: headers
+      });
+
+      if (resp.status === 401) {
+        showToast('认证失败，请先配置有效的 Join Token');
+        openTokenModal();
+        return;
+      }
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        showToast(`全网同步失败: ${text || resp.statusText}`);
+        return;
+      }
+
+      const data = await resp.json();
+      const count = (data.results && data.results.length) || 0;
+      showToast(`全网同步已触发${count > 0 ? ` (${count} 台设备已对齐)` : ''}`);
+      await fetchDevices();
+    } catch (err) {
+      showToast(`同步请求异常: ${err.message}`);
+    } finally {
+      btnSyncAll.disabled = false;
+      if (syncAllIcon) syncAllIcon.classList.remove('spinning');
+      if (syncAllBtnText) syncAllBtnText.innerText = '全网同步';
+    }
   }
 
   function spinRefresh() {
@@ -474,6 +531,11 @@
               复制
             </span>
           </button>
+          <button class="btn-sync-device" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(d.hostname || d.id)}" title="同步此设备" aria-label="同步 ${escapeHTML(d.hostname || d.id)}">
+            <svg class="sync-device-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
           <button class="btn-del" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(d.hostname || d.id)}" title="移除此设备">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
@@ -483,6 +545,44 @@
         </div>
       </div>
     `;
+  }
+
+  async function syncDevice(button) {
+    if (button.disabled) return;
+    const id = button.dataset.id;
+    const hostname = button.dataset.host || id;
+    button.disabled = true;
+    const icon = button.querySelector('.sync-device-icon');
+    if (icon) icon.classList.add('spinning');
+
+    try {
+      const headers = {};
+      if (joinToken) {
+        headers['Authorization'] = `Bearer ${joinToken}`;
+      }
+      const res = await fetch(`/api/v1/devices/${encodeURIComponent(id)}/sync`, {
+        method: 'POST',
+        headers
+      });
+      if (res.status === 401) {
+        showToast('认证失败，请先配置有效的 Join Token');
+        openTokenModal();
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+
+      addLog('SUCCESS', `已触发单设备同步: ${hostname} (${id})`);
+      showToast(`已触发同步: ${hostname}`);
+      await fetchDevices();
+    } catch (err) {
+      showToast(`设备同步失败: ${err.message}`);
+    } finally {
+      button.disabled = false;
+      if (icon) icon.classList.remove('spinning');
+    }
   }
 
   async function deleteDevice(id, hostname) {

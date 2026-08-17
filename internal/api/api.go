@@ -135,16 +135,29 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request) {
-	if s.Sync == nil {
-		http.Error(w, "sync disabled", 503)
+	devID := r.PathValue("id")
+	if s.Broker != nil {
+		if err := s.pushKeySync(devID); err != nil {
+			statusError(w, err)
+			return
+		}
+	} else if _, err := s.Registry.Get(devID); err != nil {
+		statusError(w, err)
 		return
 	}
-	writeJSON(w, 200, s.Sync.SyncDevice(r.Context(), r.PathValue("id")))
+	if s.Sync == nil {
+		writeJSON(w, 200, map[string]any{"device_id": devID, "status": "ok"})
+		return
+	}
+	writeJSON(w, 200, s.Sync.SyncDevice(r.Context(), devID))
 }
 
 func (s *Server) syncAll(w http.ResponseWriter, r *http.Request) {
+	if s.Broker != nil {
+		s.broadcastKeySync()
+	}
 	if s.Sync == nil {
-		http.Error(w, "sync disabled", 503)
+		writeJSON(w, 200, map[string]any{"results": []any{}})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"results": s.Sync.SyncAll(r.Context())})
@@ -322,6 +335,24 @@ func (s *Server) resolveDeviceKeySyncPayload(targetID string) (sshsync.KeySyncPa
 		Hash:    hash,
 		Keys:    keys,
 	}, nil
+}
+
+func (s *Server) pushKeySync(deviceID string) error {
+	payload, err := s.resolveDeviceKeySyncPayload(deviceID)
+	if err != nil {
+		return err
+	}
+	newVersion := atomic.AddInt64(&s.version, 1)
+	payload.Version = newVersion
+	dataBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	s.Broker.Publish(deviceID, broker.Event{
+		Type: "key_sync",
+		Data: string(dataBytes),
+	})
+	return nil
 }
 
 func (s *Server) broadcastKeySync() {

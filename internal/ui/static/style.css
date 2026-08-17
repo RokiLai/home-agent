@@ -154,7 +154,22 @@ body {
   cursor: pointer;
   border: none;
   text-decoration: none;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition: background 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinning {
+  animation: spin 0.8s linear infinite;
 }
 
 .btn-primary {
@@ -604,6 +619,27 @@ body {
 .btn-del:hover {
   background: var(--rose);
   color: white;
+}
+
+.btn-sync-device {
+  background: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 6px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.btn-sync-device:hover {
+  background: var(--primary);
+  color: white;
+}
+.btn-sync-device:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Sidebar */

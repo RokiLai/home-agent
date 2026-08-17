@@ -288,5 +288,114 @@ func TestWebUIDashboard(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "--bg-main") {
 		t.Fatalf("expected CSS content, got: %s", w.Body.String())
 	}
+
+	// Test that the per-device sync control is shipped in the dashboard script.
+	req = httptest.NewRequest("GET", "/static/app.js", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("GET /static/app.js returned %d", w.Code)
+	}
+	for _, want := range []string{"btn-sync-device", "/api/v1/devices/${encodeURIComponent(id)}/sync"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("dashboard script missing %q", want)
+		}
+	}
 }
 
+func TestSyncAllTriggersBroadcast(t *testing.T) {
+	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	b := broker.New()
+	s := &Server{
+		Registry:       r,
+		Broker:         b,
+		Token:          "secret",
+		AdminPublicKey: "ssh-ed25519 ADMIN_KEY",
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	devA := device.Device{ID: "dev-a", Hostname: "dev-a", OS: "linux", Arch: "amd64", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 KEY_A", Addresses: []string{"10.0.0.1"}}
+	_, _ = r.Save(devA)
+
+	ch, unsub := b.Subscribe("dev-a")
+	defer unsub()
+
+	h := s.Handler()
+	req := httptest.NewRequest("POST", "/api/v1/sync", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("POST /api/v1/sync returned %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.Type != "key_sync" {
+			t.Fatalf("expected key_sync event, got %s", ev.Type)
+		}
+		var payload sshsync.KeySyncPayload
+		if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload.Version < 1 {
+			t.Fatalf("expected version >= 1, got %d", payload.Version)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("timeout waiting for key_sync broadcast on syncAll")
+	}
+}
+
+func TestSyncDeviceOnlyPushesTargetDevice(t *testing.T) {
+	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	b := broker.New()
+	s := &Server{
+		Registry:       r,
+		Broker:         b,
+		Token:          "secret",
+		AdminPublicKey: "ssh-ed25519 ADMIN_KEY",
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	for _, id := range []string{"dev-a", "dev-b"} {
+		_, _ = r.Save(device.Device{ID: id, Hostname: id, OS: "linux", Arch: "amd64", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 KEY_" + id, Addresses: []string{"10.0.0.1"}})
+	}
+
+	targetEvents, unsubscribeTarget := b.Subscribe("dev-a")
+	defer unsubscribeTarget()
+	otherEvents, unsubscribeOther := b.Subscribe("dev-b")
+	defer unsubscribeOther()
+
+	req := httptest.NewRequest("POST", "/api/v1/devices/dev-a/sync", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("sync target returned %d: %s", w.Code, w.Body.String())
+	}
+
+	select {
+	case ev := <-targetEvents:
+		if ev.Type != "key_sync" {
+			t.Fatalf("expected key_sync event, got %q", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for target device key_sync")
+	}
+	select {
+	case ev := <-otherEvents:
+		t.Fatalf("non-target device received unexpected event: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSyncDeviceRejectsUnknownDevice(t *testing.T) {
+	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	s := &Server{Registry: r, Broker: broker.New(), Token: "secret"}
+	req := httptest.NewRequest("POST", "/api/v1/devices/missing/sync", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown device sync returned %d, want 404", w.Code)
+	}
+}
