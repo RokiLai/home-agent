@@ -392,6 +392,13 @@ body {
   min-width: 0;
 }
 
+.device-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .device-hostname {
   font-size: 0.92rem;
   font-weight: 700;
@@ -399,7 +406,32 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 170px;
+  max-width: 155px;
+}
+
+.device-hostname.has-alias {
+  color: #60a5fa;
+}
+
+.btn-rename-device {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.btn-rename-device:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .device-id-tag {
@@ -409,7 +441,22 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 170px;
+  max-width: 175px;
+}
+
+.device-orig-host {
+  color: var(--text-secondary);
+}
+
+.device-info-preview {
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  margin-top: 4px;
+  word-break: break-all;
 }
 
 /* Status Badges */

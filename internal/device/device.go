@@ -10,22 +10,23 @@ import (
 )
 
 type Device struct {
-	ID         string    `json:"id"`
-	Hostname   string    `json:"hostname"`
-	OS         string    `json:"os"`
-	Arch       string    `json:"arch"`
-	SSHUser    string    `json:"ssh_user"`
-	SSHPort    int       `json:"ssh_port"`
-	PublicKey  string    `json:"public_key"`
-	Addresses  []string  `json:"addresses"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	LastSeenAt    time.Time `json:"last_seen_at"`
-	SyncStatus    string    `json:"sync_status,omitempty"`
+	ID             string    `json:"id"`
+	Hostname       string    `json:"hostname"`
+	Alias          string    `json:"alias,omitempty"`
+	OS             string    `json:"os"`
+	Arch           string    `json:"arch"`
+	SSHUser        string    `json:"ssh_user"`
+	SSHPort        int       `json:"ssh_port"`
+	PublicKey      string    `json:"public_key"`
+	Addresses      []string  `json:"addresses"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	LastSeenAt     time.Time `json:"last_seen_at"`
+	SyncStatus     string    `json:"sync_status,omitempty"`
 	AppliedVersion int64     `json:"applied_version,omitempty"`
-	AppliedHash   string    `json:"applied_hash,omitempty"`
-	SyncError     string    `json:"sync_error,omitempty"`
-	SyncUpdatedAt time.Time `json:"sync_updated_at,omitempty"`
+	AppliedHash    string    `json:"applied_hash,omitempty"`
+	SyncError      string    `json:"sync_error,omitempty"`
+	SyncUpdatedAt  time.Time `json:"sync_updated_at,omitempty"`
 }
 
 func GenerateID(hostname, machineID string) string {

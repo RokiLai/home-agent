@@ -1,6 +1,7 @@
 package main
 
 import (
+	"homeagent/internal/device"
 	"testing"
 	"time"
 )
@@ -31,4 +32,47 @@ func TestListDevices(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRenameCommand(t *testing.T) {
+	tempDir := t.TempDir()
+	c := config{dataDir: tempDir, token: "token"}
+	r, _, _, err := components(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Missing args error
+	if err := renameCommand(c, []string{"dev1"}); err == nil {
+		t.Fatal("expected missing alias error")
+	}
+
+	// 2. Non-existent device error
+	if err := renameCommand(c, []string{"dev1", "客厅软路由"}); err == nil {
+		t.Fatal("expected non-existent device error")
+	}
+
+	// 3. Register device and rename
+	d := device.Device{ID: "dev1", Hostname: "dev1", OS: "linux", Arch: "amd64", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := renameCommand(c, []string{"dev1", "客厅软路由"}); err != nil {
+		t.Fatalf("rename failed: %v", err)
+	}
+
+	r2, _, _, err := components(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r2.Get("dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Alias != "客厅软路由" {
+		t.Fatalf("expected alias '客厅软路由', got %q", got.Alias)
+	}
+}
+
+
 

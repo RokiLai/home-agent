@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HomeAgent 控制平面 - 设备状态与公钥管理</title>
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
   <div class="app-container">
@@ -231,11 +231,36 @@
     </div>
   </div>
 
+  <!-- Rename Device Modal -->
+  <div id="renameModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">修改设备名称</h3>
+        <button id="closeRenameModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">为设备设置自定义备注名（别名），设置后控制台将优先展示此名称：</p>
+        <div class="form-group">
+          <label>设备 ID / 原始主机名</label>
+          <div id="renameDeviceInfo" class="device-info-preview text-muted"></div>
+        </div>
+        <div class="form-group">
+          <label for="deviceAliasInput">设备备注名 / 别名</label>
+          <input type="text" id="deviceAliasInput" class="form-control" placeholder="例如：客厅软路由、办公电脑、备份NAS...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelRenameModalBtn" class="btn btn-secondary">取消</button>
+        <button id="saveRenameBtn" class="btn btn-primary">保存名称</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div id="toast" class="toast hidden">
     <span id="toastMsg">已复制到剪贴板</span>
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

@@ -46,6 +46,8 @@ func main() {
 		err = serve(cfg)
 	case "devices":
 		err = list(cfg)
+	case "rename", "alias":
+		err = renameCommand(cfg, rest)
 	case "sync", "ssh-test":
 		err = syncCommand(cfg, rest)
 	case "ipv6":
@@ -58,7 +60,7 @@ func main() {
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|sync|ssh-test|ipv6> [flags] [device-id]")
+	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|rename|sync|ssh-test|ipv6> [flags] [device-id] [alias]")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "homeagent-server:", err); os.Exit(1) }
@@ -203,11 +205,15 @@ func list(c config) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tHOSTNAME\tADDRESS\tOS\tSTATUS\tVERSION\tHASH\tLAST_SEEN")
+	fmt.Fprintln(w, "ID\tHOSTNAME\tALIAS\tADDRESS\tOS\tSTATUS\tVERSION\tHASH\tLAST_SEEN")
 	for _, d := range r.List() {
 		address := ""
 		if len(d.Addresses) > 0 {
 			address = d.Addresses[0]
+		}
+		alias := d.Alias
+		if alias == "" {
+			alias = "-"
 		}
 		status := d.SyncStatus
 		if status == "" {
@@ -227,9 +233,27 @@ func list(c config) error {
 		if !d.LastSeenAt.IsZero() {
 			lastSeen = d.LastSeenAt.Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Hostname, address, d.OS, status, versionStr, hashShort, lastSeen)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Hostname, alias, address, d.OS, status, versionStr, hashShort, lastSeen)
 	}
 	return w.Flush()
+}
+
+func renameCommand(c config, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: homeagent-server rename <device-id> <new-alias>")
+	}
+	devID := args[0]
+	alias := args[1]
+	r, _, _, err := components(c)
+	if err != nil {
+		return err
+	}
+	updated, err := r.UpdateAlias(devID, alias)
+	if err != nil {
+		return fmt.Errorf("rename device %s: %w", devID, err)
+	}
+	fmt.Printf("device %s renamed to %q\n", updated.ID, updated.Alias)
+	return nil
 }
 
 func syncCommand(c config, args []string) error {
@@ -285,4 +309,3 @@ func ipv6Command(c config, args []string) error {
 	}
 	return fmt.Errorf("no valid IPv6 found for device %s", devID)
 }
-

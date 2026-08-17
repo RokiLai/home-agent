@@ -22,7 +22,6 @@ import (
 	"homeagent/internal/sshsync"
 )
 
-
 func TestRegisterListDelete(t *testing.T) {
 	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
 	b := broker.New()
@@ -312,6 +311,7 @@ func TestSyncAllTriggersBroadcast(t *testing.T) {
 	s := &Server{
 		Registry:       r,
 		Broker:         b,
+		Sync:           &sshsync.Controller{}, // Must remain unused: synchronization is SSE-only.
 		Token:          "secret",
 		AdminPublicKey: "ssh-ed25519 ADMIN_KEY",
 		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -355,6 +355,7 @@ func TestSyncDeviceOnlyPushesTargetDevice(t *testing.T) {
 	s := &Server{
 		Registry:       r,
 		Broker:         b,
+		Sync:           &sshsync.Controller{}, // Must remain unused: synchronization is SSE-only.
 		Token:          "secret",
 		AdminPublicKey: "ssh-ed25519 ADMIN_KEY",
 		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -498,4 +499,72 @@ func TestDeviceNetworkStateAndPrefixAPI(t *testing.T) {
 	}
 }
 
+func TestPatchDeviceAlias(t *testing.T) {
+	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	b := broker.New()
+	s := &Server{Registry: r, Broker: b, Token: "secret", AdminPublicKey: "ssh-ed25519 ADMIN", Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h := s.Handler()
 
+	// 1. Unauthorized PATCH
+	req := httptest.NewRequest("PATCH", "/api/v1/devices/dev-1", strings.NewReader(`{"alias":"客厅软路由"}`))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+
+	// 2. PATCH non-existent device -> 404
+	req = httptest.NewRequest("PATCH", "/api/v1/devices/dev-1", strings.NewReader(`{"alias":"客厅软路由"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+
+	// Register device
+	d := device.Device{ID: "dev-1", Hostname: "openwrt-box", OS: "linux", Arch: "arm64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 KEY1", Addresses: []string{"192.168.1.1"}}
+	_, err := r.Save(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Valid PATCH alias
+	req = httptest.NewRequest("PATCH", "/api/v1/devices/dev-1", strings.NewReader(`{"alias":"主路由器"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resDev device.Device
+	if err := json.Unmarshal(w.Body.Bytes(), &resDev); err != nil {
+		t.Fatal(err)
+	}
+	if resDev.Alias != "主路由器" {
+		t.Fatalf("expected alias '主路由器', got %q", resDev.Alias)
+	}
+
+	// 4. GET device returns updated alias
+	req = httptest.NewRequest("GET", "/api/v1/devices/dev-1", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var getDev device.Device
+	_ = json.Unmarshal(w.Body.Bytes(), &getDev)
+	if getDev.Alias != "主路由器" {
+		t.Fatalf("expected getDev alias '主路由器', got %q", getDev.Alias)
+	}
+
+	// 5. Invalid JSON -> 400
+	req = httptest.NewRequest("PATCH", "/api/v1/devices/dev-1", strings.NewReader(`{invalid}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}

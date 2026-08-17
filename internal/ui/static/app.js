@@ -52,6 +52,15 @@
   const closeIpModalBtn = document.getElementById('closeIpModalBtn');
   const doneIpModalBtn = document.getElementById('doneIpModalBtn');
 
+  // Rename modal elements
+  const renameModal = document.getElementById('renameModal');
+  const renameDeviceInfo = document.getElementById('renameDeviceInfo');
+  const deviceAliasInput = document.getElementById('deviceAliasInput');
+  const saveRenameBtn = document.getElementById('saveRenameBtn');
+  const cancelRenameModalBtn = document.getElementById('cancelRenameModalBtn');
+  const closeRenameModalBtn = document.getElementById('closeRenameModalBtn');
+  let currentRenameDeviceId = '';
+
   const toast = document.getElementById('toast');
   const toastMsg = document.getElementById('toastMsg');
 
@@ -99,12 +108,33 @@
     if (closeIpModalBtn) closeIpModalBtn.addEventListener('click', closeIpModal);
     if (doneIpModalBtn) doneIpModalBtn.addEventListener('click', closeIpModal);
 
+    if (closeRenameModalBtn) closeRenameModalBtn.addEventListener('click', closeRenameModal);
+    if (cancelRenameModalBtn) cancelRenameModalBtn.addEventListener('click', closeRenameModal);
+    if (saveRenameBtn) saveRenameBtn.addEventListener('click', saveRenameDevice);
+    if (deviceAliasInput) {
+      deviceAliasInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveRenameDevice();
+        }
+      });
+    }
+
     clearLogsBtn.addEventListener('click', () => {
       eventLogContainer.innerHTML = '';
     });
 
     // Global event delegation for dynamic elements
     document.addEventListener('click', (e) => {
+      // 0. Click on Rename button
+      const renameBtn = e.target.closest('.btn-rename-device');
+      if (renameBtn && renameBtn.dataset.id) {
+        e.preventDefault();
+        e.stopPropagation();
+        openRenameModal(renameBtn.dataset.id, renameBtn.dataset.host, renameBtn.dataset.alias);
+        return;
+      }
+
       // 1. Click on +N more IPs button
       const moreBtn = e.target.closest('.ip-more-btn');
       if (moreBtn && moreBtn.dataset.ips) {
@@ -169,6 +199,78 @@
         return;
       }
     });
+  }
+
+  function openRenameModal(deviceId, hostname, alias) {
+    if (!renameModal) return;
+    currentRenameDeviceId = deviceId;
+    if (renameDeviceInfo) {
+      renameDeviceInfo.innerText = `${hostname} (${deviceId})`;
+    }
+    if (deviceAliasInput) {
+      deviceAliasInput.value = alias || '';
+    }
+    renameModal.classList.remove('hidden');
+    setTimeout(() => {
+      if (deviceAliasInput) {
+        deviceAliasInput.focus();
+        deviceAliasInput.select();
+      }
+    }, 50);
+  }
+
+  function closeRenameModal() {
+    if (renameModal) renameModal.classList.add('hidden');
+    currentRenameDeviceId = '';
+  }
+
+  async function saveRenameDevice() {
+    if (!currentRenameDeviceId) return;
+    const newAlias = (deviceAliasInput ? deviceAliasInput.value : '').trim();
+    const id = currentRenameDeviceId;
+
+    try {
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      if (joinToken) {
+        headers['Authorization'] = `Bearer ${joinToken}`;
+      }
+
+      const res = await fetch(`/api/v1/devices/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ alias: newAlias })
+      });
+
+      if (res.status === 401) {
+        showToast('认证失败，请先配置有效的 Join Token');
+        openTokenModal();
+        return;
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+
+      const updated = await res.json();
+      const idx = devices.findIndex(d => d.id === id);
+      if (idx !== -1) {
+        devices[idx] = updated;
+      }
+      renderDevices();
+      closeRenameModal();
+      if (newAlias) {
+        addLog('SUCCESS', `已设置设备备注名: ${id} -> "${newAlias}"`);
+        showToast(`已成功修改名称: ${newAlias}`);
+      } else {
+        addLog('SUCCESS', `已清除设备备注名: ${id}`);
+        showToast(`已恢复默认主机名`);
+      }
+      fetchDevices();
+    } catch (err) {
+      alert(`修改设备名称失败: ${err.message}`);
+    }
   }
 
   function openIpModal(host, ipType, ips) {
@@ -391,10 +493,11 @@
   function renderDevices() {
     const query = (searchInput.value || '').toLowerCase().trim();
     const filtered = devices.filter(d => {
+      const matchAlias = (d.alias || '').toLowerCase().includes(query);
       const matchHost = (d.hostname || '').toLowerCase().includes(query);
       const matchId = (d.id || '').toLowerCase().includes(query);
       const matchIp = (d.addresses || []).some(ip => ip.toLowerCase().includes(query));
-      return matchHost || matchId || matchIp;
+      return matchAlias || matchHost || matchId || matchIp;
     });
 
     deviceListCount.innerText = `${filtered.length} 台设备`;
@@ -444,6 +547,8 @@
       statusText = 'ERROR';
     }
 
+    const displayName = d.alias || d.hostname || d.id;
+
     // Filter LAN IPv4 & IPv6
     const { ipv4, ipv6 } = filterAndClassifyIPs(d.addresses);
     const mainIPv4 = ipv4[0] || '';
@@ -465,8 +570,18 @@
           <div class="device-host-info">
             <div class="os-icon" title="${osName} (${escapeHTML(d.arch || '')})">${osIcon}</div>
             <div class="device-title-area">
-              <div class="device-hostname" title="${escapeHTML(d.hostname || d.id)}">${escapeHTML(d.hostname || d.id)}</div>
-              <div class="device-id-tag" title="${escapeHTML(d.id)}">${escapeHTML(d.id)}</div>
+              <div class="device-title-row">
+                <div class="device-hostname ${d.alias ? 'has-alias' : ''}" title="${escapeHTML(displayName)}">${escapeHTML(displayName)}</div>
+                <button class="btn-rename-device" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(d.hostname || d.id)}" data-alias="${escapeHTML(d.alias || '')}" title="修改设备名称 / 别名">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="device-id-tag" title="${escapeHTML(d.id)}">
+                ${d.alias && d.hostname ? `<span class="device-orig-host" title="原始主机名: ${escapeHTML(d.hostname)}">${escapeHTML(d.hostname)}</span> • ` : ''}${escapeHTML(d.id)}
+              </div>
             </div>
           </div>
           <span class="status-badge ${statusClass}">
@@ -483,7 +598,7 @@
             <div class="ip-display-box">
               ${mainIPv4 ? `
                 <span class="ip-chip btn-copy-ip" data-ip="${escapeHTML(mainIPv4)}" title="点击复制 IPv4: ${escapeHTML(mainIPv4)}">${escapeHTML(mainIPv4)}</span>
-                ${ipv4.length > 1 ? `<button class="ip-more-btn" data-type="IPv4" data-host="${escapeHTML(d.hostname || d.id)}" data-ips="${encodeURIComponent(JSON.stringify(ipv4))}" title="查看所有 ${ipv4.length} 个 IPv4">+${ipv4.length - 1}</button>` : ''}
+                ${ipv4.length > 1 ? `<button class="ip-more-btn" data-type="IPv4" data-host="${escapeHTML(displayName)}" data-ips="${encodeURIComponent(JSON.stringify(ipv4))}" title="查看所有 ${ipv4.length} 个 IPv4">+${ipv4.length - 1}</button>` : ''}
               ` : `<span class="text-muted ip-none">无局域网 IPv4</span>`}
             </div>
           </div>
@@ -494,7 +609,7 @@
             <div class="ip-display-box">
               ${mainIPv6 ? `
                 <span class="ip-chip ip-v6-chip btn-copy-ip" data-ip="${escapeHTML(mainIPv6)}" title="点击复制 IPv6: ${escapeHTML(mainIPv6)}">${escapeHTML(mainIPv6)}</span>
-                ${ipv6.length > 1 ? `<button class="ip-more-btn" data-type="IPv6" data-host="${escapeHTML(d.hostname || d.id)}" data-ips="${encodeURIComponent(JSON.stringify(ipv6))}" title="查看所有 ${ipv6.length} 个 IPv6">+${ipv6.length - 1}</button>` : ''}
+                ${ipv6.length > 1 ? `<button class="ip-more-btn" data-type="IPv6" data-host="${escapeHTML(displayName)}" data-ips="${encodeURIComponent(JSON.stringify(ipv6))}" title="查看所有 ${ipv6.length} 个 IPv6">+${ipv6.length - 1}</button>` : ''}
               ` : `<span class="text-muted ip-none">无公网 IPv6</span>`}
             </div>
           </div>
@@ -531,12 +646,12 @@
               复制
             </span>
           </button>
-          <button class="btn-sync-device" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(d.hostname || d.id)}" title="同步此设备" aria-label="同步 ${escapeHTML(d.hostname || d.id)}">
+          <button class="btn-sync-device" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(displayName)}" title="同步此设备" aria-label="同步 ${escapeHTML(displayName)}">
             <svg class="sync-device-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
             </svg>
           </button>
-          <button class="btn-del" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(d.hostname || d.id)}" title="移除此设备">
+          <button class="btn-del" data-id="${escapeHTML(d.id)}" data-host="${escapeHTML(displayName)}" title="移除此设备">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>

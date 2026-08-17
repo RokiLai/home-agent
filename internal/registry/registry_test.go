@@ -71,3 +71,56 @@ func TestUpdateSyncStatus(t *testing.T) {
 	}
 }
 
+func TestUpdateAliasAndPreserveOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1, err := r.Save(sample("dev1", "AAAA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Alias != "" {
+		t.Fatalf("expected empty alias, got %q", d1.Alias)
+	}
+
+	// 1. Update Alias
+	updated, err := r.UpdateAlias("dev1", "客厅软路由")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Alias != "客厅软路由" {
+		t.Fatalf("expected alias '客厅软路由', got %q", updated.Alias)
+	}
+
+	// Reopen from disk to verify persistence
+	r2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r2.Get("dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Alias != "客厅软路由" {
+		t.Fatalf("expected persisted alias '客厅软路由', got %q", got.Alias)
+	}
+
+	// 2. Client re-registers with empty Alias -> Server should preserve existing alias
+	reRegistered, err := r2.Save(sample("dev1", "AAAA_NEW"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reRegistered.Alias != "客厅软路由" {
+		t.Fatalf("expected preserved alias '客厅软路由', got %q", reRegistered.Alias)
+	}
+	if reRegistered.PublicKey != "ssh-ed25519 AAAA_NEW" {
+		t.Fatalf("expected updated public key, got %q", reRegistered.PublicKey)
+	}
+
+	// 3. Updating non-existent device returns ErrNotFound
+	if _, err := r2.UpdateAlias("dev-none", "test"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}

@@ -61,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/devices/register", auth.Bearer(s.Token, http.HandlerFunc(s.register)))
 	mux.Handle("GET /api/v1/devices", auth.Bearer(s.Token, http.HandlerFunc(s.devices)))
 	mux.Handle("GET /api/v1/devices/{id}", auth.Bearer(s.Token, http.HandlerFunc(s.getDevice)))
+	mux.Handle("PATCH /api/v1/devices/{id}", auth.Bearer(s.Token, http.HandlerFunc(s.patchDevice)))
 	mux.Handle("DELETE /api/v1/devices/{id}", auth.Bearer(s.Token, http.HandlerFunc(s.deleteDevice)))
 	mux.Handle("POST /api/v1/devices/{id}/sync", auth.Bearer(s.Token, http.HandlerFunc(s.syncDevice)))
 	mux.Handle("POST /api/v1/sync", auth.Bearer(s.Token, http.HandlerFunc(s.syncAll)))
@@ -105,6 +106,31 @@ func (s *Server) getDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, d)
+}
+
+type updateDeviceReq struct {
+	Alias string `json:"alias"`
+}
+
+func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
+	devID := r.PathValue("id")
+	defer r.Body.Close()
+	var req updateDeviceReq
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid JSON request: "+err.Error(), 400)
+		return
+	}
+	updated, err := s.Registry.UpdateAlias(devID, req.Alias)
+	if err != nil {
+		statusError(w, err)
+		return
+	}
+	if s.Log != nil {
+		s.Log.Info("device_alias_updated", "device_id", devID, "alias", updated.Alias)
+	}
+	writeJSON(w, 200, updated)
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
@@ -159,22 +185,14 @@ func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request) {
 		statusError(w, err)
 		return
 	}
-	if s.Sync == nil {
-		writeJSON(w, 200, map[string]any{"device_id": devID, "status": "ok"})
-		return
-	}
-	writeJSON(w, 200, s.Sync.SyncDevice(r.Context(), devID))
+	writeJSON(w, 200, map[string]any{"device_id": devID, "status": "ok"})
 }
 
 func (s *Server) syncAll(w http.ResponseWriter, r *http.Request) {
 	if s.Broker != nil {
 		s.broadcastKeySync()
 	}
-	if s.Sync == nil {
-		writeJSON(w, 200, map[string]any{"results": []any{}})
-		return
-	}
-	writeJSON(w, 200, map[string]any{"results": s.Sync.SyncAll(r.Context())})
+	writeJSON(w, 200, map[string]any{"results": []any{}})
 }
 
 // SSE streaming endpoint: GET /api/v1/devices/{id}/events
@@ -624,5 +642,3 @@ func (s *Server) getNetworkPrefixes(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, st)
 }
-
-

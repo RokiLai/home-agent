@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,9 @@ func (r *Registry) Save(d device.Device) (device.Device, error) {
 	now := time.Now().UTC()
 	if old, ok := r.devices[d.ID]; ok {
 		d.CreatedAt = old.CreatedAt
+		if d.Alias == "" {
+			d.Alias = old.Alias
+		}
 		if d.SyncStatus == "" {
 			d.SyncStatus = old.SyncStatus
 		}
@@ -122,6 +126,25 @@ func (r *Registry) Delete(id string) error {
 		return err
 	}
 	return nil
+}
+
+func (r *Registry) UpdateAlias(id string, alias string) (device.Device, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[id]
+	if !ok {
+		return device.Device{}, ErrNotFound
+	}
+	now := time.Now().UTC()
+	d.Alias = strings.TrimSpace(alias)
+	d.UpdatedAt = now
+	old := r.devices[id]
+	r.devices[id] = d
+	if err := r.writeLocked(); err != nil {
+		r.devices[id] = old
+		return device.Device{}, err
+	}
+	return d, nil
 }
 
 func (r *Registry) UpdateSyncStatus(id string, status string, version int64, hash string, errMsg string) error {
