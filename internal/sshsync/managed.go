@@ -3,7 +3,10 @@ package sshsync
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -16,6 +19,32 @@ type Key struct {
 }
 type KeySet struct {
 	Keys []Key `json:"keys"`
+}
+
+type KeySyncPayload struct {
+	Version int64 `json:"version"`
+	Hash    string `json:"hash"`
+	Keys    []Key  `json:"keys"`
+}
+
+func ComputeKeySetHash(keys []Key) string {
+	var lines []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		fields := strings.Fields(k.PublicKey)
+		if len(fields) < 2 {
+			continue
+		}
+		identity := fields[0] + " " + fields[1]
+		if seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		lines = append(lines, identity+" "+sanitizeComment(k.DeviceID))
+	}
+	sort.Strings(lines)
+	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(h[:])
 }
 
 func UpdateManagedBlock(existing []byte, keys []Key) ([]byte, error) {

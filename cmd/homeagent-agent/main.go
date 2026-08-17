@@ -2,21 +2,26 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
+	"homeagent/internal/daemon"
 	"homeagent/internal/device"
 	"homeagent/internal/sshsync"
 )
@@ -29,6 +34,10 @@ func main() {
 	switch os.Args[1] {
 	case "join":
 		err = join(os.Args[2:])
+	case "daemon":
+		err = runDaemon(os.Args[2:])
+	case "service":
+		err = runService(os.Args[2:])
 	case "info":
 		err = info()
 	case "apply-keys":
@@ -42,7 +51,10 @@ func main() {
 	}
 }
 
-func usage() { fmt.Fprintln(os.Stderr, "usage: homeagent-agent <join|info|apply-keys>"); os.Exit(2) }
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: homeagent-agent <join|daemon|service|info|apply-keys> [flags]")
+	os.Exit(2)
+}
 
 func join(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
@@ -93,6 +105,104 @@ func join(args []string) error {
 	return nil
 }
 
+func runDaemon(args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	server := fs.String("server", os.Getenv("HOMEAGENT_SERVER"), "HomeAgent server URL")
+	token := fs.String("token", os.Getenv("HOMEAGENT_JOIN_TOKEN"), "join token")
+	deviceID := fs.String("device-id", "", "Device ID (defaults to auto-detected local device ID)")
+	authKeys := fs.String("authorized-keys", "", "Path to authorized_keys file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *server == "" || *token == "" {
+		return errors.New("--server and --token (or environment equivalents) are required")
+	}
+
+	devID := *deviceID
+	if devID == "" {
+		d, _, err := localDevice("", 22)
+		if err != nil {
+			return fmt.Errorf("detect local device: %w", err)
+		}
+		devID = d.ID
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	d, err := daemon.New(daemon.Config{
+		ServerURL:          *server,
+		Token:              *token,
+		DeviceID:           devID,
+		AuthorizedKeysPath: *authKeys,
+		Logger:             logger,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return d.Run(ctx)
+}
+
+func runService(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: homeagent-agent service <install|uninstall|start|stop|status> [flags]")
+	}
+	action := args[0]
+	fs := flag.NewFlagSet("service", flag.ContinueOnError)
+	server := fs.String("server", os.Getenv("HOMEAGENT_SERVER"), "HomeAgent server URL")
+	token := fs.String("token", os.Getenv("HOMEAGENT_JOIN_TOKEN"), "join token")
+	binary := fs.String("binary", "", "Path to homeagent-agent binary")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	mgr, err := daemon.NewServiceManager(*binary, *server, *token)
+	if err != nil {
+		return err
+	}
+
+	switch action {
+	case "install":
+		if *server == "" || *token == "" {
+			return errors.New("--server and --token are required to install service")
+		}
+		if err := mgr.Install(); err != nil {
+			return fmt.Errorf("install service: %w", err)
+		}
+		fmt.Println("service installed successfully")
+		return nil
+	case "uninstall":
+		if err := mgr.Uninstall(); err != nil {
+			return fmt.Errorf("uninstall service: %w", err)
+		}
+		fmt.Println("service uninstalled successfully")
+		return nil
+	case "start":
+		if err := mgr.Start(); err != nil {
+			return fmt.Errorf("start service: %w", err)
+		}
+		fmt.Println("service started")
+		return nil
+	case "stop":
+		if err := mgr.Stop(); err != nil {
+			return fmt.Errorf("stop service: %w", err)
+		}
+		fmt.Println("service stopped")
+		return nil
+	case "status":
+		status, err := mgr.Status()
+		if err != nil {
+			return fmt.Errorf("service status: %w", err)
+		}
+		fmt.Println(status)
+		return nil
+	default:
+		return fmt.Errorf("unknown service action: %s", action)
+	}
+}
+
 func localDevice(sshUser string, port int) (device.Device, string, error) {
 	host, err := os.Hostname()
 	if err != nil {
@@ -125,7 +235,23 @@ func readMachineID() (string, error) {
 		if err == nil && len(bytes.TrimSpace(b)) > 0 {
 			return string(bytes.TrimSpace(b)), nil
 		}
-		return "", fmt.Errorf("read machine ID: %w", err)
+		b, err = os.ReadFile("/var/lib/dbus/machine-id")
+		if err == nil && len(bytes.TrimSpace(b)) > 0 {
+			return string(bytes.TrimSpace(b)), nil
+		}
+		// OpenWrt / router fallback: try MAC address
+		if b, err := os.ReadFile("/sys/class/net/eth0/address"); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			return strings.TrimSpace(string(b)), nil
+		}
+		// Persistent file fallback
+		statePath := "/etc/homeagent_machine_id"
+		if b, err := os.ReadFile(statePath); err == nil && len(bytes.TrimSpace(b)) > 0 {
+			return strings.TrimSpace(string(b)), nil
+		}
+		// Generate and persist
+		genID := fmt.Sprintf("hw-%d", time.Now().UnixNano())
+		_ = os.WriteFile(statePath, []byte(genID), 0600)
+		return genID, nil
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "darwin" {
@@ -154,11 +280,28 @@ func readMachineID() (string, error) {
 	return id, nil
 }
 
+func isVirtualInterface(name string) bool {
+	lower := strings.ToLower(name)
+	prefixes := []string{
+		"utun", "bridge", "docker", "veth", "tailscale", "wg", "tun", "tap",
+		"virbr", "vmnet", "vboxnet", "vethernet", "br-", "cni0", "flannel",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func localAddresses() []string {
 	var values []string
 	ifaces, _ := net.Interfaces()
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if isVirtualInterface(iface.Name) {
 			continue
 		}
 		addrs, _ := iface.Addrs()
@@ -248,70 +391,11 @@ func applyKeys(r io.Reader) error {
 }
 
 func authorizedKeysPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if runtime.GOOS == "windows" && strings.EqualFold(os.Getenv("USERNAME"), "Administrator") {
-		base := os.Getenv("ProgramData")
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-		return filepath.Join(base, "ssh", "administrators_authorized_keys"), nil
-	}
-	return filepath.Join(home, ".ssh", "authorized_keys"), nil
+	return daemon.DefaultAuthorizedKeysPath()
 }
 
 func atomicWrite(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".authorized_keys-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	ok := false
-	defer func() {
-		tmp.Close()
-		if !ok {
-			os.Remove(name)
-		}
-	}()
-	if err := tmp.Chmod(0600); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" {
-		if err := applyWindowsACL(name); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	ok = true
-	return nil
-}
-
-func applyWindowsACL(path string) error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-	user := os.Getenv("USERNAME")
-	cmd := exec.Command("icacls.exe", path, "/inheritance:r", "/grant:r", user+":F", "SYSTEM:F")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("set Windows ACL: %w: %s", err, bytes.TrimSpace(out))
-	}
-	return nil
+	return daemon.AtomicWrite(path, data)
 }
 
 func info() error {

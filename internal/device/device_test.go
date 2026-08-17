@@ -11,14 +11,18 @@ func TestGenerateIDStable(t *testing.T) {
 }
 
 func TestFilterAndSortAddresses(t *testing.T) {
-	got := FilterAndSortAddresses([]string{"127.0.0.1", "fe80::1", "8.8.8.8", "192.168.1.4", "172.17.0.1", "192.168.1.4", "2001:db8::1"})
+	got := FilterAndSortAddresses([]string{
+		"127.0.0.1", "fe80::1", "169.254.1.20", "8.8.8.8", "192.168.1.4",
+		"172.17.0.1", "192.168.1.4", "2001:db8::1", "100.114.254.60",
+		"192.168.139.3", "192.168.215.0", "fd07:b51a:cc66::1",
+	})
 	want := []string{"192.168.1.4", "8.8.8.8", "2001:db8::1"}
 	if len(got) != len(want) {
-		t.Fatalf("got %#v", got)
+		t.Fatalf("got %#v, want %#v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("got %#v", got)
+			t.Fatalf("got %#v, want %#v", got, want)
 		}
 	}
 }

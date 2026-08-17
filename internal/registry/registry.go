@@ -39,8 +39,10 @@ func Open(path string) (*Registry, error) {
 		return nil, fmt.Errorf("decode registry: %w", err)
 	}
 	for _, d := range data.Devices {
+		d.Addresses = device.FilterAndSortAddresses(d.Addresses)
 		r.devices[d.ID] = d
 	}
+	_ = r.writeLocked()
 	return r, nil
 }
 
@@ -53,6 +55,21 @@ func (r *Registry) Save(d device.Device) (device.Device, error) {
 	now := time.Now().UTC()
 	if old, ok := r.devices[d.ID]; ok {
 		d.CreatedAt = old.CreatedAt
+		if d.SyncStatus == "" {
+			d.SyncStatus = old.SyncStatus
+		}
+		if d.AppliedVersion == 0 {
+			d.AppliedVersion = old.AppliedVersion
+		}
+		if d.AppliedHash == "" {
+			d.AppliedHash = old.AppliedHash
+		}
+		if d.SyncError == "" {
+			d.SyncError = old.SyncError
+		}
+		if d.SyncUpdatedAt.IsZero() {
+			d.SyncUpdatedAt = old.SyncUpdatedAt
+		}
 	} else {
 		d.CreatedAt = now
 	}
@@ -100,6 +117,29 @@ func (r *Registry) Delete(id string) error {
 		return ErrNotFound
 	}
 	delete(r.devices, id)
+	if err := r.writeLocked(); err != nil {
+		r.devices[id] = old
+		return err
+	}
+	return nil
+}
+
+func (r *Registry) UpdateSyncStatus(id string, status string, version int64, hash string, errMsg string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[id]
+	if !ok {
+		return ErrNotFound
+	}
+	now := time.Now().UTC()
+	d.SyncStatus = status
+	d.AppliedVersion = version
+	d.AppliedHash = hash
+	d.SyncError = errMsg
+	d.SyncUpdatedAt = now
+	d.LastSeenAt = now
+	old := r.devices[id]
+	r.devices[id] = d
 	if err := r.writeLocked(); err != nil {
 		r.devices[id] = old
 		return err

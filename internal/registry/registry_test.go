@@ -43,3 +43,31 @@ func TestSaveUpdateDeleteAndReopen(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestUpdateSyncStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Save(sample("dev1", "AAAA")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.UpdateSyncStatus("dev1", "synced", 5, "hash123", ""); err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Get("dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SyncStatus != "synced" || d.AppliedVersion != 5 || d.AppliedHash != "hash123" || d.SyncError != "" {
+		t.Fatalf("unexpected sync status: %+v", d)
+	}
+	if d.SyncUpdatedAt.IsZero() {
+		t.Fatal("SyncUpdatedAt should not be zero")
+	}
+	if err := r.UpdateSyncStatus("nonexistent", "synced", 1, "h", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+

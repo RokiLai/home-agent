@@ -29,3 +29,14 @@ func TestManagedBlockRejectsMalformedInput(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestComputeKeySetHash(t *testing.T) {
+	keys1 := []Key{{DeviceID: "a", PublicKey: "ssh-ed25519 AAAA"}, {DeviceID: "b", PublicKey: "ssh-ed25519 BBBB"}}
+	keys2 := []Key{{DeviceID: "b", PublicKey: "ssh-ed25519 BBBB"}, {DeviceID: "a", PublicKey: "ssh-ed25519 AAAA"}}
+	h1 := ComputeKeySetHash(keys1)
+	h2 := ComputeKeySetHash(keys2)
+	if h1 == "" || h1 != h2 {
+		t.Fatalf("hashes should be deterministic: %q vs %q", h1, h2)
+	}
+}
+

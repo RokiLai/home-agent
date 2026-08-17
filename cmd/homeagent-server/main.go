@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"homeagent/internal/api"
+	"homeagent/internal/broker"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 )
@@ -108,9 +109,20 @@ func serve(c config) error {
 	if !c.sync {
 		syncer = nil
 	}
+	eventBroker := broker.New()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	handler := (&api.Server{Registry: r, Token: c.token, AdminPublicKey: pub, Sync: syncer, Log: logger, DownloadsDir: c.downloads, ScriptsDir: c.scripts}).Handler()
-	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	handler := (&api.Server{
+		Registry:       r,
+		Broker:         eventBroker,
+		ACLPath:        filepath.Join(c.dataDir, "acl.yaml"),
+		Token:          c.token,
+		AdminPublicKey: pub,
+		Sync:           syncer,
+		Log:            logger,
+		DownloadsDir:   c.downloads,
+		ScriptsDir:     c.scripts,
+	}).Handler()
+	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -136,16 +148,35 @@ func list(c config) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tHOSTNAME\tADDRESS\tOS")
+	fmt.Fprintln(w, "ID\tHOSTNAME\tADDRESS\tOS\tSTATUS\tVERSION\tHASH\tLAST_SEEN")
 	for _, d := range r.List() {
 		address := ""
 		if len(d.Addresses) > 0 {
 			address = d.Addresses[0]
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.ID, d.Hostname, address, d.OS)
+		status := d.SyncStatus
+		if status == "" {
+			status = "pending"
+		}
+		hashShort := d.AppliedHash
+		if len(hashShort) > 8 {
+			hashShort = hashShort[:8]
+		} else if hashShort == "" {
+			hashShort = "-"
+		}
+		versionStr := strconv.FormatInt(d.AppliedVersion, 10)
+		if d.AppliedVersion == 0 {
+			versionStr = "-"
+		}
+		lastSeen := "-"
+		if !d.LastSeenAt.IsZero() {
+			lastSeen = d.LastSeenAt.Format("2006-01-02 15:04:05")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Hostname, address, d.OS, status, versionStr, hashShort, lastSeen)
 	}
 	return w.Flush()
 }
+
 func syncCommand(c config, args []string) error {
 	_, controller, _, err := components(c)
 	if err != nil {

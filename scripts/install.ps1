@@ -17,4 +17,11 @@ $service = Get-Service sshd -ErrorAction SilentlyContinue
 if (-not $service) { throw "Windows OpenSSH Server is required. Install the OpenSSH.Server capability first." }
 if ($service.Status -ne "Running") { Start-Service sshd }
 Set-Service sshd -StartupType Automatic
+
+# 1. Register device
 & $binary join --server $env:HOMEAGENT_SERVER --token $env:HOMEAGENT_JOIN_TOKEN
+
+# 2. Setup background daemon service
+& $binary service install --server $env:HOMEAGENT_SERVER --token $env:HOMEAGENT_JOIN_TOKEN --binary $binary
+
+Write-Host "HomeAgent installation and daemon service setup completed successfully!"

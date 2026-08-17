@@ -18,9 +18,14 @@ type Device struct {
 	SSHPort    int       `json:"ssh_port"`
 	PublicKey  string    `json:"public_key"`
 	Addresses  []string  `json:"addresses"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	LastSeenAt time.Time `json:"last_seen_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	LastSeenAt    time.Time `json:"last_seen_at"`
+	SyncStatus    string    `json:"sync_status,omitempty"`
+	AppliedVersion int64     `json:"applied_version,omitempty"`
+	AppliedHash   string    `json:"applied_hash,omitempty"`
+	SyncError     string    `json:"sync_error,omitempty"`
+	SyncUpdatedAt time.Time `json:"sync_updated_at,omitempty"`
 }
 
 func GenerateID(hostname, machineID string) string {
@@ -62,7 +67,7 @@ func FilterAndSortAddresses(addresses []string) []string {
 	var values []ranked
 	for _, raw := range addresses {
 		ip := net.ParseIP(strings.Trim(strings.TrimSpace(raw), "[]"))
-		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || isDockerOrVM(ip) {
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || isVirtualOrProxyIP(ip) {
 			continue
 		}
 		value := ip.String()
@@ -86,10 +91,40 @@ func FilterAndSortAddresses(addresses []string) []string {
 	return result
 }
 
-func isDockerOrVM(ip net.IP) bool {
+func isVirtualOrProxyIP(ip net.IP) bool {
 	v4 := ip.To4()
-	if v4 == nil {
+	if v4 != nil {
+		// Filter network and broadcast addresses (e.g. *.0 or *.255)
+		if v4[3] == 0 || v4[3] == 255 {
+			return true
+		}
+		// APIPA Link-Local: 169.254.0.0/16
+		if v4[0] == 169 && v4[1] == 254 {
+			return true
+		}
+		// Tailscale / CGNAT: 100.64.0.0/10 (100.64.0.0 - 100.127.255.255)
+		if v4[0] == 100 && (v4[1] >= 64 && v4[1] <= 127) {
+			return true
+		}
+		// Docker / WSL / Hyper-V (172.17.x.x ~ 172.31.x.x)
+		if v4[0] == 172 && (v4[1] >= 17 && v4[1] <= 31) {
+			return true
+		}
+		// Common VM / Bridge adapters (VirtualBox, VMware, macOS bridge100-108, Parallels)
+		if v4[0] == 192 && v4[1] == 168 {
+			third := v4[2]
+			if third == 56 || third == 65 || third == 97 || third == 107 || third == 117 ||
+				third == 139 || third == 147 || third == 148 || third == 156 || third == 158 || third == 215 {
+				return true
+			}
+		}
 		return false
 	}
-	return v4[0] == 172 && (v4[1] == 17 || v4[1] == 18) || v4[0] == 192 && v4[1] == 168 && (v4[2] == 56 || v4[2] == 65)
+
+	// IPv6 filtering:
+	// Filter ULA (Unique Local Address fc00::/7, including fd00::/8) used by Tailscale / virtual bridges
+	if len(ip) == 16 && (ip[0]&0xfe == 0xfc) {
+		return true
+	}
+	return false
 }

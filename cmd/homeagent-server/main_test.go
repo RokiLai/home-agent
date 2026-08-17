@@ -23,3 +23,12 @@ func TestParseConfigRequiresToken(t *testing.T) {
 		t.Fatal("expected missing token error")
 	}
 }
+
+func TestListDevices(t *testing.T) {
+	tempDir := t.TempDir()
+	c := config{dataDir: tempDir, token: "token"}
+	if err := list(c); err != nil {
+		t.Fatal(err)
+	}
+}
+

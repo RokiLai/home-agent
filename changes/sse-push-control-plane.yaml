@@ -1,0 +1,20 @@
+task: sse-push-control-plane
+description: Implement SSE push control plane, background daemon, ACK reconciliation, and cross-platform service integration (macOS, Linux, OpenWrt, Windows).
+allowed_paths:
+  - changes/sse-push-control-plane.yaml
+  - cmd/homeagent-server/**
+  - cmd/homeagent-agent/**
+  - internal/broker/**
+  - internal/daemon/**
+  - internal/device/**
+  - internal/registry/**
+  - internal/acl/**
+  - internal/sshsync/**
+  - internal/api/**
+  - internal/ui/**
+  - scripts/install.sh
+  - scripts/install.ps1
+  - internal/auth/**
+  - docs/**
+  - go.mod
+  - go.sum

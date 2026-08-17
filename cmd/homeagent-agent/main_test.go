@@ -25,3 +25,21 @@ func TestApplyKeysRejectsInvalidKey(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestRunServiceValidation(t *testing.T) {
+	if err := runService(nil); err == nil {
+		t.Fatal("expected error with no arguments")
+	}
+	if err := runService([]string{"invalid"}); err == nil {
+		t.Fatal("expected error with invalid action")
+	}
+}
+
+func TestRunDaemonRequiresArgs(t *testing.T) {
+	t.Setenv("HOMEAGENT_SERVER", "")
+	t.Setenv("HOMEAGENT_JOIN_TOKEN", "")
+	if err := runDaemon(nil); err == nil {
+		t.Fatal("expected error when server and token missing")
+	}
+}
+

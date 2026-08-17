@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeAgent 控制平面 - 设备状态与公钥管理</title>
+  <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header / Navbar -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-badge">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            <polyline points="9 22 9 12 15 12 15 22"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">HomeAgent <span class="badge badge-primary">Control Plane</span></div>
+          <div class="brand-subtitle">基于 SSE 的轻量级设备接入与 SSH 公钥管理系统</div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div class="status-indicator">
+          <span class="pulse-dot"></span>
+          <span id="liveStatusText">实时连接中</span>
+        </div>
+        <button id="tokenConfigBtn" class="btn btn-secondary" title="配置访问 Token">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <span id="tokenBtnLabel">Token 认证</span>
+        </button>
+        <button id="refreshBtn" class="btn btn-icon" title="刷新数据">
+          <svg id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Metric / Stats Cards -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon icon-indigo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+        </div>
+        <div class="stat-data">
+          <div class="stat-label">已接入设备</div>
+          <div class="stat-value" id="statTotalDevices">-</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-emerald">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <polyline points="9 12 11 14 15 10"/>
+          </svg>
+        </div>
+        <div class="stat-data">
+          <div class="stat-label">已同步 (Synced)</div>
+          <div class="stat-value text-emerald" id="statSyncedDevices">-</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-amber">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+        </div>
+        <div class="stat-data">
+          <div class="stat-label">待处理 / 异常</div>
+          <div class="stat-value text-amber" id="statPendingDevices">-</div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-icon icon-violet">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </div>
+        <div class="stat-data">
+          <div class="stat-label">最新同步版本</div>
+          <div class="stat-value text-violet" id="statLatestVersion">-</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Content Grid -->
+    <main class="main-layout">
+      <!-- Left / Top: Device List -->
+      <section class="content-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">已接入设备矩阵</h2>
+            <span class="panel-count" id="deviceListCount">0 台设备</span>
+          </div>
+          <div class="panel-filter">
+            <input type="text" id="deviceSearchInput" class="search-input" placeholder="搜索设备名、IP 或 ID...">
+          </div>
+        </div>
+
+        <div id="deviceContainer" class="device-grid">
+          <!-- Dynamically populated device cards -->
+          <div class="loading-state">
+            <div class="spinner"></div>
+            <p>正在拉取设备接入列表...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right / Bottom: One-line Onboarding & Event Feed -->
+      <aside class="sidebar-layout">
+        <!-- Quick Install Card -->
+        <div class="sidebar-card">
+          <div class="sidebar-card-header">
+            <div class="sidebar-card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              <span>单行快速接入 (Zero-Touch)</span>
+            </div>
+          </div>
+          <p class="sidebar-card-desc">在新设备上执行单行命令，自动完成注册、公钥快照同步与开机守护进程自启：</p>
+          
+          <!-- OS Tabs -->
+          <div class="tab-group">
+            <button class="tab-btn active" data-os="darwin">macOS</button>
+            <button class="tab-btn" data-os="linux">Linux</button>
+            <button class="tab-btn" data-os="openwrt">OpenWrt</button>
+            <button class="tab-btn" data-os="windows">Windows</button>
+          </div>
+
+          <div class="code-box">
+            <code id="installCommandCode">正在生成安装命令...</code>
+            <button id="copyCommandBtn" class="btn btn-copy" title="复制命令">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>复制</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Live Activity Log -->
+        <div class="sidebar-card">
+          <div class="sidebar-card-header">
+            <div class="sidebar-card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span>控制平面动态日志</span>
+            </div>
+            <button id="clearLogsBtn" class="btn-text">清空</button>
+          </div>
+          <div id="eventLogContainer" class="event-log-list">
+            <div class="log-item">
+              <span class="log-time">00:00:00</span>
+              <span class="log-badge badge-info">INIT</span>
+              <span class="log-msg">页面初始化就绪</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Token Modal -->
+  <div id="tokenModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">设置服务端 Join Token</h3>
+        <button id="closeModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">请输入服务端配置文件中的 <code>HOMEAGENT_JOIN_TOKEN</code>，Token 将安全保存在本地浏览器中以授权接口调用：</p>
+        <div class="form-group">
+          <label for="tokenInput">Join Token</label>
+          <input type="password" id="tokenInput" class="form-control" placeholder="输入 Token...">
+        </div>
+        <div class="form-group">
+          <label for="serverUrlInput">服务端地址 (可选覆盖)</label>
+          <input type="text" id="serverUrlInput" class="form-control" placeholder="http://192.168.31.64:8888">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelModalBtn" class="btn btn-secondary">取消</button>
+        <button id="saveTokenBtn" class="btn btn-primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- IP List Modal -->
+  <div id="ipModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="ipModalTitle">IP 地址列表</h3>
+        <button id="closeIpModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="ipModalDesc">点击任意地址即可一键复制到剪贴板：</p>
+        <div id="ipModalList" class="ip-modal-list">
+          <!-- Dynamically populated IP rows -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="doneIpModalBtn" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden">
+    <span id="toastMsg">已复制到剪贴板</span>
+  </div>
+
+  <script src="/static/app.js?v=8"></script>
+</body>
+</html>
