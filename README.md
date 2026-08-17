@@ -1,18 +1,35 @@
 # HomeAgent
 
-HomeAgent 是一个基于 Go 的轻量级控制平面，用于接入家庭局域网中的可信设备，并根据设备 ACL 同步 SSH 公钥。MVP 使用 JSON 文件和系统自带的 OpenSSH 工具；不会存储设备私钥，也不会覆盖用户自行管理的 `authorized_keys` 条目。
+HomeAgent 是一个基于 Go 的轻量级局域网设备管理与控制平面，用于接入家庭/办公局域网中的可信设备，并根据 ACL 策略自动分发和同步 SSH 公钥。
 
-## 构建
+HomeAgent 采用 **SSE 实时下行控制平面** + **客户端自动 ACK 收敛** + **SSH 兜底同步** 的双轨架构；不会存储设备私钥，也不会覆盖用户自行管理的 `authorized_keys` 条目。
+
+---
+
+## 核心特性
+
+- ⚡ **SSE 实时控制平面**：Server 通过 Server-Sent Events (SSE) 毫秒级下发公钥更新与同步指令，Agent 毫秒级响应并即时完成本地密钥应用。
+- 🔄 **ACK 状态闭环收敛**：Agent 应用成功后自动上报 ACK，Server 实时记录各设备同步收敛状态，并在控制台动态呈现。
+- 🖥️ **内嵌 Web 控制台**：Server 自带内嵌轻量级 Dashboard，直观展示网络拓扑、实时事件流日志、在线/离线状态与一键同步触发。
+- 🛡️ **跨平台系统服务**：Agent 支持一键安装为操作系统原生自启服务（macOS `launchd`、Linux `systemd`、OpenWrt `procd`、Windows `Windows Service`）。
+- 🔒 **安全与无侵入**：仅同步公开密钥，私钥保留在各设备本地；仅以原子方式更新 `BEGIN/END HOMEAGENT MANAGED` 标记区块，不影响已有 SSH 密钥。
+
+---
+
+## 快速构建
 
 需要 Go 1.26 或更高版本。
 
 ```sh
+# 运行单元测试
 go test ./...
+
+# 构建本地二进制
 go build -o bin/homeagent-server ./cmd/homeagent-server
 go build -o bin/homeagent-agent ./cmd/homeagent-agent
 ```
 
-为 Server 的下载目录构建各平台 Agent：
+为 Server 分发目录构建各平台 Agent：
 
 ```sh
 mkdir -p dist
@@ -23,6 +40,8 @@ GOOS=linux GOARCH=amd64 go build -o dist/homeagent-agent-linux-amd64 ./cmd/homea
 GOOS=windows GOARCH=arm64 go build -o dist/homeagent-agent-windows-arm64.exe ./cmd/homeagent-agent
 GOOS=windows GOARCH=amd64 go build -o dist/homeagent-agent-windows-amd64.exe ./cmd/homeagent-agent
 ```
+
+---
 
 ## 运行 Server
 
@@ -35,11 +54,68 @@ homeagent-server serve \
   --scripts-dir ./scripts
 ```
 
-系统级安装建议使用 `/var/lib/homeagent` 作为 `--data-dir`。首次启动时，Server 会创建一个权限受限的 Ed25519 管理密钥。运行时配置可通过命令行参数或对应的 `HOMEAGENT_*` 环境变量传入；[configs/config.example.yaml](configs/config.example.yaml) 记录了部署配置值。
+> **提示**：生产或长期运行建议使用 `/var/lib/homeagent` 作为 `--data-dir`。首次启动时，Server 会在数据目录下自动生成 Ed25519 管理密钥。配置文件模板请参考 [configs/config.example.yaml](configs/config.example.yaml)。
 
-数据目录包含 `devices.json`、`acl.yaml`、`keys/admin_ed25519` 和 `ssh/known_hosts`。严禁复制或发布 `keys/admin_ed25519`。
+### 访问内嵌 Web 控制台
+Server 启动后，直接在浏览器中打开：
+```text
+http://<server-ip>:8080/
+```
+在控制台顶部输入 `HOMEAGENT_JOIN_TOKEN` 即可连接实时 SSE 流，查看设备状态、网络拓扑图与下发事件日志。
 
-ACL 文件是可选的；文件不存在时默认采用 `allow_all`：
+---
+
+## 接入设备
+
+### 1. macOS / Linux / OpenWrt
+在目标设备上执行一键安装脚本（脚本会自动下载对应架构的 Agent 二进制，并注册拉起开机自启系统服务）：
+
+```sh
+curl -fsSL http://<server-ip>:8080/install.sh -o /tmp/homeagent-install.sh
+HOMEAGENT_SERVER=http://<server-ip>:8080 \
+HOMEAGENT_JOIN_TOKEN='replace-with-a-random-secret' \
+sh /tmp/homeagent-install.sh
+```
+
+### 2. Windows
+以**管理员权限**打开 PowerShell 执行：
+
+```powershell
+$env:HOMEAGENT_SERVER="http://<server-ip>:8080"
+$env:HOMEAGENT_JOIN_TOKEN="replace-with-a-random-secret"
+irm http://<server-ip>:8080/install.ps1 | iex
+```
+
+---
+
+## Agent 系统服务管理
+
+Agent 内置跨平台服务管理子命令（`service`），支持通过命令行直接控制守护进程生命周期：
+
+```sh
+# 查看当前服务运行状态
+homeagent-agent service status
+
+# 启动 / 停止 / 重启服务
+homeagent-agent service start
+homeagent-agent service stop
+homeagent-agent service restart
+
+# 安装为系统开机自启服务
+homeagent-agent service install --server http://<server-ip>:8080 --token <join-token>
+
+# 卸载系统服务
+homeagent-agent service uninstall
+
+# 在前台直接以守护模式运行（用于调试）
+homeagent-agent service run --server http://<server-ip>:8080 --token <join-token>
+```
+
+---
+
+## ACL 权限控制
+
+ACL 配置文件 `acl.yaml` 存放于 Server 的数据目录下（可选，不存在时默认采用 `allow_all`）：
 
 ```yaml
 default_policy: deny
@@ -49,43 +125,29 @@ devices:
       - macbook-roki
 ```
 
-该映射表示“哪些来源设备可以通过 SSH 访问此目标设备”。HomeAgent 管理公钥独立于设备 ACL 条目，并始终保留。
+该配置表示：“仅允许 `macbook-roki` 通过 SSH 访问 `ubuntu-server`”。HomeAgent 管理公钥始终保留，不受 ACL 条目限制。
 
-## 接入设备
+---
 
-macOS 或 Linux：
-
-```sh
-curl -fsSL http://macmini.local:8080/install.sh -o /tmp/homeagent-install.sh
-HOMEAGENT_SERVER=http://macmini.local:8080 \
-HOMEAGENT_JOIN_TOKEN='replace-with-a-random-secret' \
-sh /tmp/homeagent-install.sh
-```
-
-Windows PowerShell（请以管理员权限运行，因为 OpenSSH 服务和 `Program Files` 目录的修改可能需要提升权限）：
-
-```powershell
-$env:HOMEAGENT_SERVER="http://macmini.local:8080"
-$env:HOMEAGENT_JOIN_TOKEN="replace-with-a-random-secret"
-irm http://macmini.local:8080/install.ps1 | iex
-```
-
-Agent 会复用 `~/.ssh/id_ed25519`；如果该密钥不存在，则自动创建。Agent 只发送公钥。`apply-keys` 仅以原子方式更新以下标记限定的区块：
-
-```text
-# BEGIN HOMEAGENT MANAGED
-# END HOMEAGENT MANAGED
-```
-
-## 日常操作
+## CLI 日常运维
 
 ```sh
+# 列出所有已接入设备及其同步状态
 HOMEAGENT_JOIN_TOKEN=... homeagent-server devices --data-dir /var/lib/homeagent
+
+# 手动触发向所有设备推送最新公钥配置
 HOMEAGENT_JOIN_TOKEN=... homeagent-server sync --data-dir /var/lib/homeagent
+
+# 触发向指定设备推送公钥配置
 HOMEAGENT_JOIN_TOKEN=... homeagent-server sync --data-dir /var/lib/homeagent DEVICE_ID
+
+# 测试 Server 到指定设备的 SSH 连通性
 HOMEAGENT_JOIN_TOKEN=... homeagent-server ssh-test --data-dir /var/lib/homeagent DEVICE_ID
 ```
 
-HTTP 接口包括 `/health`、`/api/v1/bootstrap/admin-key`、设备注册/列表/查询/删除、单设备同步以及全局同步。所有 `/api/v1` 接口都需要使用 Join Token 作为 Bearer 凭据。设备信息持久化写入 Registry 后，Server 即返回注册响应；SSH 同步异步执行，因此单台设备离线不会导致新设备注册失败。
+---
 
-设备 Host Key 保存在 HomeAgent 独立的 `known_hosts` 文件中。已有 Host Key 不会被静默替换；Host Key 发生变化时，OpenSSH 校验会失败，并要求人工检查。
+## 深入设计与文档
+
+详细的 SSE 实时控制平面协议、跨平台守护进程状态流转图与安全审计说明，请参阅本地架构设计文档：
+- `docs/sse-push-control-plane-architecture.md`

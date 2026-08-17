@@ -1,5 +1,0 @@
-task: github-publish
-description: Initialize the HomeAgent Git repository and publish it to a private GitHub repository.
-allowed_paths:
-  - .gitignore
-  - changes/github-publish.yaml

@@ -30,3 +30,8 @@ id_ed25519.pub
 .idea/
 .vscode/
 *.swp
+
+# Documentation and Task specs
+/docs/
+/changes/
+
