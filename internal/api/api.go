@@ -14,7 +14,11 @@ import (
 	"homeagent/internal/acl"
 	"homeagent/internal/auth"
 	"homeagent/internal/broker"
+	"homeagent/internal/ddns"
 	"homeagent/internal/device"
+	"homeagent/internal/devicestate"
+	"homeagent/internal/networkaddr"
+	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/ui"
@@ -30,6 +34,9 @@ type Server struct {
 	DownloadsDir          string
 	ScriptsDir            string
 	PingInterval          time.Duration
+	DeviceStateService    *devicestate.Service
+	PrefixStateService    *prefixstate.Service
+	DDNSService           *ddns.Service
 
 	version int64
 }
@@ -62,6 +69,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/devices/{id}/events", auth.Bearer(s.Token, http.HandlerFunc(s.deviceEvents)))
 	mux.Handle("POST /api/v1/devices/{id}/ack", auth.Bearer(s.Token, http.HandlerFunc(s.deviceAck)))
 	mux.Handle("GET /api/v1/devices/{id}/keys", auth.Bearer(s.Token, http.HandlerFunc(s.deviceKeys)))
+
+	// IPv6 & DDNS Control Plane routes
+	mux.Handle("PUT /api/v1/devices/{id}/network-state", auth.Bearer(s.Token, http.HandlerFunc(s.putDeviceNetworkState)))
+	mux.Handle("GET /api/v1/devices/{id}/network-state", auth.Bearer(s.Token, http.HandlerFunc(s.getDeviceNetworkState)))
+	mux.Handle("GET /api/v1/devices/{id}/ipv6", auth.Bearer(s.Token, http.HandlerFunc(s.getDeviceIPv6Text)))
+	mux.Handle("PUT /api/v1/devices/{id}/network-prefixes", auth.Bearer(s.Token, http.HandlerFunc(s.putRouterPrefixes)))
+	mux.Handle("GET /api/v1/networks/{id}/prefixes", auth.Bearer(s.Token, http.HandlerFunc(s.getNetworkPrefixes)))
 
 	return mux
 }
@@ -392,3 +406,223 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func RedactedRequest(r *http.Request) string {
 	return r.Method + " " + r.URL.Path + " authorization=" + strings.Repeat("*", len(r.Header.Get("Authorization")))
 }
+
+type deviceNetworkStateReq struct {
+	NetworkID     string                            `json:"network_id"`
+	Revision      uint64                            `json:"revision"`
+	ObservedAt    time.Time                         `json:"observed_at"`
+	IPv6Addresses []networkaddr.ReportedIPv6Address `json:"ipv6_addresses"`
+}
+
+func (s *Server) putDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
+	if s.DeviceStateService == nil {
+		http.Error(w, "device state service not configured", http.StatusNotImplemented)
+		return
+	}
+	devID := r.PathValue("id")
+	if strings.TrimSpace(devID) == "" {
+		http.Error(w, "missing device id", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+	var req deviceNetworkStateReq
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid JSON request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.ObservedAt.IsZero() {
+		req.ObservedAt = time.Now().UTC()
+	}
+
+	st, changed, err := s.DeviceStateService.UpdateReportedAddresses(
+		devID, req.NetworkID, req.Revision, req.ObservedAt, req.IPv6Addresses,
+	)
+	if err != nil {
+		if errors.Is(err, devicestate.ErrRevisionConflict) || errors.Is(err, devicestate.ErrRevisionContentMismatch) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Calculate and update desired address against router prefixes
+	if s.PrefixStateService != nil {
+		activePrefixes, isStale, _ := s.PrefixStateService.GetActivePrefixes(req.NetworkID, time.Now().UTC(), 15*time.Minute)
+		if !isStale && len(activePrefixes) > 0 {
+			validCandidates := prefixstate.Intersect(st.ReportedAddresses, activePrefixes)
+			if desiredIP, ok := prefixstate.SelectAddress(validCandidates, st.AppliedAddress); ok {
+				st.DesiredAddress = desiredIP.String()
+			} else {
+				st.DesiredAddress = ""
+			}
+			_ = s.DeviceStateService.Save(*st)
+		} else if len(st.ReportedAddresses) > 0 && st.DesiredAddress == "" {
+			st.DesiredAddress = st.ReportedAddresses[0].Address
+			_ = s.DeviceStateService.Save(*st)
+		}
+	} else if len(st.ReportedAddresses) > 0 && st.DesiredAddress == "" {
+		st.DesiredAddress = st.ReportedAddresses[0].Address
+		_ = s.DeviceStateService.Save(*st)
+	}
+
+	if changed && s.DDNSService != nil {
+		go func() {
+			_ = s.DDNSService.ReconcileDevice(context.Background(), devID)
+		}()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted_revision": st.Revision,
+		"changed":           changed,
+		"sync_status":       st.SyncStatus,
+		"desired_address":   st.DesiredAddress,
+	})
+}
+
+func (s *Server) getDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
+	if s.DeviceStateService == nil {
+		http.Error(w, "device state service not configured", http.StatusNotImplemented)
+		return
+	}
+	devID := r.PathValue("id")
+	st, err := s.DeviceStateService.Get(devID)
+	if err != nil {
+		if errors.Is(err, devicestate.ErrDeviceNotFound) {
+			http.Error(w, "device network state not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) getDeviceIPv6Text(w http.ResponseWriter, r *http.Request) {
+	if s.DeviceStateService == nil {
+		http.Error(w, "device state service not configured", http.StatusNotImplemented)
+		return
+	}
+	devID := r.PathValue("id")
+	st, err := s.DeviceStateService.Get(devID)
+	if err != nil {
+		if errors.Is(err, devicestate.ErrDeviceNotFound) {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	ip := strings.TrimSpace(st.DesiredAddress)
+	if ip == "" && len(st.ReportedAddresses) > 0 {
+		ip = st.ReportedAddresses[0].Address
+	}
+
+	if ip == "" {
+		http.Error(w, "no valid IPv6 address found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(ip + "\n"))
+}
+
+type routerPrefixesReq struct {
+	NetworkID  string                           `json:"network_id"`
+	Revision   uint64                           `json:"revision"`
+	ObservedAt time.Time                        `json:"observed_at"`
+	Prefixes   []prefixstate.ReportedIPv6Prefix `json:"prefixes"`
+}
+
+func (s *Server) putRouterPrefixes(w http.ResponseWriter, r *http.Request) {
+	if s.PrefixStateService == nil {
+		http.Error(w, "prefix state service not configured", http.StatusNotImplemented)
+		return
+	}
+	routerDevID := r.PathValue("id")
+	if strings.TrimSpace(routerDevID) == "" {
+		http.Error(w, "missing router device id", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+	var req routerPrefixesReq
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid JSON request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.NetworkID == "" {
+		http.Error(w, "network_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.ObservedAt.IsZero() {
+		req.ObservedAt = time.Now().UTC()
+	}
+
+	st, changed, err := s.PrefixStateService.UpdateRouterPrefixes(
+		routerDevID, req.NetworkID, req.Revision, req.ObservedAt, req.Prefixes,
+	)
+	if err != nil {
+		if errors.Is(err, prefixstate.ErrRevisionConflict) || errors.Is(err, prefixstate.ErrRevisionContentMismatch) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Recalculate desired address for all devices in this network
+	if s.DeviceStateService != nil {
+		allDevs, _ := s.DeviceStateService.List()
+		activePrefixes, isStale, _ := s.PrefixStateService.GetActivePrefixes(req.NetworkID, time.Now().UTC(), 15*time.Minute)
+		for _, dev := range allDevs {
+			if dev.NetworkID == req.NetworkID {
+				if !isStale && len(activePrefixes) > 0 {
+					validCandidates := prefixstate.Intersect(dev.ReportedAddresses, activePrefixes)
+					if desiredIP, ok := prefixstate.SelectAddress(validCandidates, dev.AppliedAddress); ok {
+						dev.DesiredAddress = desiredIP.String()
+					} else {
+						dev.DesiredAddress = ""
+					}
+				}
+				_ = s.DeviceStateService.Save(dev)
+			}
+		}
+	}
+
+	if changed && s.DDNSService != nil {
+		go func() {
+			_ = s.DDNSService.ReconcileNetwork(context.Background(), req.NetworkID)
+		}()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accepted_revision": st.Revision,
+		"changed":           changed,
+	})
+}
+
+func (s *Server) getNetworkPrefixes(w http.ResponseWriter, r *http.Request) {
+	if s.PrefixStateService == nil {
+		http.Error(w, "prefix state service not configured", http.StatusNotImplemented)
+		return
+	}
+	netID := r.PathValue("id")
+	st, err := s.PrefixStateService.GetByNetwork(netID)
+	if err != nil {
+		if errors.Is(err, prefixstate.ErrNetworkNotFound) {
+			http.Error(w, "network prefix state not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+

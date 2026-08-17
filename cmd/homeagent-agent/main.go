@@ -18,11 +18,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"homeagent/internal/daemon"
 	"homeagent/internal/device"
+	"homeagent/internal/networkaddr"
+	"homeagent/internal/prefixstate"
 	"homeagent/internal/sshsync"
 )
 
@@ -111,6 +114,11 @@ func runDaemon(args []string) error {
 	token := fs.String("token", os.Getenv("HOMEAGENT_JOIN_TOKEN"), "join token")
 	deviceID := fs.String("device-id", "", "Device ID (defaults to auto-detected local device ID)")
 	authKeys := fs.String("authorized-keys", "", "Path to authorized_keys file")
+	networkID := fs.String("network-id", envOrDefault("HOMEAGENT_NETWORK_ID", "home"), "Network ID for IPv6/DDNS")
+	iface := fs.String("interface", os.Getenv("HOMEAGENT_INTERFACE"), "Interface name to monitor (defaults to auto)")
+	isRouter := fs.Bool("router", os.Getenv("HOMEAGENT_ROUTER") == "true", "Run as router agent reporting OpenWrt prefixes")
+	ipv6Report := fs.Bool("ipv6-report", true, "Enable IPv6 / prefix reporting")
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -142,7 +150,185 @@ func runDaemon(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if *ipv6Report {
+		if *isRouter {
+			startRouterPrefixReporter(ctx, *server, *token, devID, *networkID, *iface, logger)
+		} else {
+			startIPv6Reporter(ctx, *server, *token, devID, *networkID, *iface, logger)
+		}
+	}
+
 	return d.Run(ctx)
+}
+
+func envOrDefault(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
+}
+
+func startIPv6Reporter(ctx context.Context, serverURL, token, deviceID, networkID, iface string, logger *slog.Logger) {
+	var revision atomic.Uint64
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	sendReport := func(snapshot []networkaddr.ReportedIPv6Address) {
+		rev := revision.Add(1)
+		payload := map[string]any{
+			"network_id":     networkID,
+			"revision":       rev,
+			"observed_at":    time.Now().UTC(),
+			"ipv6_addresses": snapshot,
+		}
+		bodyBytes, _ := json.Marshal(payload)
+		reqURL := fmt.Sprintf("%s/api/v1/devices/%s/network-state", strings.TrimRight(serverURL, "/"), deviceID)
+
+		go func() {
+			backoff := 1 * time.Second
+			for attempt := 0; attempt < 5; attempt++ {
+				req, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(bodyBytes))
+				if err != nil {
+					return
+				}
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+
+				resp, err := client.Do(req)
+				if err == nil {
+					resp.Body.Close()
+					if resp.StatusCode < 400 {
+						if logger != nil {
+							logger.Info("ipv6_state_reported", "device_id", deviceID, "revision", rev, "addresses", len(snapshot))
+						}
+						return
+					}
+					if logger != nil {
+						logger.Warn("server_rejected_ipv6_state", "status", resp.StatusCode)
+					}
+				} else if logger != nil {
+					logger.Warn("failed_to_report_ipv6_state_retrying", "device_id", deviceID, "error", err, "retry_in", backoff)
+				}
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+					backoff *= 2
+				}
+			}
+		}()
+	}
+
+	watcher := networkaddr.NewWatcher(networkaddr.WatcherConfig{
+		Interface:         iface,
+		DebounceDuration:  2 * time.Second,
+		HeartbeatInterval: 10 * time.Minute,
+		Logger:            logger,
+		OnSnapshot: func(snapshot []networkaddr.ReportedIPv6Address, changed bool) {
+			sendReport(snapshot)
+		},
+	})
+
+	watcher.Start()
+	go func() {
+		<-ctx.Done()
+		watcher.Stop()
+	}()
+}
+
+
+func startRouterPrefixReporter(ctx context.Context, serverURL, token, routerID, networkID, iface string, logger *slog.Logger) {
+	var revision atomic.Uint64
+	client := &http.Client{Timeout: 10 * time.Second}
+	provider := prefixstate.NewOpenWrtUbusProvider(iface)
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		var lastPrefixes []prefixstate.ReportedIPv6Prefix
+
+		report := func(force bool) {
+			pCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			prefixes, err := provider.GetPrefixes(pCtx)
+			cancel()
+			if err != nil {
+				if logger != nil {
+					logger.Warn("failed_to_query_openwrt_prefixes", "error", err)
+				}
+				return
+			}
+
+			changed := !prefixstate.PrefixesEqual(lastPrefixes, prefixes)
+			if !changed && !force {
+				return
+			}
+			lastPrefixes = prefixes
+
+			rev := revision.Add(1)
+			payload := map[string]any{
+				"network_id":  networkID,
+				"revision":    rev,
+				"observed_at": time.Now().UTC(),
+				"prefixes":    prefixes,
+			}
+			bodyBytes, _ := json.Marshal(payload)
+			reqURL := fmt.Sprintf("%s/api/v1/devices/%s/network-prefixes", strings.TrimRight(serverURL, "/"), routerID)
+
+			go func() {
+				backoff := 1 * time.Second
+				for attempt := 0; attempt < 5; attempt++ {
+					req, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(bodyBytes))
+					if err != nil {
+						return
+					}
+					req.Header.Set("Authorization", "Bearer "+token)
+					req.Header.Set("Content-Type", "application/json")
+
+					resp, err := client.Do(req)
+					if err == nil {
+						resp.Body.Close()
+						if resp.StatusCode < 400 {
+							if logger != nil {
+								logger.Info("router_prefixes_reported", "router_id", routerID, "network_id", networkID, "revision", rev, "prefixes", len(prefixes))
+							}
+							return
+						}
+						if logger != nil {
+							logger.Warn("server_rejected_router_prefixes", "status", resp.StatusCode)
+						}
+					} else if logger != nil {
+						logger.Warn("failed_to_report_router_prefixes_retrying", "router_id", routerID, "error", err, "retry_in", backoff)
+					}
+
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(backoff):
+						backoff *= 2
+					}
+				}
+			}()
+		}
+
+
+		// Initial report
+		report(true)
+
+		heartbeat := time.NewTicker(10 * time.Minute)
+		defer heartbeat.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				report(false)
+			case <-heartbeat.C:
+				report(true)
+			}
+		}
+	}()
 }
 
 func runService(args []string) error {

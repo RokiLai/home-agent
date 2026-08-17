@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -17,6 +19,10 @@ import (
 
 	"homeagent/internal/api"
 	"homeagent/internal/broker"
+	"homeagent/internal/ddns"
+	"homeagent/internal/ddns/providers/cloudflare"
+	"homeagent/internal/devicestate"
+	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 )
@@ -42,6 +48,8 @@ func main() {
 		err = list(cfg)
 	case "sync", "ssh-test":
 		err = syncCommand(cfg, rest)
+	case "ipv6":
+		err = ipv6Command(cfg, rest)
 	default:
 		usage()
 	}
@@ -50,7 +58,7 @@ func main() {
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|sync|ssh-test> [flags] [device-id]")
+	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|sync|ssh-test|ipv6> [flags] [device-id]")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "homeagent-server:", err); os.Exit(1) }
@@ -111,16 +119,60 @@ func serve(c config) error {
 	}
 	eventBroker := broker.New()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	devStateSvc := devicestate.NewService(nil)
+	prefixStateSvc := prefixstate.NewService(nil)
+
+	var ddnsSvc *ddns.Service
+	cfToken := os.Getenv("HOMEAGENT_CLOUDFLARE_TOKEN")
+	if cfToken != "" {
+		cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
+		cfClient, err := cloudflare.NewClient(cloudflare.Config{
+			APIToken: cfToken,
+			ZoneID:   cfZoneID,
+		})
+		if err != nil {
+			logger.Error("failed_to_init_cloudflare_client", "error", err)
+		} else {
+			ddnsCfg := ddns.Config{
+				Enabled:  true,
+				Networks: make(map[string]ddns.NetworkConfig),
+				Devices:  make(map[string]ddns.DeviceConfig),
+			}
+			// Example or env-driven configuration
+			netID := env("HOMEAGENT_DDNS_NETWORK_ID", "home")
+			routerID := os.Getenv("HOMEAGENT_DDNS_ROUTER_ID")
+			if routerID != "" {
+				ddnsCfg.Networks[netID] = ddns.NetworkConfig{
+					RouterDeviceID: routerID,
+					PrefixStateTTL: 15 * time.Minute,
+				}
+			}
+			targetDevID := os.Getenv("HOMEAGENT_DDNS_DEVICE_ID")
+			record := os.Getenv("HOMEAGENT_DDNS_RECORD")
+			if targetDevID != "" && record != "" {
+				ddnsCfg.Devices[targetDevID] = ddns.DeviceConfig{
+					NetworkID: netID,
+					Record:    record,
+				}
+			}
+			ddnsSvc = ddns.NewService(ddnsCfg, devStateSvc, prefixStateSvc, cfClient, logger)
+		}
+	}
+
 	handler := (&api.Server{
-		Registry:       r,
-		Broker:         eventBroker,
-		ACLPath:        filepath.Join(c.dataDir, "acl.yaml"),
-		Token:          c.token,
-		AdminPublicKey: pub,
-		Sync:           syncer,
-		Log:            logger,
-		DownloadsDir:   c.downloads,
-		ScriptsDir:     c.scripts,
+		Registry:           r,
+		Broker:             eventBroker,
+		ACLPath:            filepath.Join(c.dataDir, "acl.yaml"),
+		Token:              c.token,
+		AdminPublicKey:     pub,
+		Sync:               syncer,
+		Log:                logger,
+		DownloadsDir:       c.downloads,
+		ScriptsDir:         c.scripts,
+		DeviceStateService: devStateSvc,
+		PrefixStateService: prefixStateSvc,
+		DDNSService:        ddnsSvc,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -133,6 +185,9 @@ func serve(c config) error {
 	}()
 	if syncer != nil {
 		go syncer.SyncAll(context.Background())
+	}
+	if ddnsSvc != nil {
+		ddnsSvc.StartBackgroundSweep(ctx, 1*time.Minute)
 	}
 	logger.Info("server_started", "listen", c.listen)
 	err = server.ListenAndServe()
@@ -207,3 +262,27 @@ func syncCommand(c config, args []string) error {
 	}
 	return nil
 }
+
+func ipv6Command(c config, args []string) error {
+	if len(args) < 1 {
+		return errors.New("device ID is required")
+	}
+	devID := args[0]
+	r, _, _, err := components(c)
+	if err != nil {
+		return err
+	}
+	d, err := r.Get(devID)
+	if err != nil {
+		return fmt.Errorf("get device %s: %w", devID, err)
+	}
+	for _, raw := range d.Addresses {
+		ip := net.ParseIP(raw)
+		if ip != nil && ip.To4() == nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+			fmt.Println(ip.String())
+			return nil
+		}
+	}
+	return fmt.Errorf("no valid IPv6 found for device %s", devID)
+}
+

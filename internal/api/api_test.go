@@ -16,9 +16,12 @@ import (
 
 	"homeagent/internal/broker"
 	"homeagent/internal/device"
+	"homeagent/internal/devicestate"
+	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 )
+
 
 func TestRegisterListDelete(t *testing.T) {
 	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
@@ -399,3 +402,100 @@ func TestSyncDeviceRejectsUnknownDevice(t *testing.T) {
 		t.Fatalf("unknown device sync returned %d, want 404", w.Code)
 	}
 }
+
+func TestDeviceNetworkStateAndPrefixAPI(t *testing.T) {
+	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	b := broker.New()
+	devSvc := devicestate.NewService(nil)
+	prefSvc := prefixstate.NewService(nil)
+
+	s := &Server{
+		Registry:           r,
+		Broker:             b,
+		Token:              "secret",
+		DeviceStateService: devSvc,
+		PrefixStateService: prefSvc,
+	}
+	handler := s.Handler()
+
+	// 1. PUT network-state for dev-1
+	body := `{
+		"network_id": "home",
+		"revision": 1,
+		"observed_at": "2026-08-17T12:00:00Z",
+		"ipv6_addresses": [
+			{"address": "240e:10::1", "interface": "en0"}
+		]
+	}`
+	req := httptest.NewRequest("PUT", "/api/v1/devices/dev-1/network-state", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT network-state returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2. GET network-state for dev-1
+	req = httptest.NewRequest("GET", "/api/v1/devices/dev-1/network-state", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET network-state returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. PUT older revision -> 409 Conflict
+	olderBody := `{
+		"network_id": "home",
+		"revision": 0,
+		"ipv6_addresses": []
+	}`
+	req = httptest.NewRequest("PUT", "/api/v1/devices/dev-1/network-state", strings.NewReader(olderBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for older revision, got %d", w.Code)
+	}
+
+	// 4. PUT router network-prefixes
+	prefBody := `{
+		"network_id": "home",
+		"revision": 1,
+		"observed_at": "2026-08-17T12:00:00Z",
+		"prefixes": [
+			{"prefix": "240e:10::/64"}
+		]
+	}`
+	req = httptest.NewRequest("PUT", "/api/v1/devices/router-1/network-prefixes", strings.NewReader(prefBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT network-prefixes returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. GET network prefixes
+	req = httptest.NewRequest("GET", "/api/v1/networks/home/prefixes", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET prefixes returned %d: %s", w.Code, w.Body.String())
+	}
+
+	// 6. GET /api/v1/devices/dev-1/ipv6 (plain text endpoint for ddns-go)
+	req = httptest.NewRequest("GET", "/api/v1/devices/dev-1/ipv6", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /ipv6 returned %d: %s", w.Code, w.Body.String())
+	}
+	gotIP := strings.TrimSpace(w.Body.String())
+	if gotIP != "240e:10::1" {
+		t.Fatalf("expected 240e:10::1, got %q", gotIP)
+	}
+}
+
+

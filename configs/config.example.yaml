@@ -9,3 +9,20 @@ auth:
   join_token: "CHANGE_ME"
 sync:
   enabled: true
+ipv6_ddns:
+  enabled: true
+  empty_address_grace_period: "10m"
+  sync_timeout: "10s"
+  ttl: 120
+  provider: "cloudflare"
+  credentials_file: "/var/lib/homeagent/ddns-credentials"
+  networks:
+    home:
+      router_device_id: "openwrt-router-ab12cd34"
+      prefix_state_ttl: "15m"
+  devices:
+    macbook-pro-ab12cd34:
+      network_id: "home"
+      record: "macbook.example.com"
+      interface: "en0"
+
