@@ -32,7 +32,9 @@ fi
 chmod 755 "$tmp_file"
 install_dir=${HOMEAGENT_INSTALL_DIR:-}
 if [ -z "$install_dir" ]; then
-  if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+  if [ "$os" = "darwin" ]; then
+    install_dir="/Applications/HomeAgent.app/Contents/MacOS"
+  elif [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
     install_dir="/usr/local/bin"
   elif [ -d "/usr/bin" ] && [ -w "/usr/bin" ]; then
     install_dir="/usr/bin"
@@ -41,12 +43,66 @@ if [ -z "$install_dir" ]; then
   fi
 fi
 
-if [ -w "$install_dir" ]; then
+if [ "$os" = "darwin" ]; then
+  case "$install_dir" in
+    *.app/Contents/MacOS) ;;
+    *) echo "on macOS, HOMEAGENT_INSTALL_DIR must end with .app/Contents/MacOS" >&2; exit 1 ;;
+  esac
+fi
+
+if [ "$os" = "darwin" ]; then
+  app_root=$(dirname "$(dirname "$install_dir")")
+  info_plist_tmp=$(mktemp "${TMPDIR:-/tmp}/homeagent-info.XXXXXX")
+  trap 'rm -f "$tmp_file" "$info_plist_tmp"' EXIT HUP INT TERM
+  cat >"$info_plist_tmp" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>homeagent-agent</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.homeagent.app</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>HomeAgent</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>HomeAgent needs to connect to the HomeAgent server on your local network.</string>
+</dict>
+</plist>
+EOF
+  if [ -d "$app_root" ] && [ ! -w "$app_root" ]; then
+    sudo mkdir -p "$install_dir"
+    sudo cp "$info_plist_tmp" "$app_root/Contents/Info.plist"
+  elif [ ! -w "$(dirname "$app_root")" ]; then
+    sudo mkdir -p "$install_dir"
+    sudo cp "$info_plist_tmp" "$app_root/Contents/Info.plist"
+  else
+    mkdir -p "$install_dir"
+    cp "$info_plist_tmp" "$app_root/Contents/Info.plist"
+  fi
+fi
+
+if [ -d "$install_dir" ] && [ -w "$install_dir" ]; then
   cp "$tmp_file" "$install_dir/homeagent-agent"
   chmod 755 "$install_dir/homeagent-agent"
 else
+  sudo mkdir -p "$install_dir"
   sudo cp "$tmp_file" "$install_dir/homeagent-agent"
   sudo chmod 755 "$install_dir/homeagent-agent"
+fi
+
+if [ "$os" = "darwin" ]; then
+  if ! codesign --verify --deep --strict "$app_root" >/dev/null 2>&1; then
+    echo "warning: HomeAgent.app is not signed with a verifiable release identity; Local Network permission may need to be granted again after upgrades" >&2
+  fi
 fi
 
 # 1. Register device to server

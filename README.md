@@ -77,6 +77,12 @@ HOMEAGENT_JOIN_TOKEN='replace-with-a-random-secret' \
 sh /tmp/homeagent-install.sh
 ```
 
+在 macOS 上，安装器默认将客户端安装为 `/Applications/HomeAgent.app`，并以
+`com.homeagent.app` 作为稳定的本地网络权限身份。正式发布的 macOS 产物应使用同一
+Developer ID 对完整 App Bundle 签名；未签名的开发构建在升级后可能需要重新授权
+“系统设置 → 隐私与安全性 → 本地网络”。LaunchAgent 会直接执行 Bundle 内二进制，
+不会通过 shell 转发。
+
 ### 2. Windows
 以**管理员权限**打开 PowerShell 执行：
 

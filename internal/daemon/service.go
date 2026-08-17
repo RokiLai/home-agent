@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 )
+
+const macOSBundleIdentifier = "com.homeagent.app"
 
 type ServiceManager struct {
 	BinaryPath string
@@ -150,31 +153,7 @@ func (s *ServiceManager) installLaunchd() error {
 		return err
 	}
 
-	plistContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.homeagent.agent</string>
-    <key>ProcessType</key>
-    <string>Interactive</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/zsh</string>
-        <string>-c</string>
-        <string>exec "%s" daemon --server "%s" --token "%s"</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/homeagent-agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/homeagent-agent.err</string>
-</dict>
-</plist>
-`, s.BinaryPath, s.ServerURL, s.Token)
+	plistContent := s.launchdPlistContent()
 
 	if err := os.WriteFile(plistPath, []byte(plistContent), 0644); err != nil {
 		return err
@@ -186,6 +165,49 @@ func (s *ServiceManager) installLaunchd() error {
 		return runCmd("launchctl", "load", "-w", plistPath)
 	}
 	return nil
+}
+
+func (s *ServiceManager) launchdPlistContent() string {
+	escape := func(value string) string {
+		var out bytes.Buffer
+		_ = xml.EscapeText(&out, []byte(value))
+		return out.String()
+	}
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.homeagent.agent</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>%s</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>%s</string>
+        <string>daemon</string>
+        <string>--server</string>
+        <string>%s</string>
+        <string>--token</string>
+        <string>%s</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/homeagent-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/homeagent-agent.err</string>
+</dict>
+</plist>
+`, macOSBundleIdentifier, escape(s.BinaryPath), escape(s.ServerURL), escape(s.Token))
 }
 
 func (s *ServiceManager) uninstallLaunchd() error {

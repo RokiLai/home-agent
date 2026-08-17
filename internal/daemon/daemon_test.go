@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,38 @@ import (
 
 	"homeagent/internal/sshsync"
 )
+
+func TestLaunchdPlistAssociatesStableAppIdentity(t *testing.T) {
+	mgr := &ServiceManager{
+		BinaryPath: "/Applications/HomeAgent.app/Contents/MacOS/homeagent-agent",
+		ServerURL:  "http://192.168.31.64:8888?a=1&b=2",
+		Token:      `token\"; touch /tmp/injected; #`,
+	}
+	plist := mgr.launchdPlistContent()
+
+	for _, want := range []string{
+		"<key>AssociatedBundleIdentifiers</key>",
+		"<string>com.homeagent.app</string>",
+		"<key>LimitLoadToSessionType</key>",
+		"<string>/Applications/HomeAgent.app/Contents/MacOS/homeagent-agent</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("launchd plist missing %q:\n%s", want, plist)
+		}
+	}
+	if strings.Contains(plist, "/bin/zsh") || strings.Contains(plist, "<string>-c</string>") {
+		t.Fatalf("launchd plist must execute the agent directly, got:\n%s", plist)
+	}
+	if strings.Contains(plist, "a=1&b=2") {
+		t.Fatalf("launchd plist contains unescaped XML data:\n%s", plist)
+	}
+	var decoded struct {
+		XMLName xml.Name
+	}
+	if err := xml.Unmarshal([]byte(plist), &decoded); err != nil {
+		t.Fatalf("launchd plist is not valid XML: %v", err)
+	}
+}
 
 func TestDaemonSSEAndACKFlow(t *testing.T) {
 	tempDir := t.TempDir()
