@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeAgent 控制平面 - 设备状态与公钥管理</title>
+  <link rel="stylesheet" href="/static/style.css?v=27">
+</head>
+<body>
+  <!-- Mobile Sidebar Backdrop -->
+  <div id="sidebarBackdrop" class="sidebar-backdrop hidden"></div>
+
+  <div class="admin-wrapper">
+    <!-- Left Navigation Sidebar -->
+    <aside id="appSidebar" class="app-sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="logo-badge">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+              <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-title">HomeAgent</div>
+            <div class="brand-subtitle">Control Plane</div>
+          </div>
+        </div>
+        <button id="sidebarCloseBtn" class="btn-sidebar-close" title="收起菜单" aria-label="收起管理菜单">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Navigation Menu -->
+      <nav class="sidebar-nav">
+        <div class="nav-section-label">管理菜单</div>
+        <a href="#/dashboard" class="nav-item active" data-page="dashboard" id="navDashboard">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/>
+            <rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          <span class="nav-text">仪表盘概览</span>
+        </a>
+
+        <a href="#/devices" class="nav-item" data-page="devices" id="navDevices">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          <span class="nav-text">设备管理</span>
+          <span class="nav-badge" id="navDeviceBadge">0</span>
+        </a>
+
+        <a href="#/onboarding" class="nav-item" data-page="onboarding" id="navOnboarding">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+          <span class="nav-text">快速接入向导</span>
+        </a>
+
+        <a href="#/github" class="nav-item" data-page="github" id="navGithub">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          <span class="nav-text">GitHub 凭据同步</span>
+        </a>
+
+		<a href="#/commands" class="nav-item" data-page="commands" id="navCommands">
+		  <span class="nav-icon" aria-hidden="true">▣</span>
+		  <span class="nav-text">操作历史</span>
+		</a>
+
+        <div class="nav-section-label">系统</div>
+        <a href="#/settings" class="nav-item" data-page="settings" id="navSettings">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          <span class="nav-text">系统设置</span>
+        </a>
+      </nav>
+
+      <!-- Sidebar Footer Info -->
+      <div class="sidebar-footer">
+        <div class="sidebar-status-card">
+          <div class="status-indicator">
+            <span class="pulse-dot"></span>
+            <span id="liveStatusText">实时连接中</span>
+          </div>
+          <div class="sidebar-meta-row">
+            <span class="text-muted">凭据状态:</span>
+            <span id="sidebarTokenStatus" class="font-mono text-emerald">已配置</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <div class="admin-main">
+      <!-- Top Header / Bar -->
+      <header class="top-header">
+        <div class="top-header-left">
+          <button id="sidebarToggleBtn" class="btn-sidebar-toggle" title="展开/收起菜单" aria-label="展开或收起管理菜单" aria-expanded="false">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+          <div class="page-title-group">
+            <h1 class="page-title" id="currentPageTitle" tabindex="-1" title="仪表盘概览" aria-label="仪表盘概览">仪表盘概览</h1>
+            <span class="page-desc text-muted" id="currentPageDesc">全网设备状态监控与控制平面总览</span>
+          </div>
+        </div>
+
+        <div class="header-actions" id="headerActions">
+          <button id="refreshBtn" class="btn btn-icon" title="刷新数据" aria-label="刷新数据">
+            <svg id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
+          <div class="user-profile-widget" id="userProfileWidget">
+            <span class="user-badge" id="adminUsernameDisplay">admin</span>
+            <button id="btnLogout" class="btn btn-secondary btn-sm" title="退出当前管理会话" aria-label="退出当前管理会话">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              <span>登出</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Global Stats Bar -->
+      <section class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon icon-indigo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+              <line x1="6" y1="6" x2="6.01" y2="6"/>
+              <line x1="6" y1="18" x2="6.01" y2="18"/>
+            </svg>
+          </div>
+          <div class="stat-data">
+            <div class="stat-label">已接入设备</div>
+            <div class="stat-value" id="statTotalDevices">-</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon icon-emerald">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <polyline points="9 12 11 14 15 10"/>
+            </svg>
+          </div>
+          <div class="stat-data">
+            <div class="stat-label">已同步 (Synced)</div>
+            <div class="stat-value text-emerald" id="statSyncedDevices">-</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon icon-amber">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          </div>
+          <div class="stat-data">
+            <div class="stat-label">待处理 / 异常</div>
+            <div class="stat-value text-amber" id="statPendingDevices">-</div>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon icon-violet">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <div class="stat-data">
+            <div class="stat-label">服务端配置 Hash</div>
+            <div class="stat-value text-violet" id="statLatestVersion">-</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Dynamic Page Container -->
+      <main class="page-content-wrapper">
+
+        <!-- 1. PAGE: DASHBOARD -->
+        <section id="pageDashboard" class="page-view active">
+          <div class="dashboard-grid">
+            <!-- Left: Quick Status & Device Overview -->
+            <div class="dashboard-main-col">
+              <div class="content-panel">
+                <div class="panel-header">
+                  <div class="panel-title-group">
+                    <h2 class="panel-title">设备健康度概览</h2>
+                    <span class="panel-count" id="dashboardDeviceCount">0 台设备</span>
+                  </div>
+                  <a href="#/devices" class="btn btn-secondary btn-sm">进入设备管理 &rarr;</a>
+                </div>
+                <div id="dashboardDeviceSummary" class="device-summary-grid">
+                  <!-- Dynamic brief list or cards -->
+                </div>
+              </div>
+
+              <!-- Quick Onboarding Banner -->
+              <div class="content-panel onboarding-banner-card">
+                <div class="onboarding-banner-header">
+                  <div>
+                    <h3 class="panel-title" style="font-size: 1rem;">快速接入新设备</h3>
+                    <p class="sidebar-card-desc" style="margin-top: 4px;">无需手动配置密钥，在新机器上运行单行命令即刻接入控制平面：</p>
+                  </div>
+                  <a href="#/onboarding" class="btn btn-primary btn-sm">接入向导 &rarr;</a>
+                </div>
+                <div class="code-box" style="margin-top: 10px;">
+                  <code id="dashboardInstallPreviewCode">正在生成安装命令...</code>
+                  <button id="dashboardCopyBtn" class="btn btn-copy" title="复制命令">复制</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Activity Logs & GitHub Widget -->
+            <div class="dashboard-side-col">
+              <!-- GitHub Widget Preview -->
+              <div class="sidebar-card">
+                <div class="sidebar-card-header">
+                  <div class="sidebar-card-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    <span>GitHub 凭据同步状态</span>
+                  </div>
+                  <a href="#/github" class="btn-text">管理 &rarr;</a>
+                </div>
+                <div id="dashboardGithubContent">
+                  <!-- Synced brief state -->
+                </div>
+              </div>
+
+              <!-- Live Activity Log -->
+              <div class="sidebar-card">
+                <div class="sidebar-card-header">
+                  <div class="sidebar-card-title">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                    </svg>
+                    <span>控制平面动态日志</span>
+                  </div>
+                  <button id="clearLogsBtn" class="btn-text">清空</button>
+                </div>
+                <div id="eventLogContainer" class="event-log-list">
+                  <div class="log-item">
+                    <span class="log-time">00:00:00</span>
+                    <span class="log-badge badge-info">INIT</span>
+                    <span class="log-msg">页面初始化就绪</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. PAGE: DEVICES -->
+        <section id="pageDevices" class="page-view">
+          <!-- Global Batch Actions Panel -->
+          <div class="content-panel batch-actions-panel dashboard-actions-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">全网设备批量控制</h2>
+                <span class="panel-count text-muted">向全网受管节点下发最新配置同步或自升级指令</span>
+              </div>
+              <div class="batch-actions-group dashboard-actions-group">
+                <button id="btnSyncAll" class="btn btn-primary" title="向全网所有设备触发一次配置下发与公钥同步">
+                  <svg id="syncAllIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                  </svg>
+                  <span id="syncAllBtnText">全网同步</span>
+                </button>
+                <button id="btnUpgradeAll" class="btn btn-secondary" title="向全网所有已连接设备下发通道内自升级指令">
+                  <svg id="upgradeAllIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 19V5M5 12l7-7 7 7"/>
+                  </svg>
+                  <span id="upgradeAllBtnText">全网升级</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="content-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">已接入设备矩阵</h2>
+                <span class="panel-count" id="deviceListCount">0 台设备</span>
+              </div>
+              <div class="panel-filter-row">
+                <div class="filter-pills" id="deviceFilterPills">
+                  <button class="filter-pill active" data-filter="all">全部</button>
+                  <button class="filter-pill" data-filter="healthy">健康</button>
+                  <button class="filter-pill" data-filter="degraded">异常</button>
+                  <button class="filter-pill" data-filter="synced">已同步</button>
+                  <button class="filter-pill" data-filter="pending">待同步</button>
+                </div>
+                <input type="search" id="deviceSearchInput" name="device_search" class="search-input" placeholder="搜索设备名、IP 或 ID..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+              </div>
+            </div>
+
+            <div id="deviceContainer" class="device-grid">
+              <!-- Dynamically populated device cards -->
+              <div class="loading-state">
+                <div class="spinner"></div>
+                <p>正在拉取设备接入列表...</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. PAGE: ONBOARDING -->
+        <section id="pageOnboarding" class="page-view">
+          <div class="onboarding-container">
+            <div class="content-panel">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h2 class="panel-title">单行快速接入向导 (Zero-Touch)</h2>
+                </div>
+              </div>
+              <p class="sidebar-card-desc" style="font-size: 0.88rem; margin-bottom: 12px;">
+                在待接入主机上运行下方单行命令，将自动使用短期 Claim Token 完成设备认领并生成专属凭证：
+              </p>
+
+              <div class="claim-token-status-bar" style="display:flex;align-items:center;justify-content:space-between;background:#070a12;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid var(--border-color);">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <span class="pulse-dot"></span>
+                  <span id="claimTokenCountdown" style="font-size:0.82rem;font-weight:600;color:#38bdf8;">正在生成设备接入凭据...</span>
+                </div>
+                <button id="btnRefreshClaimToken" class="btn btn-secondary btn-sm" title="刷新并重新生成 15 分钟临时凭据">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                  </svg>
+                  <span>刷新凭据</span>
+                </button>
+              </div>
+
+              <!-- OS Tabs -->
+              <div class="tab-group" style="margin-bottom: 14px;">
+                <button class="tab-btn active" data-os="darwin">macOS (Launchd)</button>
+                <button class="tab-btn" data-os="linux">Linux (Systemd)</button>
+                <button class="tab-btn" data-os="openwrt">OpenWrt (Procd)</button>
+                <button class="tab-btn" data-os="windows">Windows (Service)</button>
+              </div>
+
+              <div class="code-box" style="padding: 16px;">
+                <code id="installCommandCode" style="font-size: 0.82rem;">正在生成安装命令...</code>
+                <button id="copyCommandBtn" class="btn btn-primary" title="复制命令">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span>一键复制</span>
+                </button>
+              </div>
+
+              <div class="onboarding-guide-grid">
+                <div class="guide-step-card">
+                  <div class="step-num">1</div>
+                  <div class="step-content">
+                    <div class="step-title">执行安装命令</div>
+                    <div class="step-desc">复制上述单行命令至目标主机的终端（Terminal / PowerShell）中运行。</div>
+                  </div>
+                </div>
+
+                <div class="guide-step-card">
+                  <div class="step-num">2</div>
+                  <div class="step-content">
+                    <div class="step-title">自动注册接入</div>
+                    <div class="step-desc">客户端将自动采集主机名、MAC、内网 IPv4 与公网 IPv6 地址上报至中心。</div>
+                  </div>
+                </div>
+
+                <div class="guide-step-card">
+                  <div class="step-num">3</div>
+                  <div class="step-content">
+                    <div class="step-title">实时安全互联</div>
+                    <div class="step-desc">建立 SSE 实时控制通道，享受 SSH 免密连接、通道内静默升级与 Wake on LAN 唤醒。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 4. PAGE: GITHUB SYNC -->
+        <section id="pageGithub" class="page-view">
+          <div class="github-page-container">
+            <!-- GitHub Auth Status Panel -->
+            <div class="content-panel">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h2 class="panel-title">GitHub 凭据同步 (OAuth & SSH)</h2>
+                </div>
+              </div>
+
+              <!-- Shared GitHub Card Body -->
+              <div id="githubCardBody" class="github-card-content" style="max-width: 600px;">
+                <div id="githubLoading" class="text-muted" style="font-size:0.85rem;">正在获取 GitHub 认证状态...</div>
+                
+                <div id="githubConnected" class="hidden">
+                  <div class="github-user-row">
+                    <div class="github-avatar-box">
+                      <img id="githubAvatar" src="" alt="avatar" class="github-avatar" referrerpolicy="no-referrer">
+                      <div id="githubAvatarFallback" class="github-avatar-fallback hidden">GH</div>
+                    </div>
+                    <div class="github-user-meta">
+                      <div class="github-username" id="githubUsername">-</div>
+                      <div class="github-token-hint text-muted" id="githubTokenHint">Token: -</div>
+                    </div>
+                  </div>
+                  <div class="github-sync-stats">
+                    <span>已授权设备: <strong id="githubSyncedCount">0</strong> / <strong id="githubTotalCount">0</strong></span>
+                  </div>
+                  <div class="github-btn-row">
+                    <button id="btnGithubDisconnect" class="btn btn-danger btn-sm">解绑 GitHub 账号</button>
+                  </div>
+                </div>
+
+                <div id="githubDisconnected" class="hidden">
+                  <p class="sidebar-card-desc" style="margin-bottom:14px; font-size: 0.88rem;">
+                    一次授权，所有明确允许的设备自动获得 Git 传输（Ed25519 密钥）与 GitHub CLI (<code>gh</code>) 访问权限，无需在每台机器上单独登录。
+                  </p>
+                  <button id="btnGithubLogin" class="btn btn-primary">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" style="margin-right:6px;">
+                      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                    授权连接 GitHub 账号 (Device Flow)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Device GitHub Authorization Matrix -->
+            <div class="content-panel" style="margin-top: 20px;">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h3 class="panel-title">设备 GitHub 访问授权列表</h3>
+                </div>
+              </div>
+              <p class="sidebar-card-desc">为指定机器开启 GitHub 凭据同步后，控制平面将为该设备自动生成专属 SSH Key 并添加到您的 GitHub 账户，且自动同步 CLI Token：</p>
+              
+              <div id="githubDeviceMatrix" class="github-device-matrix" style="margin-top: 14px;">
+                <!-- Dynamically populated per device -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+		<!-- 5. PAGE: COMMANDS -->
+		<section id="pageCommands" class="page-view">
+		  <div class="content-panel">
+			<div class="panel-header"><div class="panel-title-group"><h2 class="panel-title">操作历史</h2><span class="panel-count" id="commandCount">0 条</span></div></div>
+			<div class="table-responsive"><table class="data-table"><thead><tr><th>时间</th><th>设备</th><th>类型</th><th>状态</th><th>结果</th></tr></thead><tbody id="commandsTableBody"><tr><td colspan="5">正在加载…</td></tr></tbody></table></div>
+		  </div>
+		</section>
+
+        <!-- 6. PAGE: SETTINGS -->
+        <section id="pageSettings" class="page-view">
+          <div class="settings-container">
+            <div class="content-panel">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h2 class="panel-title">系统与认证配置</h2>
+                </div>
+              </div>
+
+              <div class="settings-form" style="max-width: 600px; margin-top: 10px;">
+                <div class="form-group">
+                  <label for="settingsServerUrlInput">服务端 API 地址 (可选自定义覆盖)</label>
+                  <input type="text" id="settingsServerUrlInput" class="form-control" placeholder="http://127.0.0.1:8888" autocomplete="off">
+                  <span class="text-muted" style="font-size: 0.74rem; margin-top: 4px;">默认留空即使用当前网页同源 Host。</span>
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                  <button id="settingsSaveBtn" class="btn btn-primary">保存配置</button>
+                  <button id="settingsClearBtn" class="btn btn-secondary">重置地址</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="content-panel" style="margin-top: 20px;">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h3 class="panel-title">管理员密码修改</h3>
+                  <p class="panel-desc" style="margin-top: 4px; font-size: 0.8rem; color: var(--text-muted);">修改当前 Web 控制台管理员登录密码</p>
+                </div>
+              </div>
+
+              <form id="changePasswordForm" style="max-width: 600px; margin-top: 10px;">
+                <div id="changePasswordAlert" class="alert-error hidden" style="margin-bottom: 14px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+                
+                <div class="form-group">
+                  <label for="oldPasswordInput">当前旧密码</label>
+                  <input type="password" id="oldPasswordInput" class="form-control" placeholder="••••••••" required autocomplete="current-password">
+                </div>
+
+                <div class="form-group">
+                  <label for="newPasswordInput">新密码 (至少 6 位)</label>
+                  <input type="password" id="newPasswordInput" class="form-control" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+                </div>
+
+                <div class="form-group">
+                  <label for="confirmPasswordInput">确认新密码</label>
+                  <input type="password" id="confirmPasswordInput" class="form-control" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                  <button type="submit" id="savePasswordBtn" class="btn btn-primary">更新密码</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="content-panel" style="margin-top: 20px;">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h3 class="panel-title">关于与运行环境</h3>
+                </div>
+              </div>
+              <div class="detail-row" style="padding: 6px 0;">
+                <span class="detail-label">服务版本</span>
+				<span class="detail-value font-mono">v0.6.0</span>
+              </div>
+              <div class="detail-row" style="padding: 6px 0;">
+                <span class="detail-label">控制平面协议</span>
+                <span class="detail-value font-mono">SSE (Server-Sent Events) + HTTP REST</span>
+              </div>
+              <div class="detail-row" style="padding: 6px 0;">
+                <span class="detail-label">DDNS 提供商</span>
+                <span class="detail-value font-mono">Cloudflare API v4</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- Modal: IP List Modal -->
+  <div id="ipModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="ipModalTitle">IP 地址列表</h3>
+        <button id="closeIpModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="ipModalDesc">点击任意地址即可一键复制到剪贴板：</p>
+        <div id="ipModalList" class="ip-modal-list">
+          <!-- Dynamically populated IP rows -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="doneIpModalBtn" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Device Modal -->
+  <div id="renameModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">编辑设备备注名</h3>
+        <button id="closeRenameModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">为设备设置自定义备注名（别名），便于在控制台和网络拓扑中快速辨识：</p>
+        <div class="form-group">
+          <label>设备 ID / 原始主机名</label>
+          <div id="renameDeviceInfo" class="device-info-preview text-muted"></div>
+        </div>
+        <div class="form-group">
+          <label>物理 MAC 地址 (客户端自动上报)</label>
+          <div id="renameDeviceMac" class="device-info-preview text-muted"></div>
+        </div>
+        <div class="form-group">
+          <label for="deviceAliasInput">设备备注名 / 别名</label>
+          <input type="text" id="deviceAliasInput" class="form-control" placeholder="例如：客厅软路由、办公电脑、备份NAS...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelRenameModalBtn" class="btn btn-secondary">取消</button>
+        <button id="saveRenameBtn" class="btn btn-primary">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: GitHub Device Flow Modal -->
+  <div id="githubDeviceModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">GitHub 设备授权登录</h3>
+        <button id="closeGithubDeviceModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="text-align:center;">
+        <p class="modal-desc">请在 GitHub 授权页面中输入下方验证码以完成绑定：</p>
+        <div style="margin:20px 0;">
+          <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:6px;">一次性验证码 (User Code)</div>
+          <div id="githubUserCodeDisplay" style="font-size:2rem;font-weight:700;letter-spacing:4px;font-family:monospace;color:var(--primary);">-</div>
+          <button id="copyGithubUserCodeBtn" class="btn btn-secondary btn-sm" style="margin-top:8px;">复制验证码</button>
+        </div>
+        <div style="margin:20px 0;">
+          <a id="githubVerifyLink" href="https://github.com/login/device" target="_blank" class="btn btn-primary" style="display:inline-flex;align-items:center;text-decoration:none;padding:8px 18px;">
+            打开 GitHub 授权页面
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-left:6px;">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+          </a>
+        </div>
+        <div id="githubAuthPollingStatus" class="text-muted" style="font-size:0.85rem;">
+          <span class="pulse-dot" style="display:inline-block;width:8px;height:8px;background:var(--primary);border-radius:50%;margin-right:6px;"></span>
+          等待您在浏览器中授权确认...
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelGithubDeviceModalBtn" class="btn btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Device Health & Metrics Modal -->
+  <div id="deviceHealthModal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 650px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="healthModalTitle">设备健康与运行详情</h3>
+          <div class="font-mono text-muted" id="healthModalSubtitle" style="font-size:0.75rem;margin-top:2px;"></div>
+        </div>
+        <button id="closeHealthModalBtn" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+        <!-- Status Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(255,255,255,0.03);border-radius:8px;margin-bottom:14px;border:1px solid var(--border-color);">
+          <span style="font-size:0.88rem;font-weight:600;">综合健康状态</span>
+          <span id="healthModalStatusBadge" style="font-size:0.78rem;font-weight:700;padding:3px 10px;border-radius:6px;">-</span>
+        </div>
+
+        <!-- Active Issues Section -->
+        <div style="margin-bottom:14px;">
+          <h4 style="font-size:0.85rem;margin-bottom:8px;color:var(--text-secondary);">活跃异常与规则判定</h4>
+          <div id="healthModalReasonsList" style="display:flex;flex-direction:column;gap:8px;">
+            <!-- Dynamic reasons -->
+          </div>
+        </div>
+
+        <!-- Runtime Metrics Section -->
+        <div style="margin-bottom:14px;">
+          <h4 style="font-size:0.85rem;margin-bottom:8px;color:var(--text-secondary);">运行指标事实 (Facts)</h4>
+          <div id="healthModalFactsGrid" class="health-facts-grid">
+            <!-- Dynamic metrics -->
+          </div>
+        </div>
+
+        <!-- Health Events Timeline Section -->
+        <div>
+          <h4 style="font-size:0.85rem;margin-bottom:8px;color:var(--text-secondary);">健康状态变动历史</h4>
+          <div id="healthModalEventsTimeline" style="font-size:0.8rem;display:flex;flex-direction:column;gap:6px;">
+            <!-- Dynamic events -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="closeHealthModalBtnFooter" class="btn btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Login Overlay Modal -->
+  <div id="loginOverlay" class="login-overlay hidden">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo-badge" style="margin: 0 auto 12px; width: 44px; height: 44px; display:flex; align-items:center; justify-content:center; background: var(--primary); border-radius:10px;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            <polyline points="9 22 9 12 15 12 15 22"/>
+          </svg>
+        </div>
+        <h2 class="login-title">HomeAgent 控制台</h2>
+        <p class="login-subtitle">请输入管理员账号密码以管理家庭网络与设备</p>
+      </div>
+
+      <form id="loginForm" class="login-form">
+        <div id="loginError" class="alert-error hidden" style="margin-bottom: 12px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+        
+        <div class="form-group">
+          <label for="loginUsername">管理员账号</label>
+          <input type="text" id="loginUsername" class="form-control" placeholder="admin" required autocomplete="username">
+        </div>
+
+        <div class="form-group">
+          <label for="loginPassword">登录密码</label>
+          <input type="password" id="loginPassword" class="form-control" placeholder="••••••••" required autocomplete="current-password">
+        </div>
+
+        <div class="form-group-checkbox" style="display:flex;align-items:center;gap:8px;margin: 12px 0 18px;">
+          <input type="checkbox" id="loginRememberMe" checked>
+          <label for="loginRememberMe" style="font-size:0.85rem;color:var(--text-secondary);cursor:pointer;">记住登录状态 (7天)</label>
+        </div>
+
+        <button type="submit" id="loginSubmitBtn" class="btn btn-primary" style="width:100%;padding:10px;justify-content:center;">
+          <span>登入控制台</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden">
+    <span id="toastMsg">已复制到剪贴板</span>
+  </div>
+
+  <script type="module" src="/static/app.js?v=31"></script>
+</body>
+</html>

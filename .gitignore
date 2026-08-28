@@ -1,0 +1,61 @@
+# Build outputs
+/bin/
+/dist/
+*.exe
+*.test
+coverage.out
+*.coverprofile
+
+# Runtime data and credentials
+/data/
+devices.json
+join-token
+keys/
+ssh/known_hosts
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Logs and local environment
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+config.yaml
+config.local.yaml
+ddns-credentials
+credentials*
+secrets*
+
+# Certificates and keystores
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+
+# Databases and database backups
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.bak
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Task specs
+/changes/
+
+# AI agent specs & memory
+/AGENTS.md
+

@@ -1,0 +1,10 @@
+task: device-shutdown
+description: Implement remote device shutdown capability via SSE push control plane, cross-platform poweroff execution, ACK reconciliation, REST API, CLI command, Web UI modal confirmation, and design documentation.
+allowed_paths:
+  - changes/device-shutdown.yaml
+  - docs/device-remote-shutdown-design-plan.md
+  - internal/daemon/**
+  - internal/api/**
+  - internal/ui/**
+  - cmd/homeagent-server/**
+  - README.md

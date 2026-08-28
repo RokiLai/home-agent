@@ -1,0 +1,12 @@
+task: quality-gate-pipeline
+description: 建立本地 CI 回归测试和质量门禁流水线，统一变更范围、静态检查、测试、覆盖率及条件验收的执行与证据汇总。
+allowed_paths:
+  - changes/quality-gate-pipeline.yaml
+  - docs/quality-gate-pipeline-design.md
+  - scripts/quality-gate.sh
+  - scripts/check-change-scope.sh
+  - scripts/check-architecture-deps.sh
+  - scripts/check-diff-coverage.sh
+  - internal/qualitygate/**
+  - cmd/homeagent-quality-gate/**
+  - README.md
