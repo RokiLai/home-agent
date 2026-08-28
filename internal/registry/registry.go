@@ -1,4 +1,4 @@
-// Package registry 提供设备信息的持久化注册表管理、原子文件读写与元数据更新能力。
+// Package registry 提供设备信息的持久化注册表管理、原子文件读写、共享授权与所有权转移能力。
 package registry
 
 import (
@@ -21,20 +21,29 @@ import (
 var ErrNotFound = errors.New("device not found")
 
 type fileData struct {
-	Devices []device.Device `json:"devices"`
+	Devices []device.Device      `json:"devices"`
+	Grants  []device.DeviceGrant `json:"grants,omitempty"`
 }
 
-// Registry 维护内存中的设备列表，并通过线程安全的互斥锁提供持久化 JSON 文件的原子读写操作。
+// Registry 维护内存中的设备与共享授权列表，并通过线程安全的互斥锁提供持久化 JSON 文件的原子读写操作。
 type Registry struct {
 	mu              sync.RWMutex
 	path            string
 	devices         map[string]device.Device
+	grants          map[string]map[string]*device.DeviceGrant // deviceID -> userID -> DeviceGrant
+	userGrants      map[string]map[string]*device.DeviceGrant // userID -> deviceID -> DeviceGrant
+	defaultOwnerID  string
 	legacyJoinToken string
 }
 
-// Open 从指定的 JSON 文件路径加载设备注册表；若文件不存在则初始化空注册表。
+// Open 从指定的 JSON 文件路径加载设备与授权注册表；若文件不存在则初始化空注册表。
 func Open(path string) (*Registry, error) {
-	r := &Registry{path: path, devices: map[string]device.Device{}}
+	r := &Registry{
+		path:       path,
+		devices:    map[string]device.Device{},
+		grants:     map[string]map[string]*device.DeviceGrant{},
+		userGrants: map[string]map[string]*device.DeviceGrant{},
+	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
@@ -50,14 +59,37 @@ func Open(path string) (*Registry, error) {
 		d.Addresses = device.FilterAndSortAddresses(d.Addresses)
 		r.devices[d.ID] = d
 	}
+	for _, g := range data.Grants {
+		gCopy := g
+		r.addGrantIndexLocked(&gCopy)
+	}
 	_ = r.writeLocked()
 	return r, nil
 }
 
-// Save 校验并持久化保存设备信息。
-// 若设备已存在，则自动保留其 Alias、MAC、GitHub 状态等用户配置字段，并更新 LastSeenAt 时间。
-func (r *Registry) Save(d device.Device) (device.Device, error) {
+// SetDefaultOwnerID 设置首选 Owner ID 用于存量设备向后兼容归属绑定
+func (r *Registry) SetDefaultOwnerID(ownerID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.defaultOwnerID = strings.TrimSpace(ownerID)
+	// 若存量设备没有 OwnerUserID，自动绑定
+	if r.defaultOwnerID != "" {
+		changed := false
+		for id, d := range r.devices {
+			if d.OwnerUserID == "" {
+				d.OwnerUserID = r.defaultOwnerID
+				r.devices[id] = d
+				changed = true
+			}
+		}
+		if changed {
+			_ = r.writeLocked()
+		}
+	}
+}
 
+// Save 校验并持久化保存设备信息。
+func (r *Registry) Save(d device.Device) (device.Device, error) {
 	if err := device.Validate(d); err != nil {
 		return device.Device{}, err
 	}
@@ -73,6 +105,9 @@ func (r *Registry) Save(d device.Device) (device.Device, error) {
 	now := time.Now().UTC()
 	if old, ok := r.devices[d.ID]; ok {
 		d.CreatedAt = old.CreatedAt
+		if d.OwnerUserID == "" {
+			d.OwnerUserID = old.OwnerUserID
+		}
 		if d.Alias == "" {
 			d.Alias = old.Alias
 		}
@@ -120,6 +155,9 @@ func (r *Registry) Save(d device.Device) (device.Device, error) {
 		}
 	} else {
 		d.CreatedAt = now
+		if d.OwnerUserID == "" && r.defaultOwnerID != "" {
+			d.OwnerUserID = r.defaultOwnerID
+		}
 	}
 	d.Addresses = device.FilterAndSortAddresses(d.Addresses)
 	d.UpdatedAt, d.LastSeenAt = now, now
@@ -148,6 +186,21 @@ func (r *Registry) List() []device.Device {
 	return list
 }
 
+// FilterDevicesForUser 返回对指定用户可见的所有设备列表快照
+func (r *Registry) FilterDevicesForUser(userID string, isOwnerRole bool) []device.Device {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	list := make([]device.Device, 0, len(r.devices))
+	for _, d := range r.devices {
+		if isOwnerRole || d.OwnerUserID == userID || r.hasUserGrantLocked(userID, d.ID) {
+			list = append(list, d)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
+}
+
 // Get 根据设备 ID 获取设备详情；若不存在则返回 ErrNotFound。
 func (r *Registry) Get(id string) (device.Device, error) {
 	r.mu.RLock()
@@ -159,7 +212,7 @@ func (r *Registry) Get(id string) (device.Device, error) {
 	return d, nil
 }
 
-// Delete 从注册表中删除指定设备并同步写入磁盘。
+// Delete 从注册表中删除指定设备，并原子级联清理其所有共享授权记录。
 func (r *Registry) Delete(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -168,11 +221,286 @@ func (r *Registry) Delete(id string) error {
 		return ErrNotFound
 	}
 	delete(r.devices, id)
+	// 级联清理该设备的全部 Grant
+	if devGrants, ok := r.grants[id]; ok {
+		for uID := range devGrants {
+			if ug, exists := r.userGrants[uID]; exists {
+				delete(ug, id)
+			}
+		}
+		delete(r.grants, id)
+	}
+
 	if err := r.writeLocked(); err != nil {
 		r.devices[id] = old
 		return err
 	}
 	return nil
+}
+
+// DeleteDevicesByOwner 级联物理删除指定用户所拥有的全部设备及授权（支持用户删除时物理级联清理）
+func (r *Registry) DeleteDevicesByOwner(ownerUserID string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var deletedIDs []string
+	for id, d := range r.devices {
+		if d.OwnerUserID == ownerUserID {
+			deletedIDs = append(deletedIDs, id)
+			delete(r.devices, id)
+			if devGrants, ok := r.grants[id]; ok {
+				for uID := range devGrants {
+					if ug, exists := r.userGrants[uID]; exists {
+						delete(ug, id)
+					}
+				}
+				delete(r.grants, id)
+			}
+		}
+	}
+
+	if len(deletedIDs) > 0 {
+		if err := r.writeLocked(); err != nil {
+			return nil, err
+		}
+	}
+	return deletedIDs, nil
+}
+
+// SetGrant 创建或更新单台设备的共享授权，禁止向设备所有者创建冗余授权
+func (r *Registry) SetGrant(deviceID, userID string, level device.GrantLevel, grantedBy string) (*device.DeviceGrant, error) {
+	if !device.IsValidGrantLevel(level) {
+		return nil, device.ErrInvalidGrantLevel
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if d.OwnerUserID == userID {
+		return nil, device.ErrGrantToOwner
+	}
+
+	now := time.Now().UTC()
+	var g *device.DeviceGrant
+	if devGrants, exists := r.grants[deviceID]; exists {
+		if existing, found := devGrants[userID]; found {
+			existing.Level = level
+			existing.GrantedBy = grantedBy
+			existing.UpdatedAt = now
+			existing.Revision++
+			g = existing
+		}
+	}
+
+	if g == nil {
+		g = &device.DeviceGrant{
+			ID:        device.GenerateGrantID(),
+			DeviceID:  deviceID,
+			UserID:    userID,
+			Level:     level,
+			GrantedBy: grantedBy,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Revision:  1,
+		}
+		r.addGrantIndexLocked(g)
+	}
+
+	if err := r.writeLocked(); err != nil {
+		return nil, err
+	}
+
+	gCopy := *g
+	return &gCopy, nil
+}
+
+// RevokeGrant 撤销指定用户的设备共享授权
+func (r *Registry) RevokeGrant(deviceID, userID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.devices[deviceID]; !ok {
+		return ErrNotFound
+	}
+
+	if devGrants, ok := r.grants[deviceID]; ok {
+		delete(devGrants, userID)
+	}
+	if uGrants, ok := r.userGrants[userID]; ok {
+		delete(uGrants, deviceID)
+	}
+
+	return r.writeLocked()
+}
+
+// ListGrants 列出指定设备的所有共享授权
+func (r *Registry) ListGrants(deviceID string) []*device.DeviceGrant {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var list []*device.DeviceGrant
+	if devGrants, ok := r.grants[deviceID]; ok {
+		for _, g := range devGrants {
+			gCopy := *g
+			list = append(list, &gCopy)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
+}
+
+// GetUserGrants 列出指定用户获得的所有设备授权
+func (r *Registry) GetUserGrants(userID string) []*device.DeviceGrant {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var list []*device.DeviceGrant
+	if uGrants, ok := r.userGrants[userID]; ok {
+		for _, g := range uGrants {
+			gCopy := *g
+			list = append(list, &gCopy)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].DeviceID < list[j].DeviceID })
+	return list
+}
+
+// TransferOwnership 原子转移设备所有权，清理新所有者冗余 Grant，并可选择为旧所有者保留共享权限
+func (r *Registry) TransferOwnership(deviceID, newOwnerID, currentActorID string, retainLevel *device.GrantLevel) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return ErrNotFound
+	}
+
+	oldOwnerID := d.OwnerUserID
+	d.OwnerUserID = newOwnerID
+	d.UpdatedAt = time.Now().UTC()
+	r.devices[deviceID] = d
+
+	// 清除新 Owner 的原有 Grant（因为 Owner 自动获得全量权限）
+	if devGrants, ok := r.grants[deviceID]; ok {
+		delete(devGrants, newOwnerID)
+	}
+	if uGrants, ok := r.userGrants[newOwnerID]; ok {
+		delete(uGrants, deviceID)
+	}
+
+	// 若显式指定为旧 Owner 保留权限
+	if retainLevel != nil && device.IsValidGrantLevel(*retainLevel) && oldOwnerID != "" && oldOwnerID != newOwnerID {
+		now := time.Now().UTC()
+		g := &device.DeviceGrant{
+			ID:        device.GenerateGrantID(),
+			DeviceID:  deviceID,
+			UserID:    oldOwnerID,
+			Level:     *retainLevel,
+			GrantedBy: currentActorID,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Revision:  1,
+		}
+		r.addGrantIndexLocked(g)
+	} else if oldOwnerID != "" {
+		// 默认切断旧 Owner 的所有访问权限
+		if devGrants, ok := r.grants[deviceID]; ok {
+			delete(devGrants, oldOwnerID)
+		}
+		if uGrants, ok := r.userGrants[oldOwnerID]; ok {
+			delete(uGrants, deviceID)
+		}
+	}
+
+	return r.writeLocked()
+}
+
+// addGrantIndexLocked 将 Grant 记录加入内存双向索引
+func (r *Registry) addGrantIndexLocked(g *device.DeviceGrant) {
+	if _, ok := r.grants[g.DeviceID]; !ok {
+		r.grants[g.DeviceID] = make(map[string]*device.DeviceGrant)
+	}
+	r.grants[g.DeviceID][g.UserID] = g
+
+	if _, ok := r.userGrants[g.UserID]; !ok {
+		r.userGrants[g.UserID] = make(map[string]*device.DeviceGrant)
+	}
+	r.userGrants[g.UserID][g.DeviceID] = g
+}
+
+func (r *Registry) hasUserGrantLocked(userID, deviceID string) bool {
+	if devGrants, ok := r.grants[deviceID]; ok {
+		_, found := devGrants[userID]
+		return found
+	}
+	return false
+}
+
+// ---------- 实现 auth.DeviceScopeResolver 接口 ----------
+
+// IsDeviceVisible 判定设备是否存在且对该用户是否可见（属于其所有或获得共享授权）
+func (r *Registry) IsDeviceVisible(userID string, deviceID string) (visible bool, exists bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return false, false
+	}
+	if d.OwnerUserID == userID || r.hasUserGrantLocked(userID, deviceID) {
+		return true, true
+	}
+	return false, true
+}
+
+// IsDeviceOwner 判定指定用户是否为该设备的所有者
+func (r *Registry) IsDeviceOwner(userID string, deviceID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return false
+	}
+	return d.OwnerUserID == userID
+}
+
+// HasDevicePermission 判定指定用户对该设备是否具备特定操作权限（基于设备授权级别）
+func (r *Registry) HasDevicePermission(userID string, deviceID string, perm auth.Permission) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	d, ok := r.devices[deviceID]
+	if !ok {
+		return false
+	}
+	if d.OwnerUserID == userID {
+		return true
+	}
+
+	devGrants, ok := r.grants[deviceID]
+	if !ok {
+		return false
+	}
+	g, ok := devGrants[userID]
+	if !ok {
+		return false
+	}
+
+	switch perm {
+	case auth.PermDevicesRead, auth.PermCommandsRead, auth.PermHealthRead, auth.PermAlertsRead:
+		return true
+	case auth.PermDevicesSync, auth.PermDevicesWake, auth.PermDevicesShutdown, auth.PermDevicesUpgrade, auth.PermCommandsCancel:
+		return g.Level == device.GrantLevelOperate || g.Level == device.GrantLevelManage
+	case auth.PermDevicesUpdate, auth.PermAlertsManage:
+		return g.Level == device.GrantLevelManage
+	default:
+		return false
+	}
 }
 
 // UpdateAlias 更新指定设备的自定义别名。
@@ -340,7 +668,6 @@ func (r *Registry) TouchLastSeen(id string) error {
 
 // UpdateSyncStatus 记录 Agent 状态 ACK 回执（同步状态、版本号、哈希、错误信息及最新活跃时间）。
 func (r *Registry) UpdateSyncStatus(id string, status string, version int64, hash string, errMsg string) error {
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d, ok := r.devices[id]
@@ -367,11 +694,26 @@ func (r *Registry) writeLocked() error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0700); err != nil {
 		return err
 	}
-	data := fileData{Devices: make([]device.Device, 0, len(r.devices))}
+
+	devicesList := make([]device.Device, 0, len(r.devices))
 	for _, d := range r.devices {
-		data.Devices = append(data.Devices, d)
+		devicesList = append(devicesList, d)
 	}
-	sort.Slice(data.Devices, func(i, j int) bool { return data.Devices[i].ID < data.Devices[j].ID })
+	sort.Slice(devicesList, func(i, j int) bool { return devicesList[i].ID < devicesList[j].ID })
+
+	grantsList := make([]device.DeviceGrant, 0)
+	for _, devGrants := range r.grants {
+		for _, g := range devGrants {
+			grantsList = append(grantsList, *g)
+		}
+	}
+	sort.Slice(grantsList, func(i, j int) bool { return grantsList[i].ID < grantsList[j].ID })
+
+	data := fileData{
+		Devices: devicesList,
+		Grants:  grantsList,
+	}
+
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err

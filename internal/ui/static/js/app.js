@@ -9,6 +9,7 @@ import { fetchGitHubStatus, startGitHubDeviceFlow, closeGithubDeviceModal, handl
 import { fetchDevices, handleSyncAll, handleUpgradeAll } from './devices/actions.js';
 import { renderDevices } from './devices/render.js';
 import { fetchCommands } from './commands.js';
+import { fetchUsersList } from './users.js';
 
 export function bindEventListeners() {
   const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
@@ -63,7 +64,10 @@ export function bindEventListeners() {
   if (loginForm) loginForm.addEventListener('submit', (e) => handleLogin(e, async () => {
     await fetchDevices();
     await fetchGitHubStatus();
-	await fetchCommands();
+    await fetchCommands();
+    if (state.currentUser && state.currentUser.role === 'owner') {
+      await fetchUsersList();
+    }
   }));
   if (btnLogout) btnLogout.addEventListener('click', handleLogout);
 
@@ -75,7 +79,10 @@ export function bindEventListeners() {
       spinRefresh();
       fetchDevices();
       fetchGitHubStatus();
-	  fetchCommands();
+      fetchCommands();
+      if (state.currentUser && state.currentUser.role === 'owner') {
+        fetchUsersList();
+      }
     });
   }
 
@@ -198,7 +205,11 @@ export function bindEventListeners() {
 }
 
 export async function init() {
-  setupRouter();
+  setupRouter((page) => {
+    if (page === 'users' && state.currentUser && state.currentUser.role === 'owner') {
+      fetchUsersList();
+    }
+  });
   bindEventListeners();
   initSettingsForm();
 
@@ -206,7 +217,10 @@ export async function init() {
   if (ok) {
     fetchDevices();
     fetchGitHubStatus();
-	fetchCommands();
+    fetchCommands();
+    if (state.currentUser && state.currentUser.role === 'owner') {
+      fetchUsersList();
+    }
   }
 
   // Auto refresh poll every 4 seconds
@@ -214,7 +228,10 @@ export async function init() {
     if (state.isAuthenticated) {
       fetchDevices();
       fetchGitHubStatus();
-	  fetchCommands();
+      fetchCommands();
+      if (state.currentPage === 'users' && state.currentUser && state.currentUser.role === 'owner') {
+        fetchUsersList();
+      }
     }
   }, 4000);
 }

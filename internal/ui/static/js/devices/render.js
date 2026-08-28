@@ -313,6 +313,14 @@ export function createDeviceCardHTML(d) {
             </div>
           </div>
 
+          <!-- Owner Info Row -->
+          ${d.owner_user_id ? `
+          <div class="detail-row">
+            <span class="detail-label">归属所有者</span>
+            <span class="detail-value font-mono text-xs" style="color:var(--indigo); font-weight:600;">${escapeHTML(d.owner_user_id)}</span>
+          </div>
+          ` : ''}
+
           <!-- Last Sync Time -->
           <div class="detail-row">
             <span class="detail-label">上次同步</span>
@@ -372,6 +380,26 @@ export function createDeviceCardHTML(d) {
                   <path d="M12 19V5M5 12l7-7 7 7"/>
                 </svg>
                 <span>${isUpgrading ? '正在自升级...' : '客户端自升级'}</span>
+              </button>
+              <div class="dropdown-divider"></div>
+              <button class="dropdown-item btn-share-device btn-menu-share" data-id="${escapeHTML(d.id)}" data-hostname="${escapeHTML(d.hostname || '')}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="18" cy="5" r="3"/>
+                  <circle cx="6" cy="12" r="3"/>
+                  <circle cx="18" cy="19" r="3"/>
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+                  <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                </svg>
+                <span>共享与授权管理</span>
+              </button>
+              <button class="dropdown-item btn-transfer-device btn-menu-transfer" data-id="${escapeHTML(d.id)}" data-hostname="${escapeHTML(d.hostname || '')}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="17 1 21 5 17 9"/>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                  <polyline points="7 23 3 19 7 15"/>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg>
+                <span>转移设备所有权</span>
               </button>
               <div class="dropdown-divider"></div>
               <button class="dropdown-item is-warning btn-shutdown-device btn-menu-shutdown ${!online ? 'is-offline' : ''} ${isShuttingDown ? 'is-shutting-down' : ''}"

@@ -30,6 +30,50 @@ export function showLoginError(msg) {
   }
 }
 
+export function updateRBACVisibility() {
+  const isOwner = state.currentUser && state.currentUser.role === 'owner';
+  const isViewer = state.currentUser && state.currentUser.role === 'viewer';
+
+  // 1. 用户管理导航项仅对 Owner 可见
+  const navUsers = document.getElementById('navUsers');
+  if (navUsers) {
+    if (isOwner) {
+      navUsers.classList.remove('hidden');
+    } else {
+      navUsers.classList.add('hidden');
+    }
+  }
+
+  // 2. 角色 Badge 标签展示
+  const adminRoleBadge = document.getElementById('adminRoleBadge');
+  if (adminRoleBadge && state.currentUser) {
+    const roleTextMap = { owner: '所有者 (Owner)', admin: '管理员 (Admin)', viewer: '只读访客 (Viewer)' };
+    adminRoleBadge.innerText = roleTextMap[state.currentUser.role] || state.currentUser.role;
+    adminRoleBadge.className = 'role-badge role-' + (state.currentUser.role || 'owner');
+  }
+
+  // 3. 只读访客 (Viewer) 隐藏危险操作按钮
+  const writeActionSelectors = [
+    '#btnUpgradeAll',
+    '#btnSyncAll',
+    '#btnOnboardingRegenToken',
+    '#btnSaveServerConfig',
+    '#savePasswordBtn'
+  ];
+  writeActionSelectors.forEach(sel => {
+    const el = document.querySelector(sel);
+    if (el) {
+      if (isViewer) {
+        el.classList.add('hidden-viewer');
+        el.setAttribute('disabled', 'true');
+      } else {
+        el.classList.remove('hidden-viewer');
+        el.removeAttribute('disabled');
+      }
+    }
+  });
+}
+
 export async function checkAuthStatus() {
   const adminUsernameDisplay = document.getElementById('adminUsernameDisplay');
   const sidebarTokenStatus = document.getElementById('sidebarTokenStatus');
@@ -38,6 +82,12 @@ export async function checkAuthStatus() {
     if (res.ok) {
       const data = await res.json();
       state.isAuthenticated = true;
+      state.currentUser = {
+        id: data.user_id || '',
+        username: data.username || 'admin',
+        role: data.role || 'owner',
+        permissions: data.permissions || []
+      };
       if (data.public_url) {
         state.publicUrl = data.public_url;
       }
@@ -49,6 +99,7 @@ export async function checkAuthStatus() {
         sidebarTokenStatus.innerText = '已登录';
         sidebarTokenStatus.className = 'font-mono text-emerald';
       }
+      updateRBACVisibility();
       return true;
     }
   } catch (e) {
@@ -102,16 +153,25 @@ export async function handleLogin(e, onLoginSuccess) {
 
     const data = await res.json();
     state.isAuthenticated = true;
+    if (data.user) {
+      state.currentUser = {
+        id: data.user.id || '',
+        username: data.user.username || username,
+        role: data.user.role || 'owner',
+        permissions: []
+      };
+    }
     hideLoginOverlay();
     if (adminUsernameDisplay) {
-      adminUsernameDisplay.innerText = data.username || username;
+      adminUsernameDisplay.innerText = (data.user && data.user.username) || username;
     }
     if (sidebarTokenStatus) {
       sidebarTokenStatus.innerText = '已登录';
       sidebarTokenStatus.className = 'font-mono text-emerald';
     }
+    updateRBACVisibility();
     showToast('登录成功');
-    addLog('success', `管理员 [${username}] 成功登入控制台`);
+    addLog('success', `用户 [${username}] 成功登入控制台`);
     if (onLoginSuccess) {
       await onLoginSuccess();
     }
@@ -133,9 +193,10 @@ export async function handleLogout() {
     });
   } catch (_) {}
   state.isAuthenticated = false;
+  state.currentUser = { id: '', username: '', role: 'owner', permissions: [] };
   showLoginOverlay();
   showToast('已安全登出');
-  addLog('info', '管理员已退出登录');
+  addLog('info', '用户已退出登录');
 }
 
 export async function handleChangePassword(e) {
@@ -191,8 +252,8 @@ export async function handleChangePassword(e) {
       return;
     }
 
-    showToast('管理员密码修改成功');
-    addLog('success', '管理员登录密码已成功更新');
+    showToast('登录密码修改成功');
+    addLog('success', '用户登录密码已成功更新');
     if (changePasswordForm) changePasswordForm.reset();
   } catch (err) {
     showChangePasswordError(err.message || '网络通信异常，请重试');

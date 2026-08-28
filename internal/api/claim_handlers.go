@@ -33,11 +33,13 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. 优先通过 EnrollmentManager 原子校验与扣减 Claim Token
+	// 1. 优先通过 EnrollmentManager 原子校验与扣减 Claim Token 并提取冻结的所有者
+	var tokenOwnerID string
 	authorized := false
 	if s.EnrollmentManager != nil {
-		if _, err := s.EnrollmentManager.ConsumeClaimToken(rawClaimToken); err == nil {
+		if tokenMeta, err := s.EnrollmentManager.ConsumeClaimToken(rawClaimToken); err == nil {
 			authorized = true
+			tokenOwnerID = tokenMeta.OwnerUserID
 		}
 	}
 
@@ -84,8 +86,13 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 确保 device_id 由服务端统一生成（解耦主机名/硬件标识）
+	// 确保 device_id 由服务端统一生成
 	d.ID = device.GenerateRandomID()
+
+	// 绑定 Token 冻结的所有权（不信任请求体提交的所有者）
+	if tokenOwnerID != "" {
+		d.OwnerUserID = tokenOwnerID
+	}
 
 	// 生成独立的 64 字符 Device Token，并仅将哈希存储在服务端
 	rawDeviceToken, err := auth.GenerateSecureToken("dev_", 32)
@@ -109,7 +116,7 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Log != nil {
-		s.Log.Info("device_claimed_successfully", "device_id", saved.ID, "hostname", saved.Hostname, "os", saved.OS, "arch", saved.Arch)
+		s.Log.Info("device_claimed_successfully", "device_id", saved.ID, "owner_user_id", saved.OwnerUserID, "hostname", saved.Hostname, "os", saved.OS, "arch", saved.Arch)
 	}
 
 	if s.Broker != nil {

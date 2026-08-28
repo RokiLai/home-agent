@@ -471,6 +471,24 @@ export function attachDeviceCardEvents() {
     });
   });
 
+  // Menu Share device
+  document.querySelectorAll('.btn-share-device').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeAllDropdowns();
+      openDeviceShareModal(btn.dataset.id, btn.dataset.hostname);
+    });
+  });
+
+  // Menu Transfer device ownership
+  document.querySelectorAll('.btn-transfer-device').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeAllDropdowns();
+      openDeviceTransferModal(btn.dataset.id, btn.dataset.hostname);
+    });
+  });
+
   // View Health Modal
   document.querySelectorAll('.btn-view-health').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -628,4 +646,242 @@ export async function openHealthModal(deviceID, triggerEl) {
       timeline.innerHTML = `<div class="text-muted">加载历史异常: ${escapeHTML(e.message)}</div>`;
     }
   }
+}
+
+// ----------------- 设备共享与转移模态框交互 -----------------
+
+export async function openDeviceShareModal(deviceId, hostname) {
+  state.currentShareDeviceId = deviceId;
+  const modal = document.getElementById('deviceShareModal');
+  const title = document.getElementById('shareModalDeviceTitle');
+  const userSelect = document.getElementById('shareTargetUserSelect');
+  const grantsList = document.getElementById('deviceGrantsList');
+
+  if (title) title.innerText = `${hostname || deviceId} (${deviceId})`;
+  if (modal) modal.classList.remove('hidden');
+
+  // 拉取现有用户列表以填充选择框
+  if (userSelect) {
+    userSelect.innerHTML = `<option value="">正在加载用户列表...</option>`;
+    try {
+      const uRes = await apiFetch(`${state.serverHost}/api/v1/users`);
+      if (uRes.ok) {
+        const uData = await uRes.json();
+        const users = uData.users || [];
+        userSelect.innerHTML = `<option value="">请选择目标用户...</option>` +
+          users.map(u => `<option value="${escapeHTML(u.id)}">${escapeHTML(u.username)} (${u.role})</option>`).join('');
+      }
+    } catch (_) {
+      userSelect.innerHTML = `<option value="">无法加载用户列表</option>`;
+    }
+  }
+
+  await refreshDeviceGrants(deviceId);
+}
+
+export function closeDeviceShareModal() {
+  const modal = document.getElementById('deviceShareModal');
+  if (modal) modal.classList.add('hidden');
+  state.currentShareDeviceId = '';
+}
+
+async function refreshDeviceGrants(deviceId) {
+  const container = document.getElementById('deviceGrantsList');
+  if (!container) return;
+  container.innerHTML = `<div class="text-muted text-xs">正在拉取已授权清单...</div>`;
+
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${deviceId}/grants`);
+    if (!res.ok) {
+      container.innerHTML = `<div class="text-rose text-xs">获取授权列表失败</div>`;
+      return;
+    }
+    const data = await res.json();
+    const grants = data.grants || [];
+    if (grants.length === 0) {
+      container.innerHTML = `<div class="text-muted text-xs py-2">当前设备未向任何其他用户共享。</div>`;
+      return;
+    }
+
+    container.innerHTML = grants.map(g => {
+      const levelTextMap = { read: '只读 (Read)', operate: '操作 (Operate)', manage: '管理 (Manage)' };
+      return `
+        <div class="grant-item-row">
+          <div>
+            <span class="font-mono font-medium text-xs">${escapeHTML(g.user_id)}</span>
+            <span class="badge badge-secondary ml-2">${levelTextMap[g.level] || g.level}</span>
+          </div>
+          <button class="btn btn-xs btn-danger-ghost" onclick="window.handleRevokeGrant('${escapeHTML(g.device_id)}', '${escapeHTML(g.user_id)}')">撤销</button>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = `<div class="text-rose text-xs">获取授权异常: ${escapeHTML(err.message)}</div>`;
+  }
+}
+
+export async function handlePutGrantSubmit(e) {
+  if (e) e.preventDefault();
+  if (!state.currentShareDeviceId) return;
+
+  const userSelect = document.getElementById('shareTargetUserSelect');
+  const levelSelect = document.getElementById('shareLevelSelect');
+  const alert = document.getElementById('shareModalAlert');
+
+  const targetUserId = userSelect ? userSelect.value : '';
+  const level = levelSelect ? levelSelect.value : 'read';
+
+  if (!targetUserId) {
+    if (alert) {
+      alert.innerText = '请选择目标获授权用户';
+      alert.classList.remove('hidden');
+    }
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${state.currentShareDeviceId}/grants/${targetUserId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level })
+    });
+
+    if (!res.ok) {
+      let msg = '授权失败';
+      try {
+        const errJson = await res.json();
+        if (errJson.message) msg = errJson.message;
+      } catch (_) {}
+      if (alert) {
+        alert.innerText = msg;
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    showToast('设备共享授权已成功下发');
+    if (alert) alert.classList.add('hidden');
+    await refreshDeviceGrants(state.currentShareDeviceId);
+  } catch (err) {
+    if (alert) {
+      alert.innerText = err.message || '网络异常';
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+export async function handleRevokeGrant(deviceId, userId) {
+  if (!confirm(`确认撤销用户 [${userId}] 对该设备的访问授权？`)) return;
+
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${deviceId}/grants/${userId}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) {
+      showToast('撤销授权失败');
+      return;
+    }
+    showToast('已撤销该用户的设备访问授权');
+    await refreshDeviceGrants(deviceId);
+  } catch (err) {
+    showToast(`撤销异常: ${err.message}`);
+  }
+}
+
+export async function openDeviceTransferModal(deviceId, hostname) {
+  state.currentTransferDeviceId = deviceId;
+  const modal = document.getElementById('deviceTransferModal');
+  const title = document.getElementById('transferModalDeviceTitle');
+  const userSelect = document.getElementById('transferNewOwnerSelect');
+  const alert = document.getElementById('transferModalAlert');
+
+  if (title) title.innerText = `${hostname || deviceId} (${deviceId})`;
+  if (alert) {
+    alert.classList.add('hidden');
+    alert.innerText = '';
+  }
+  if (modal) modal.classList.remove('hidden');
+
+  if (userSelect) {
+    userSelect.innerHTML = `<option value="">正在加载用户列表...</option>`;
+    try {
+      const uRes = await apiFetch(`${state.serverHost}/api/v1/users`);
+      if (uRes.ok) {
+        const uData = await uRes.json();
+        const users = uData.users || [];
+        userSelect.innerHTML = `<option value="">请选择新所有者...</option>` +
+          users.map(u => `<option value="${escapeHTML(u.id)}">${escapeHTML(u.username)} (${u.role})</option>`).join('');
+      }
+    } catch (_) {
+      userSelect.innerHTML = `<option value="">无法加载用户列表</option>`;
+    }
+  }
+}
+
+export function closeDeviceTransferModal() {
+  const modal = document.getElementById('deviceTransferModal');
+  if (modal) modal.classList.add('hidden');
+  state.currentTransferDeviceId = '';
+}
+
+export async function handleTransferSubmit(e) {
+  if (e) e.preventDefault();
+  if (!state.currentTransferDeviceId) return;
+
+  const userSelect = document.getElementById('transferNewOwnerSelect');
+  const alert = document.getElementById('transferModalAlert');
+  const newOwnerId = userSelect ? userSelect.value : '';
+
+  if (!newOwnerId) {
+    if (alert) {
+      alert.innerText = '请选择新所有者用户';
+      alert.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (!confirm(`确认将设备所有权转移给用户 [${newOwnerId}]？\n\n转移后原所有者将默认失去该设备的管理权限。`)) return;
+
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${state.currentTransferDeviceId}/transfer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_owner_id: newOwnerId })
+    });
+
+    if (!res.ok) {
+      let msg = '所有权转移失败';
+      try {
+        const errJson = await res.json();
+        if (errJson.message) msg = errJson.message;
+      } catch (_) {}
+      if (alert) {
+        alert.innerText = msg;
+        alert.classList.remove('hidden');
+      }
+      return;
+    }
+
+    closeDeviceTransferModal();
+    showToast('设备所有权已成功转移');
+    addLog('info', `设备 [${state.currentTransferDeviceId}] 所有权已转移至用户 [${newOwnerId}]`);
+    await fetchDevices();
+    renderDevices();
+  } catch (err) {
+    if (alert) {
+      alert.innerText = err.message || '网络异常';
+      alert.classList.remove('hidden');
+    }
+  }
+}
+
+// 暴露给全局 window 供 HTML inline 事件调用
+if (typeof window !== 'undefined') {
+  window.openDeviceShareModal = openDeviceShareModal;
+  window.closeDeviceShareModal = closeDeviceShareModal;
+  window.handlePutGrantSubmit = handlePutGrantSubmit;
+  window.handleRevokeGrant = handleRevokeGrant;
+  window.openDeviceTransferModal = openDeviceTransferModal;
+  window.closeDeviceTransferModal = closeDeviceTransferModal;
+  window.handleTransferSubmit = handleTransferSubmit;
 }

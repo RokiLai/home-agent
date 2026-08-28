@@ -38,6 +38,10 @@ import (
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
+	"homeagent/internal/store"
+	"homeagent/internal/store/consul"
+	"homeagent/internal/store/filestore"
+	"homeagent/internal/store/mysqlstore"
 	"homeagent/internal/version"
 	"homeagent/internal/wol"
 )
@@ -45,6 +49,8 @@ import (
 type config struct {
 	listen, publicURL, dataDir, token, downloads, scripts string
 	adminUser, adminPass                                  string
+	storageDriver, mysqlDSN                               string
+	consulAddr, consulService                             string
 	timeout                                               time.Duration
 	sync                                                  bool
 	mac, broadcast                                        string
@@ -105,15 +111,19 @@ func parseConfig(name string, args []string) (config, []string, error) {
 		publicURL: env("HOMEAGENT_PUBLIC_URL", ""),
 		dataDir:   defaultData,
 		token:     os.Getenv("HOMEAGENT_JOIN_TOKEN"),
-		adminUser: env("HOMEAGENT_ADMIN_USERNAME", "admin"),
-		adminPass: os.Getenv("HOMEAGENT_ADMIN_PASSWORD"),
-		downloads: os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
-		scripts:   env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
-		timeout:   5 * time.Second,
-		sync:      true,
-		burst:     3,
-		port:      9,
-		interval:  50 * time.Millisecond,
+		adminUser:     env("HOMEAGENT_ADMIN_USERNAME", "admin"),
+		adminPass:     os.Getenv("HOMEAGENT_ADMIN_PASSWORD"),
+		storageDriver: env("HOMEAGENT_STORAGE_DRIVER", "file"),
+		mysqlDSN:      os.Getenv("HOMEAGENT_MYSQL_DSN"),
+		consulAddr:    env("HOMEAGENT_CONSUL_ADDRESS", "127.0.0.1:8500"),
+		consulService: os.Getenv("HOMEAGENT_CONSUL_MYSQL_SERVICE"),
+		downloads:     os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
+		scripts:       env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
+		timeout:       5 * time.Second,
+		sync:          true,
+		burst:         3,
+		port:          9,
+		interval:      50 * time.Millisecond,
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&c.listen, "listen", c.listen, "listen address")
@@ -122,6 +132,10 @@ func parseConfig(name string, args []string) (config, []string, error) {
 	fs.StringVar(&c.token, "join-token", c.token, "legacy join token (deprecated)")
 	fs.StringVar(&c.adminUser, "admin-user", c.adminUser, "admin username")
 	fs.StringVar(&c.adminPass, "admin-pass", c.adminPass, "admin password")
+	fs.StringVar(&c.storageDriver, "storage-driver", c.storageDriver, "storage driver: file (default) or mysql")
+	fs.StringVar(&c.mysqlDSN, "mysql-dsn", c.mysqlDSN, "MySQL DSN connection string")
+	fs.StringVar(&c.consulAddr, "consul-addr", c.consulAddr, "Consul agent HTTP address")
+	fs.StringVar(&c.consulService, "consul-mysql-service", c.consulService, "Consul service name for MySQL/ProxySQL")
 	fs.StringVar(&c.downloads, "downloads-dir", c.downloads, "agent binary directory")
 	fs.StringVar(&c.scripts, "scripts-dir", c.scripts, "installer scripts directory")
 	fs.DurationVar(&c.timeout, "ssh-timeout", c.timeout, "SSH timeout")
@@ -200,10 +214,62 @@ func serve(c config) error {
 		logger.Info("commands_interrupted_on_startup", "count", interrupted)
 	}
 
+	// 存储驱动初始化（支持默认 file 与可选 mysql + consul 服务发现）
+	var auditLogger auth.AuditLogger = auth.NewMemoryAuditLogger(500)
+	var ms *mysqlstore.MySQLStore
+	if c.storageDriver == "mysql" {
+		mysqlDSN := c.mysqlDSN
+		if mysqlDSN == "" && c.consulService != "" {
+			consulResolver := consul.NewResolver(c.consulAddr, 3*time.Second)
+			dsn, err := consulResolver.BuildMySQLDSN(context.Background(), c.consulService, env("HOMEAGENT_MYSQL_USER", "homeagent"), os.Getenv("HOMEAGENT_MYSQL_PASSWORD"), env("HOMEAGENT_MYSQL_DATABASE", "homeagent"), "")
+			if err != nil {
+				return fmt.Errorf("consul resolve mysql service failed: %w", err)
+			}
+			mysqlDSN = dsn
+			logger.Info("consul_resolved_mysql_dsn_successfully", "service", c.consulService)
+		}
+		if mysqlDSN == "" {
+			return errors.New("storage driver 'mysql' requires HOMEAGENT_MYSQL_DSN or HOMEAGENT_CONSUL_MYSQL_SERVICE")
+		}
+
+		var err error
+		ms, err = mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: mysqlDSN})
+		if err != nil {
+			return fmt.Errorf("init mysql store: %w", err)
+		}
+		defer ms.Close()
+
+		// 检查并执行自动迁移（若 MySQL 为空且本地存在旧 json 文件）
+		authPath := filepath.Join(c.dataDir, "auth.json")
+		devicesPath := filepath.Join(c.dataDir, "devices.json")
+		fs, err := filestore.NewFileStore(authPath, devicesPath)
+		if err == nil {
+			migrated, migErr := store.AutoMigrateFileStoreToMySQL(context.Background(), fs, fs, ms, ms, authPath, devicesPath)
+			if migErr != nil {
+				logger.Warn("mysql_auto_migration_warning", "error", migErr)
+			} else if migrated {
+				logger.Info("mysql_auto_migrated_from_filestore_successfully")
+			}
+		}
+		auditLogger = ms.AsAuditLogger()
+		logger.Info("storage_driver_initialized", "driver", "mysql")
+	} else {
+		logger.Info("storage_driver_initialized", "driver", "file", "data_dir", c.dataDir)
+	}
+
 	// 初始化认证与会话子系统
 	sessionMgr, err := auth.NewSessionManager(filepath.Join(c.dataDir, "auth.json"))
 	if err != nil {
 		return fmt.Errorf("init session manager: %w", err)
+	}
+
+	// 若启用了 MySQL，将 MySQL 中持久化的用户同步到 SessionManager 内存
+	if ms != nil {
+		if dbUsers, err := ms.ListUsers(); err == nil && len(dbUsers) > 0 {
+			for _, u := range dbUsers {
+				_ = sessionMgr.UpsertUser(u)
+			}
+		}
 	}
 
 	adminUser := c.adminUser
@@ -367,6 +433,7 @@ func serve(c config) error {
 		CommandTimeouts:    commandTimeouts,
 		Health:             healthSvc,
 		Alerting:           alertingSvc,
+		AuditLogger:        auditLogger,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

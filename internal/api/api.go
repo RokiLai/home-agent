@@ -46,6 +46,8 @@ import (
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
 	Registry              *registry.Registry
+	Authorizer            *auth.Authorizer
+	AuditLogger           auth.AuditLogger
 	Broker                *broker.Broker
 	SessionManager        *auth.SessionManager
 	EnrollmentManager     *auth.EnrollmentManager
@@ -99,12 +101,24 @@ func (s *Server) Handler() http.Handler {
 		s.Registry.SetLegacyJoinToken(s.Token)
 	}
 
-	// 统一鉴权分流中间件
-	var requireAdmin func(http.Handler) http.Handler
+	if s.Registry != nil && s.Authorizer == nil {
+		s.Authorizer = auth.NewAuthorizer(s.Registry)
+	}
+
+	// 统一细粒度权限鉴权中间件
+	requirePerm := func(perm auth.Permission, resResolver func(r *http.Request) auth.ResourceRef) func(http.Handler) http.Handler {
+		if s.SessionManager != nil {
+			return auth.RequirePermission(s.SessionManager, s.Authorizer, perm, resResolver)
+		}
+		return func(next http.Handler) http.Handler { return auth.Bearer(s.Token, next) }
+	}
+
+	// 统一基础 Session 鉴权中间件（用于自身状态、登出等基础操作）
+	var requireSession func(http.Handler) http.Handler
 	if s.SessionManager != nil {
-		requireAdmin = auth.RequireAdmin(s.SessionManager)
+		requireSession = auth.RequireAdmin(s.SessionManager)
 	} else {
-		requireAdmin = func(next http.Handler) http.Handler { return auth.Bearer(s.Token, next) }
+		requireSession = func(next http.Handler) http.Handler { return auth.Bearer(s.Token, next) }
 	}
 
 	var requireDevice func(http.Handler) http.Handler
@@ -142,49 +156,68 @@ func (s *Server) Handler() http.Handler {
 	// Auth routes (Public)
 	mux.HandleFunc("POST /api/v1/auth/login", s.authLogin)
 
-	// Auth routes (Admin Session Protected)
-	mux.Handle("GET /api/v1/auth/me", requireAdmin(http.HandlerFunc(s.authMe)))
-	mux.Handle("POST /api/v1/auth/logout", requireAdmin(http.HandlerFunc(s.authLogout)))
-	mux.Handle("POST /api/v1/auth/password", requireAdmin(http.HandlerFunc(s.authChangePassword)))
+	// Auth routes (Session Protected)
+	mux.Handle("GET /api/v1/auth/me", requireSession(http.HandlerFunc(s.authMe)))
+	mux.Handle("POST /api/v1/auth/logout", requireSession(http.HandlerFunc(s.authLogout)))
+	mux.Handle("POST /api/v1/auth/logout-all", requireSession(http.HandlerFunc(s.authLogoutAll)))
+	mux.Handle("POST /api/v1/auth/password", requireSession(http.HandlerFunc(s.authChangePassword)))
 
-	// Enrollment / Claim Token Management (Admin Session Protected)
-	mux.Handle("POST /api/v1/enrollment-tokens", requireAdmin(http.HandlerFunc(s.createEnrollmentToken)))
-	mux.Handle("GET /api/v1/enrollment-tokens", requireAdmin(http.HandlerFunc(s.listEnrollmentTokens)))
-	mux.Handle("DELETE /api/v1/enrollment-tokens/{id}", requireAdmin(http.HandlerFunc(s.deleteEnrollmentToken)))
+	// Security Audit Logs
+	mux.Handle("GET /api/v1/audit/logs", requirePerm(auth.PermAuditRead, nil)(http.HandlerFunc(s.handleListAuditLogs)))
+
+	// User Management routes (Multi-User RBAC Protected)
+	mux.Handle("GET /api/v1/users", requirePerm(auth.PermUsersRead, nil)(http.HandlerFunc(s.listUsers)))
+	mux.Handle("POST /api/v1/users", requirePerm(auth.PermUsersCreate, nil)(http.HandlerFunc(s.createUser)))
+	mux.Handle("PATCH /api/v1/users/{id}", requirePerm(auth.PermUsersUpdateRole, nil)(http.HandlerFunc(s.updateUserRole)))
+	mux.Handle("POST /api/v1/users/{id}/disable", requirePerm(auth.PermUsersDisable, nil)(http.HandlerFunc(s.disableUser)))
+	mux.Handle("POST /api/v1/users/{id}/enable", requirePerm(auth.PermUsersDisable, nil)(http.HandlerFunc(s.enableUser)))
+	mux.Handle("POST /api/v1/users/{id}/password-reset", requirePerm(auth.PermUsersResetPassword, nil)(http.HandlerFunc(s.resetUserPassword)))
+	mux.Handle("DELETE /api/v1/users/{id}", requirePerm(auth.PermUsersDelete, nil)(http.HandlerFunc(s.deleteUser)))
+
+	// Enrollment / Claim Token Management (RBAC Protected)
+	mux.Handle("POST /api/v1/enrollment-tokens", requirePerm(auth.PermDevicesClaimTokenCreate, nil)(http.HandlerFunc(s.createEnrollmentToken)))
+	mux.Handle("GET /api/v1/enrollment-tokens", requirePerm(auth.PermDevicesClaimTokenRead, nil)(http.HandlerFunc(s.listEnrollmentTokens)))
+	mux.Handle("DELETE /api/v1/enrollment-tokens/{id}", requirePerm(auth.PermDevicesClaimTokenRevoke, nil)(http.HandlerFunc(s.deleteEnrollmentToken)))
 
 	// Device Claim (Claim Token Header Protected)
 	mux.HandleFunc("POST /api/v1/devices/claim", s.claimDevice)
 	// Legacy Register (Legacy compatibility / Claim Token)
 	mux.HandleFunc("POST /api/v1/devices/register", s.register)
 
-	// Admin Device Management routes
-	mux.Handle("GET /api/v1/bootstrap/admin-key", requireAdmin(http.HandlerFunc(s.adminKey)))
-	mux.Handle("GET /api/v1/devices", requireAdmin(http.HandlerFunc(s.devices)))
-	mux.Handle("GET /api/v1/devices/{id}", requireAdmin(http.HandlerFunc(s.getDevice)))
-	mux.Handle("PATCH /api/v1/devices/{id}", requireAdmin(http.HandlerFunc(s.patchDevice)))
-	mux.Handle("DELETE /api/v1/devices/{id}", requireAdmin(http.HandlerFunc(s.deleteDevice)))
-	mux.Handle("POST /api/v1/devices/{id}/sync", requireAdmin(http.HandlerFunc(s.syncDevice)))
-	mux.Handle("POST /api/v1/devices/{id}/wake", requireAdmin(http.HandlerFunc(s.wakeDevice)))
-	mux.Handle("POST /api/v1/devices/{id}/shutdown", requireAdmin(http.HandlerFunc(s.shutdownDevice)))
-	mux.Handle("POST /api/v1/devices/{id}/upgrade", requireAdmin(http.HandlerFunc(s.upgradeDevice)))
-	mux.Handle("POST /api/v1/devices/upgrade-all", requireAdmin(http.HandlerFunc(s.upgradeAll)))
-	mux.Handle("POST /api/v1/devices/all/upgrade", requireAdmin(http.HandlerFunc(s.upgradeAll)))
-	mux.Handle("POST /api/v1/sync", requireAdmin(http.HandlerFunc(s.syncAll)))
-	mux.Handle("GET /api/v1/commands", requireAdmin(http.HandlerFunc(s.listCommands)))
-	mux.Handle("GET /api/v1/commands/{id}", requireAdmin(http.HandlerFunc(s.getCommand)))
-	mux.Handle("POST /api/v1/commands/{id}/cancel", requireAdmin(http.HandlerFunc(s.cancelCommand)))
+	// Device Sharing & Transfer routes
+	mux.Handle("GET /api/v1/devices/{id}/grants", requirePerm(auth.PermDevicesShare, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.listDeviceGrants)))
+	mux.Handle("PUT /api/v1/devices/{id}/grants/{user_id}", requirePerm(auth.PermDevicesShare, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.putDeviceGrant)))
+	mux.Handle("DELETE /api/v1/devices/{id}/grants/{user_id}", requirePerm(auth.PermDevicesShare, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.deleteDeviceGrant)))
+	mux.Handle("POST /api/v1/devices/{id}/transfer", requirePerm(auth.PermDevicesTransfer, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.transferDevice)))
+
+	// Device Management routes
+	mux.Handle("GET /api/v1/bootstrap/admin-key", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.adminKey)))
+	mux.Handle("GET /api/v1/devices", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.devices)))
+	mux.Handle("GET /api/v1/devices/{id}", requirePerm(auth.PermDevicesRead, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.getDevice)))
+	mux.Handle("PATCH /api/v1/devices/{id}", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.patchDevice)))
+	mux.Handle("DELETE /api/v1/devices/{id}", requirePerm(auth.PermDevicesDelete, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.deleteDevice)))
+	mux.Handle("POST /api/v1/devices/{id}/sync", requirePerm(auth.PermDevicesSync, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.syncDevice)))
+	mux.Handle("POST /api/v1/devices/{id}/wake", requirePerm(auth.PermDevicesWake, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.wakeDevice)))
+	mux.Handle("POST /api/v1/devices/{id}/shutdown", requirePerm(auth.PermDevicesShutdown, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.shutdownDevice)))
+	mux.Handle("POST /api/v1/devices/{id}/upgrade", requirePerm(auth.PermDevicesUpgrade, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.upgradeDevice)))
+	mux.Handle("POST /api/v1/devices/upgrade-all", requirePerm(auth.PermDevicesUpgrade, nil)(http.HandlerFunc(s.upgradeAll)))
+	mux.Handle("POST /api/v1/devices/all/upgrade", requirePerm(auth.PermDevicesUpgrade, nil)(http.HandlerFunc(s.upgradeAll)))
+	mux.Handle("POST /api/v1/sync", requirePerm(auth.PermDevicesSync, nil)(http.HandlerFunc(s.syncAll)))
+	mux.Handle("GET /api/v1/commands", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.listCommands)))
+	mux.Handle("GET /api/v1/commands/{id}", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.getCommand)))
+	mux.Handle("POST /api/v1/commands/{id}/cancel", requirePerm(auth.PermCommandsCancel, nil)(http.HandlerFunc(s.cancelCommand)))
 
 	// Health & Alerting Management routes
-	mux.Handle("GET /api/v1/health/summary", requireAdmin(http.HandlerFunc(s.handleHealthSummary)))
-	mux.Handle("GET /api/v1/devices/{id}/health", requireAdmin(http.HandlerFunc(s.handleDeviceHealth)))
-	mux.Handle("GET /api/v1/devices/{id}/health/events", requireAdmin(http.HandlerFunc(s.handleDeviceHealthEvents)))
-	mux.Handle("GET /api/v1/alerts", requireAdmin(http.HandlerFunc(s.handleListAlerts)))
-	mux.Handle("GET /api/v1/alerts/{id}", requireAdmin(http.HandlerFunc(s.handleGetAlert)))
-	mux.Handle("POST /api/v1/alerts/silences", requireAdmin(http.HandlerFunc(s.handleCreateSilence)))
-	mux.Handle("DELETE /api/v1/alerts/silences/{id}", requireAdmin(http.HandlerFunc(s.handleDeleteSilence)))
-	mux.Handle("GET /api/v1/alerts/silences", requireAdmin(http.HandlerFunc(s.handleListSilences)))
-	mux.Handle("GET /api/v1/alert-deliveries", requireAdmin(http.HandlerFunc(s.handleListAlertDeliveries)))
-	mux.Handle("POST /api/v1/alert-channels/{id}/test", requireAdmin(http.HandlerFunc(s.handleTestAlertChannel)))
+	mux.Handle("GET /api/v1/health/summary", requirePerm(auth.PermHealthRead, nil)(http.HandlerFunc(s.handleHealthSummary)))
+	mux.Handle("GET /api/v1/devices/{id}/health", requirePerm(auth.PermHealthRead, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.handleDeviceHealth)))
+	mux.Handle("GET /api/v1/devices/{id}/health/events", requirePerm(auth.PermHealthRead, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.handleDeviceHealthEvents)))
+	mux.Handle("GET /api/v1/alerts", requirePerm(auth.PermAlertsRead, nil)(http.HandlerFunc(s.handleListAlerts)))
+	mux.Handle("GET /api/v1/alerts/{id}", requirePerm(auth.PermAlertsRead, nil)(http.HandlerFunc(s.handleGetAlert)))
+	mux.Handle("POST /api/v1/alerts/silences", requirePerm(auth.PermAlertsManage, nil)(http.HandlerFunc(s.handleCreateSilence)))
+	mux.Handle("DELETE /api/v1/alerts/silences/{id}", requirePerm(auth.PermAlertsManage, nil)(http.HandlerFunc(s.handleDeleteSilence)))
+	mux.Handle("GET /api/v1/alerts/silences", requirePerm(auth.PermAlertsRead, nil)(http.HandlerFunc(s.handleListSilences)))
+	mux.Handle("GET /api/v1/alert-deliveries", requirePerm(auth.PermAlertsRead, nil)(http.HandlerFunc(s.handleListAlertDeliveries)))
+	mux.Handle("POST /api/v1/alert-channels/{id}/test", requirePerm(auth.PermAlertsManage, nil)(http.HandlerFunc(s.handleTestAlertChannel)))
 
 	// SSE and Control Plane routes (Device Token Protected with IDOR checks)
 	mux.Handle("GET /api/v1/devices/{id}/events", requireDevice(http.HandlerFunc(s.deviceEvents)))
@@ -197,12 +230,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/devices/{id}/network-state", requireAdminOrDevice(http.HandlerFunc(s.getDeviceNetworkState)))
 	mux.Handle("GET /api/v1/devices/{id}/ipv6", requireAdminOrDevice(http.HandlerFunc(s.getDeviceIPv6Text)))
 	mux.Handle("PUT /api/v1/devices/{id}/network-prefixes", requireDevice(http.HandlerFunc(s.putRouterPrefixes)))
-	mux.Handle("GET /api/v1/networks/{id}/prefixes", requireAdmin(http.HandlerFunc(s.getNetworkPrefixes)))
+	mux.Handle("GET /api/v1/networks/{id}/prefixes", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getNetworkPrefixes)))
 
 	// GitHub Credential Sync routes (Admin Protected / Device Protected)
-	mux.Handle("POST /api/v1/github/auth/device-code", requireAdmin(http.HandlerFunc(s.githubDeviceCode)))
-	mux.Handle("GET /api/v1/github/status", requireAdmin(http.HandlerFunc(s.githubStatus)))
-	mux.Handle("POST /api/v1/github/disconnect", requireAdmin(http.HandlerFunc(s.githubDisconnect)))
+	mux.Handle("POST /api/v1/github/auth/device-code", requirePerm(auth.PermGitHubManage, nil)(http.HandlerFunc(s.githubDeviceCode)))
+	mux.Handle("GET /api/v1/github/status", requirePerm(auth.PermGitHubManage, nil)(http.HandlerFunc(s.githubStatus)))
+	mux.Handle("POST /api/v1/github/disconnect", requirePerm(auth.PermGitHubManage, nil)(http.HandlerFunc(s.githubDisconnect)))
 	mux.HandleFunc("GET /api/v1/github/avatar", s.githubAvatar)
 	mux.Handle("POST /api/v1/devices/{id}/github/ssh-key", requireDevice(http.HandlerFunc(s.deviceRegisterGitHubSSHKey)))
 
@@ -357,8 +390,15 @@ func (s *Server) toDeviceDTO(d device.Device) deviceDTO {
 	}
 }
 
-func (s *Server) devices(w http.ResponseWriter, _ *http.Request) {
-	list := s.Registry.List()
+func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
+	actor := auth.GetActorFromContext(r.Context())
+	isOwner := actor == nil || actor.Role == auth.RoleOwner
+	userID := ""
+	if actor != nil {
+		userID = actor.UserID
+	}
+
+	list := s.Registry.FilterDevicesForUser(userID, isOwner)
 	dtos := make([]deviceDTO, 0, len(list))
 	for _, d := range list {
 		dtos = append(dtos, s.toDeviceDTO(d))
@@ -771,10 +811,18 @@ func (s *Server) syncDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncAll(w http.ResponseWriter, r *http.Request) {
+	actor := auth.GetActorFromContext(r.Context())
+	isOwner := actor == nil || actor.Role == auth.RoleOwner
+	userID := ""
+	if actor != nil {
+		userID = actor.UserID
+	}
+	targetDevices := s.Registry.FilterDevicesForUser(userID, isOwner)
+
 	if s.Broker != nil && s.Commands != nil {
 		commands := make([]command.Command, 0)
 		version := atomic.AddInt64(&s.version, 1)
-		for _, d := range s.Registry.List() {
+		for _, d := range targetDevices {
 			payload, err := s.resolveDeviceKeySyncPayload(d.ID)
 			if err != nil {
 				continue
@@ -972,7 +1020,13 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 		_ = dec.Decode(&req)
 	}
 
-	devices := s.Registry.List()
+	actor := auth.GetActorFromContext(r.Context())
+	isOwner := actor == nil || actor.Role == auth.RoleOwner
+	userID := ""
+	if actor != nil {
+		userID = actor.UserID
+	}
+	devices := s.Registry.FilterDevicesForUser(userID, isOwner)
 	targetVer := strings.TrimSpace(req.TargetVersion)
 	if targetVer == "" {
 		targetVer = strings.TrimSpace(req.Version)
@@ -1422,17 +1476,48 @@ func (s *Server) listCommands(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "command service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	isOwner := actor == nil || actor.Role == auth.RoleOwner
+	reqDevID := r.URL.Query().Get("device_id")
+
+	if !isOwner && s.Registry != nil && reqDevID != "" {
+		if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, reqDevID); !visible || !exists {
+			writeJSON(w, 200, command.Page{Commands: []command.Command{}})
+			return
+		}
+	}
+
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	p, err := s.Commands.List(command.Filter{DeviceID: r.URL.Query().Get("device_id"), Kind: command.Kind(r.URL.Query().Get("kind")), Status: command.Status(r.URL.Query().Get("status")), Limit: limit, Cursor: r.URL.Query().Get("cursor")})
+	p, err := s.Commands.List(command.Filter{DeviceID: reqDevID, Kind: command.Kind(r.URL.Query().Get("kind")), Status: command.Status(r.URL.Query().Get("status")), Limit: limit, Cursor: r.URL.Query().Get("cursor")})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	for i := range p.Commands {
-		p.Commands[i].Request = nil
+
+	if !isOwner && s.Registry != nil {
+		visibleDevs := s.Registry.FilterDevicesForUser(actor.UserID, false)
+		visibleMap := make(map[string]bool)
+		for _, d := range visibleDevs {
+			visibleMap[d.ID] = true
+		}
+		var filtered []command.Command
+		for _, cmd := range p.Commands {
+			if visibleMap[cmd.DeviceID] {
+				cmd.Request = nil
+				filtered = append(filtered, cmd)
+			}
+		}
+		p.Commands = filtered
+	} else {
+		for i := range p.Commands {
+			p.Commands[i].Request = nil
+		}
 	}
+
 	writeJSON(w, 200, p)
 }
+
 func (s *Server) getCommand(w http.ResponseWriter, r *http.Request) {
 	if s.Commands == nil {
 		http.Error(w, "command service unavailable", http.StatusServiceUnavailable)
@@ -1443,19 +1528,44 @@ func (s *Server) getCommand(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "command not found", 404)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	if actor != nil && actor.Role != auth.RoleOwner && s.Registry != nil {
+		if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, c.DeviceID); !visible || !exists {
+			http.Error(w, "command not found", 404)
+			return
+		}
+	}
+
 	writeJSON(w, 200, c)
 }
+
 func (s *Server) cancelCommand(w http.ResponseWriter, r *http.Request) {
 	if s.Commands == nil {
 		http.Error(w, "command service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	c, err := s.Commands.Cancel(command.ID(r.PathValue("id")))
+
+	c, err := s.Commands.Get(command.ID(r.PathValue("id")))
+	if err != nil {
+		http.Error(w, "command not found", 404)
+		return
+	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	if actor != nil && actor.Role != auth.RoleOwner && s.Registry != nil {
+		if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, c.DeviceID); !visible || !exists {
+			http.Error(w, "command not found", 404)
+			return
+		}
+	}
+
+	cancelled, err := s.Commands.Cancel(c.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	writeJSON(w, 200, c)
+	writeJSON(w, 200, cancelled)
 }
 
 // Pull keys fallback endpoint: GET /api/v1/devices/{id}/keys
@@ -1809,6 +1919,17 @@ func (s *Server) getNetworkPrefixes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	if actor != nil && actor.Role != auth.RoleOwner && s.Registry != nil {
+		if st.RouterDeviceID != "" {
+			if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, st.RouterDeviceID); !visible || !exists {
+				http.Error(w, "network prefix state not found", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -2164,10 +2285,22 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "alerting service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	isOwner := actor == nil || actor.Role == auth.RoleOwner
+
 	q := r.URL.Query()
+	reqDevID := q.Get("device_id")
+	if !isOwner && s.Registry != nil && reqDevID != "" {
+		if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, reqDevID); !visible || !exists {
+			writeJSON(w, http.StatusOK, map[string]any{"alerts": []any{}, "next_cursor": ""})
+			return
+		}
+	}
+
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	filter := alerting.AlertFilter{
-		DeviceID: q.Get("device_id"),
+		DeviceID: reqDevID,
 		State:    q.Get("state"),
 		Severity: q.Get("severity"),
 		Cursor:   q.Get("cursor"),
@@ -2178,6 +2311,22 @@ func (s *Server) handleListAlerts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	if !isOwner && s.Registry != nil {
+		visibleDevs := s.Registry.FilterDevicesForUser(actor.UserID, false)
+		visibleMap := make(map[string]bool)
+		for _, d := range visibleDevs {
+			visibleMap[d.ID] = true
+		}
+		var filtered []alerting.Alert
+		for _, a := range alerts {
+			if visibleMap[a.DeviceID] {
+				filtered = append(filtered, a)
+			}
+		}
+		alerts = filtered
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"alerts":      alerts,
 		"next_cursor": nextCursor,
@@ -2195,6 +2344,15 @@ func (s *Server) handleGetAlert(w http.ResponseWriter, r *http.Request) {
 		statusError(w, err)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	if actor != nil && actor.Role != auth.RoleOwner && s.Registry != nil {
+		if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, alert.DeviceID); !visible || !exists {
+			http.Error(w, "alert not found", http.StatusNotFound)
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusOK, alert)
 }
 
@@ -2214,12 +2372,25 @@ func (s *Server) handleCreateSilence(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	actorName := "admin"
+	if actor != nil {
+		actorName = actor.Username
+		if actor.Role != auth.RoleOwner && s.Registry != nil && req.DeviceID != "" {
+			if visible, exists := s.Registry.IsDeviceVisible(actor.UserID, req.DeviceID); !visible || !exists {
+				http.Error(w, "device not found", http.StatusNotFound)
+				return
+			}
+		}
+	}
+
 	sil := alerting.Silence{
 		DeviceID:   req.DeviceID,
 		ReasonCode: req.ReasonCode,
 		StartsAt:   req.StartsAt,
 		EndsAt:     req.EndsAt,
-		CreatedBy:  "admin",
+		CreatedBy:  actorName,
 		Comment:    req.Comment,
 	}
 	created, err := s.Alerting.CreateSilence(r.Context(), sil)
@@ -2285,6 +2456,13 @@ func (s *Server) handleTestAlertChannel(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "alerting service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+
+	actor := auth.GetActorFromContext(r.Context())
+	if actor != nil && actor.Role != auth.RoleOwner {
+		http.Error(w, `{"error":"forbidden","message":"Only instance owners can test global alert channels"}`, http.StatusForbidden)
+		return
+	}
+
 	id := r.PathValue("id")
 	res, err := s.Alerting.TestChannel(r.Context(), id)
 	if err != nil {

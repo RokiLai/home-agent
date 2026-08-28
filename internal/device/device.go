@@ -16,6 +16,7 @@ import (
 // 包含其唯一身份标识、网络地址列表、SSH 凭据、状态同步记录以及 GitHub 集成属性。
 type Device struct {
 	ID                string    `json:"id"`
+	OwnerUserID       string    `json:"owner_user_id,omitempty"`
 	Hostname          string    `json:"hostname"`
 	Alias             string    `json:"alias,omitempty"`
 	MAC               string    `json:"mac,omitempty"`

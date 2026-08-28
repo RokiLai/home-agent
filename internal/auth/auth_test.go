@@ -341,3 +341,58 @@ func TestUpdateAdminPassword(t *testing.T) {
 		t.Fatalf("reloaded session manager should accept new password: %v", err)
 	}
 }
+
+func TestRequirePermissionMiddleware(t *testing.T) {
+	sm, _ := NewSessionManager("")
+	_, _ = sm.InitAdminBootstrap("boss", "BossPassword123")
+	owner, _ := sm.GetUserByUsername("boss")
+	adminUser, _ := sm.CreateUser("sub_admin", "AdminPass123", RoleAdmin, owner.ID)
+
+	resolver := &mockDeviceScopeResolver{
+		devices: map[string]bool{"dev-1": true, "dev-secret": true},
+		owners:  map[string]string{"dev-1": adminUser.ID, "dev-secret": "other-user"},
+		grants:  map[string]map[string]GrantType{},
+	}
+	authorizer := NewAuthorizer(resolver)
+
+	handler := RequirePermission(sm, authorizer, PermDevicesShutdown, ResolveDeviceFromPath)(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			actor := GetActorFromContext(r.Context())
+			if actor == nil || actor.UserID == "" {
+				t.Fatal("Actor missing from context")
+			}
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	adminToken, _, _ := sm.CreateUserSession(adminUser.ID, false)
+
+	// 1. 无 Token -> 401
+	req1 := httptest.NewRequest("POST", "/api/v1/devices/dev-1/shutdown", nil)
+	req1.SetPathValue("id", "dev-1")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusUnauthorized {
+		t.Fatalf("Expected 401 without token, got %d", rec1.Code)
+	}
+
+	// 2. Admin 操作自己拥有的 dev-1 -> 200 OK
+	req2 := httptest.NewRequest("POST", "/api/v1/devices/dev-1/shutdown", nil)
+	req2.SetPathValue("id", "dev-1")
+	req2.AddCookie(&http.Cookie{Name: SessionCookieName, Value: adminToken})
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("Expected 200 for admin operating owned device, got %d", rec2.Code)
+	}
+
+	// 3. Admin 尝试操作 dev-secret（未授权）-> 404 Not Found (IDOR 保护)
+	req3 := httptest.NewRequest("POST", "/api/v1/devices/dev-secret/shutdown", nil)
+	req3.SetPathValue("id", "dev-secret")
+	req3.AddCookie(&http.Cookie{Name: SessionCookieName, Value: adminToken})
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusNotFound {
+		t.Fatalf("Expected 404 for IDOR attempt on dev-secret, got %d", rec3.Code)
+	}
+}

@@ -52,7 +52,8 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.SessionManager.AuthenticateAdmin(req.Username, req.Password); err != nil {
+	user, err := s.SessionManager.AuthenticateUser(req.Username, req.Password)
+	if err != nil {
 		if s.RateLimiter != nil {
 			locked, lockDur := s.RateLimiter.RecordFailure(clientIP)
 			if locked && s.Log != nil {
@@ -75,7 +76,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		s.RateLimiter.RecordSuccess(clientIP)
 	}
 
-	rawToken, _, err := s.SessionManager.CreateSession(req.Username, "admin", req.RememberMe)
+	rawToken, session, err := s.SessionManager.CreateUserSession(user.ID, req.RememberMe)
 	if err != nil {
 		if s.Log != nil {
 			s.Log.Error("create_session_failed", "error", err)
@@ -87,13 +88,28 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	auth.SetSessionCookie(w, rawToken, req.RememberMe, s.isHTTPS(r))
 
 	if s.Log != nil {
-		s.Log.Info("admin_login_success", "username", req.Username, "ip", clientIP, "remember_me", req.RememberMe)
+		s.Log.Info("user_login_success", "user_id", user.ID, "username", user.Username, "role", user.Role, "ip", clientIP, "remember_me", req.RememberMe)
 	}
+	s.recordAudit(r, auth.AuditEvent{
+		ActorUserID:  user.ID,
+		ActorRole:    user.Role,
+		Action:       auth.ActionAuthLogin,
+		ResourceType: "user",
+		ResourceID:   user.ID,
+		ClientIP:     clientIP,
+		Status:       "success",
+		Detail:       "user logged in successfully",
+	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user": map[string]string{
-			"username": req.Username,
-			"role":     "admin",
+		"user": map[string]any{
+			"id":       user.ID,
+			"username": user.Username,
+			"role":     user.Role,
+		},
+		"session": map[string]any{
+			"remember_me": session.RememberMe,
+			"expires_at":  session.ExpiresAt,
 		},
 	})
 }
@@ -101,7 +117,6 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
 	session := auth.GetSessionFromContext(r.Context())
 	if session == nil {
-		// 尝试直接通过 Cookie 校验
 		rawToken := auth.ExtractSessionToken(r)
 		if rawToken != "" && s.SessionManager != nil {
 			if sess, err := s.SessionManager.ValidateSession(rawToken); err == nil {
@@ -109,13 +124,8 @@ func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
 	if session == nil {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"authenticated": false,
-		})
+		http.Error(w, `{"error":"unauthorized","message":"User session required"}`, http.StatusUnauthorized)
 		return
 	}
 
@@ -124,11 +134,18 @@ func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
 		effectivePublicURL = "https://homeagent.rokilai.online"
 	}
 
+	role := auth.Role(session.Role)
+	perms := auth.PermissionsForRole(role)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
+		"user_id":       session.UserID,
 		"username":      session.Username,
 		"role":          session.Role,
+		"permissions":   perms,
 		"public_url":    effectivePublicURL,
+		"version":       version.Get(),
+		"github_repo":   "RokiLai/home-agent",
 	})
 }
 
@@ -145,6 +162,7 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	session := auth.GetSessionFromContext(r.Context())
 	rawToken := auth.ExtractSessionToken(r)
 	if rawToken != "" && s.SessionManager != nil {
 		_ = s.SessionManager.RevokeSession(rawToken)
@@ -153,7 +171,19 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	auth.ClearSessionCookie(w, s.isHTTPS(r))
 
 	if s.Log != nil {
-		s.Log.Info("admin_logout")
+		s.Log.Info("user_logout")
+	}
+
+	if session != nil {
+		s.recordAudit(r, auth.AuditEvent{
+			ActorUserID:  session.UserID,
+			ActorRole:    auth.Role(session.Role),
+			Action:       auth.ActionAuthLogout,
+			ResourceType: "session",
+			ResourceID:   session.UserID,
+			Status:       "success",
+			Detail:       "user logged out",
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
@@ -175,7 +205,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if session == nil {
-		http.Error(w, `{"error":"unauthorized","message":"Admin session required"}`, http.StatusUnauthorized)
+		http.Error(w, `{"error":"unauthorized","message":"User session required"}`, http.StatusUnauthorized)
 		return
 	}
 
@@ -197,7 +227,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.SessionManager.UpdateAdminPassword(session.Username, req.OldPassword, req.NewPassword); err != nil {
+	if err := s.SessionManager.UpdateUserPassword(session.UserID, req.OldPassword, req.NewPassword); err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -208,11 +238,71 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Log != nil {
-		s.Log.Info("admin_password_updated", "username", session.Username)
+		s.Log.Info("user_password_updated", "user_id", session.UserID, "username", session.Username)
 	}
+	s.recordAudit(r, auth.AuditEvent{
+		ActorUserID:  session.UserID,
+		ActorRole:    auth.Role(session.Role),
+		Action:       auth.ActionAuthChangePass,
+		ResourceType: "user",
+		ResourceID:   session.UserID,
+		Status:       "success",
+		Detail:       "password changed by user",
+	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "Password updated successfully",
 	})
+}
+
+func (s *Server) authLogoutAll(w http.ResponseWriter, r *http.Request) {
+	session := auth.GetSessionFromContext(r.Context())
+	if session == nil {
+		http.Error(w, `{"error":"unauthorized","message":"User session required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if s.SessionManager != nil {
+		_ = s.SessionManager.RevokeUserSessions(session.UserID)
+	}
+
+	auth.ClearSessionCookie(w, s.isHTTPS(r))
+
+	s.recordAudit(r, auth.AuditEvent{
+		ActorUserID:  session.UserID,
+		ActorRole:    auth.Role(session.Role),
+		Action:       auth.ActionAuthLogoutAll,
+		ResourceType: "session",
+		ResourceID:   session.UserID,
+		Status:       "success",
+		Detail:       "revoked all user sessions",
+	})
+
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
+	if s.AuditLogger == nil {
+		s.AuditLogger = auth.NewMemoryAuditLogger(500)
+	}
+
+	events := s.AuditLogger.Recent(100)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": events,
+		"count":  len(events),
+	})
+}
+
+func (s *Server) recordAudit(r *http.Request, event auth.AuditEvent) {
+	if s.AuditLogger == nil {
+		s.AuditLogger = auth.NewMemoryAuditLogger(500)
+	}
+	if event.ClientIP == "" && r != nil {
+		event.ClientIP = auth.ExtractClientIP(r)
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	s.AuditLogger.Record(event)
 }

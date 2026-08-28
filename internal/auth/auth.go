@@ -28,6 +28,7 @@ type contextKey string
 
 const (
 	sessionContextKey contextKey = "homeagent_admin_session"
+	actorContextKey   contextKey = "homeagent_authenticated_actor"
 	deviceContextKey  contextKey = "homeagent_authenticated_device_id"
 )
 
@@ -93,13 +94,28 @@ func ExtractBearerToken(r *http.Request) string {
 	return ""
 }
 
-// RequireAdmin 返回仅允许有效管理员 Session 访问的中间件
+// ResolveDeviceFromPath 从 URL 路径中提取设备 ID
+func ResolveDeviceFromPath(r *http.Request) ResourceRef {
+	deviceID := r.PathValue("id")
+	if deviceID == "" {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		for i, p := range parts {
+			if p == "devices" && i+1 < len(parts) {
+				deviceID = parts[i+1]
+				break
+			}
+		}
+	}
+	return DeviceResource(deviceID)
+}
+
+// RequireAdmin 返回仅允许有效用户 Session 访问的基础中间件（向下兼容）
 func RequireAdmin(sm *SessionManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := ExtractSessionToken(r)
 			if token == "" {
-				writeAuthError(w, http.StatusUnauthorized, "unauthorized", "Valid admin session required")
+				writeAuthError(w, http.StatusUnauthorized, "unauthorized", "Valid session required")
 				return
 			}
 
@@ -109,7 +125,62 @@ func RequireAdmin(sm *SessionManager) func(http.Handler) http.Handler {
 				return
 			}
 
+			actor := Actor{
+				UserID:   session.UserID,
+				Username: session.Username,
+				Role:     Role(session.Role),
+			}
+
 			ctx := context.WithValue(r.Context(), sessionContextKey, session)
+			ctx = context.WithValue(ctx, actorContextKey, actor)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequirePermission 返回结合 Session 认证与 Authorizer 细粒度权限校验的中间件
+func RequirePermission(sm *SessionManager, authorizer *Authorizer, perm Permission, resolveResource func(r *http.Request) ResourceRef) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := ExtractSessionToken(r)
+			if token == "" {
+				writeAuthError(w, http.StatusUnauthorized, "unauthorized", "Valid session required")
+				return
+			}
+
+			session, err := sm.ValidateSession(token)
+			if err != nil {
+				writeAuthError(w, http.StatusUnauthorized, "unauthorized", "Session invalid or expired")
+				return
+			}
+
+			actor := Actor{
+				UserID:   session.UserID,
+				Username: session.Username,
+				Role:     Role(session.Role),
+			}
+
+			var resource ResourceRef
+			if resolveResource != nil {
+				resource = resolveResource(r)
+			} else {
+				resource = GlobalResource()
+			}
+
+			if authorizer != nil {
+				decision := authorizer.Authorize(AuthorizationRequest{
+					Actor:      actor,
+					Permission: perm,
+					Resource:   resource,
+				})
+				if !decision.Allowed {
+					writeAuthError(w, decision.StatusCode, decision.ErrorCode, decision.ReasonCode)
+					return
+				}
+			}
+
+			ctx := context.WithValue(r.Context(), sessionContextKey, session)
+			ctx = context.WithValue(ctx, actorContextKey, actor)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -127,7 +198,6 @@ func RequireDevice(authorizer DeviceAuthorizer) func(http.Handler) http.Handler 
 
 			deviceID := r.PathValue("id")
 			if deviceID == "" {
-				// 兼容非 1.22 模式的路径解析
 				parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 				for i, p := range parts {
 					if p == "devices" && i+1 < len(parts) {
@@ -152,15 +222,21 @@ func RequireDevice(authorizer DeviceAuthorizer) func(http.Handler) http.Handler 
 	}
 }
 
-// RequireAdminOrDevice 允许管理员 Session 或持有匹配该设备的 Device Token 访问
+// RequireAdminOrDevice 允许用户 Session 或持有匹配该设备的 Device Token 访问
 func RequireAdminOrDevice(sm *SessionManager, authorizer DeviceAuthorizer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 先尝试管理员会话鉴权
+			// 先尝试管理员/用户会话鉴权
 			sessToken := ExtractSessionToken(r)
 			if sessToken != "" {
 				if session, err := sm.ValidateSession(sessToken); err == nil {
+					actor := Actor{
+						UserID:   session.UserID,
+						Username: session.Username,
+						Role:     Role(session.Role),
+					}
 					ctx := context.WithValue(r.Context(), sessionContextKey, session)
+					ctx = context.WithValue(ctx, actorContextKey, actor)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -211,10 +287,18 @@ func Bearer(token string, next http.Handler) http.Handler {
 	})
 }
 
-// GetSessionFromContext 从 Context 中提取已鉴权的 Admin Session
+// GetSessionFromContext 从 Context 中提取已鉴权的 Session
 func GetSessionFromContext(ctx context.Context) *Session {
 	if v, ok := ctx.Value(sessionContextKey).(*Session); ok {
 		return v
+	}
+	return nil
+}
+
+// GetActorFromContext 从 Context 中提取已鉴权的操作主体 Actor
+func GetActorFromContext(ctx context.Context) *Actor {
+	if v, ok := ctx.Value(actorContextKey).(Actor); ok {
+		return &v
 	}
 	return nil
 }

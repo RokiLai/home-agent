@@ -58,6 +58,14 @@ func TestMobileResponsiveContractAndRendering(t *testing.T) {
 	}
 }
 
+func TestMultiUserAndRBACDOMTests(t *testing.T) {
+	cmd := exec.Command("node", "--test", "testdata/multi-user-rbac.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("multi-user and RBAC DOM tests failed: %v\n%s", err, output)
+	}
+}
+
 func TestFrontendSyntaxAndScopeIntegrity(t *testing.T) {
 	cmd := exec.Command("node", "--test", "testdata/frontend-syntax.test.mjs")
 	output, err := cmd.CombinedOutput()

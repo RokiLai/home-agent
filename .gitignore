@@ -59,3 +59,5 @@ secrets*
 # AI agent specs & memory
 /AGENTS.md
 
+# Internal design and security review documents
+/docs/private/

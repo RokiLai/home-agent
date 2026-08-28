@@ -14,6 +14,10 @@ export const pageMeta = {
     title: '快速接入向导',
     desc: '单行命令零配置自动注册与守护进程自启'
   },
+  users: {
+    title: '用户与权限管理',
+    desc: '多用户账号、角色分配、权限审计与登录安全'
+  },
   github: {
     title: 'GitHub 凭据同步',
     desc: '统一 OAuth 授权、SSH Key 分发与 GitHub CLI Token 同步'
@@ -28,11 +32,14 @@ export const pageMeta = {
   }
 };
 
-export function setupRouter() {
+export function setupRouter(onRouteChanged) {
   function handleRoute() {
     const hash = window.location.hash.replace('#/', '').trim();
     const targetPage = pageMeta[hash] ? hash : 'dashboard';
     switchPage(targetPage);
+    if (onRouteChanged) {
+      onRouteChanged(targetPage);
+    }
   }
 
   window.addEventListener('hashchange', handleRoute);

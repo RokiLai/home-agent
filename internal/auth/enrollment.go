@@ -25,22 +25,24 @@ const (
 	DefaultClaimTTL = 15 * time.Minute
 )
 
-// ClaimToken 保存短期认领凭据的元数据与哈希
+// ClaimToken 保存短期认领凭据的元数据、所有者冻结信息与哈希
 type ClaimToken struct {
-	ID            string    `json:"id"`
-	TokenHash     string    `json:"token_hash"`
-	CreatedAt     time.Time `json:"created_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	MaxUses       int       `json:"max_uses"`
-	RemainingUses int       `json:"remaining_uses"`
-	Description   string    `json:"description"`
+	ID              string    `json:"id"`
+	TokenHash       string    `json:"token_hash"`
+	CreatedAt       time.Time `json:"created_at"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	MaxUses         int       `json:"max_uses"`
+	RemainingUses   int       `json:"remaining_uses"`
+	Description     string    `json:"description"`
+	CreatedByUserID string    `json:"created_by_user_id,omitempty"`
+	OwnerUserID     string    `json:"owner_user_id,omitempty"`
 }
 
 type enrollmentStoreData struct {
 	Tokens map[string]*ClaimToken `json:"tokens"`
 }
 
-// EnrollmentManager 线程安全地管理短期设备认领凭据（Claim Token）的生成、原子核销与持久化
+// EnrollmentManager 线程安全地管理短期设备认领凭据（Claim Token）的生成、所有权冻结、原子核销与持久化
 type EnrollmentManager struct {
 	mu        sync.Mutex
 	storePath string
@@ -79,8 +81,13 @@ func NewEnrollmentManager(storePath string) (*EnrollmentManager, error) {
 	return em, nil
 }
 
-// CreateClaimToken 生成新的 Claim Token，返回一次性明文 Token 与元数据
+// CreateClaimToken 生成新的 Claim Token（兼容旧版签名）
 func (em *EnrollmentManager) CreateClaimToken(ttl time.Duration, maxUses int, description string) (string, *ClaimToken, error) {
+	return em.CreateClaimTokenForOwner(ttl, maxUses, description, "", "")
+}
+
+// CreateClaimTokenForOwner 生成新的 Claim Token，并在创建时安全冻结创建者与目标设备 Owner
+func (em *EnrollmentManager) CreateClaimTokenForOwner(ttl time.Duration, maxUses int, description, createdByUserID, ownerUserID string) (string, *ClaimToken, error) {
 	if ttl <= 0 {
 		ttl = DefaultClaimTTL
 	}
@@ -102,13 +109,15 @@ func (em *EnrollmentManager) CreateClaimToken(ttl time.Duration, maxUses int, de
 
 	now := time.Now().UTC()
 	token := &ClaimToken{
-		ID:            id,
-		TokenHash:     tokenHash,
-		CreatedAt:     now,
-		ExpiresAt:     now.Add(ttl),
-		MaxUses:       maxUses,
-		RemainingUses: maxUses,
-		Description:   strings.TrimSpace(description),
+		ID:              id,
+		TokenHash:       tokenHash,
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(ttl),
+		MaxUses:         maxUses,
+		RemainingUses:   maxUses,
+		Description:     strings.TrimSpace(description),
+		CreatedByUserID: strings.TrimSpace(createdByUserID),
+		OwnerUserID:     strings.TrimSpace(ownerUserID),
 	}
 
 	em.mu.Lock()

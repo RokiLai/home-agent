@@ -2,7 +2,18 @@ server:
   listen: ":8080"
   public_url: "https://homeagent.rokilai.online"
 storage:
+  driver: "file" # 存储驱动：默认 "file"（零外部依赖，本地 JSON 存储）；可选 "mysql"
   data_dir: "/var/lib/homeagent"
+  # 可选：当 driver 为 "mysql" 时的数据库连接配置
+  # mysql:
+  #   dsn: "homeagent:password@tcp(127.0.0.1:3306)/homeagent?charset=utf8mb4&parseTime=True&loc=Local"
+  #   max_open_conns: 25
+  #   max_idle_conns: 5
+  #   conn_max_lifetime: "5m"
+  # 可选：通过 Consul 服务发现动态解析 MySQL/ProxySQL 实例
+  # consul:
+  #   address: "127.0.0.1:8500"
+  #   service_name: "mysql-proxy-service"
 ssh:
   private_key: "/var/lib/homeagent/keys/admin_ed25519"
   connect_timeout: "5s"

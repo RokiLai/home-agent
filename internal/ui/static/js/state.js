@@ -17,10 +17,14 @@ export const state = {
   claimTokenExpiresAt: null,
   claimCountdownTimer: null,
   isAuthenticated: false,
+  currentUser: { id: '', username: '', role: 'owner', permissions: [] },
+  usersList: [],
   wakingDevices: new Set(),
   upgradingDevices: new Set(),
   shuttingDownDevices: new Set(),
   openDropdownDevID: null,
   latestGitHubData: null,
-  currentRenameDeviceId: ''
+  currentRenameDeviceId: '',
+  currentShareDeviceId: '',
+  currentTransferDeviceId: ''
 };

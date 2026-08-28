@@ -77,6 +77,16 @@
 		  <span class="nav-text">操作历史</span>
 		</a>
 
+        <a href="#/users" class="nav-item hidden" data-page="users" id="navUsers">
+          <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+          <span class="nav-text">用户与权限管理</span>
+        </a>
+
         <div class="nav-section-label">系统</div>
         <a href="#/settings" class="nav-item" data-page="settings" id="navSettings">
           <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -127,6 +137,7 @@
             </svg>
           </button>
           <div class="user-profile-widget" id="userProfileWidget">
+            <span class="role-badge role-owner" id="adminRoleBadge">所有者 (Owner)</span>
             <span class="user-badge" id="adminUsernameDisplay">admin</span>
             <button id="btnLogout" class="btn btn-secondary btn-sm" title="退出当前管理会话" aria-label="退出当前管理会话">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -474,7 +485,44 @@
 		  </div>
 		</section>
 
-        <!-- 6. PAGE: SETTINGS -->
+        <!-- 6. PAGE: USERS -->
+        <section id="pageUsers" class="page-view">
+          <div class="content-panel">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">用户与权限管理</h2>
+                <p class="panel-desc" style="margin-top: 4px; font-size: 0.8rem; color: var(--text-muted);">管理系统多用户账号、分配权限角色及维护会话安全</p>
+              </div>
+              <div class="panel-actions">
+                <button class="btn btn-primary btn-sm" onclick="window.openCreateUserModal()">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  <span>新建用户</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>角色</th>
+                    <th>状态</th>
+                    <th>最后登录</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody">
+                  <tr><td colspan="5" class="text-center text-muted py-6">正在加载用户列表...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 7. PAGE: SETTINGS -->
         <section id="pageSettings" class="page-view">
           <div class="settings-container">
             <div class="content-panel">
@@ -686,6 +734,142 @@
     </div>
   </div>
 
+  <!-- Modal: Create User Modal -->
+  <div id="createUserModal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3 class="modal-title">新建用户账号</h3>
+        <button class="modal-close" onclick="window.closeCreateUserModal()">&times;</button>
+      </div>
+      <form id="createUserForm" onsubmit="window.handleCreateUserSubmit(event)">
+        <div class="modal-body">
+          <div id="createUserAlert" class="alert-error hidden" style="margin-bottom: 12px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+          <div class="form-group">
+            <label for="newUserNameInput">用户名</label>
+            <input type="text" id="newUserNameInput" class="form-control" placeholder="如 alice" required autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="newUserPasswordInput">初始登录密码</label>
+            <input type="password" id="newUserPasswordInput" class="form-control" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label for="newUserRoleSelect">权限角色</label>
+            <select id="newUserRoleSelect" class="form-control">
+              <option value="admin">管理员 (Admin - 可管理自身设备)</option>
+              <option value="viewer">只读访客 (Viewer - 仅查看已获授权设备)</option>
+              <option value="owner">系统所有者 (Owner - 拥有全量管理权限)</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="window.closeCreateUserModal()">取消</button>
+          <button type="submit" id="btnSubmitCreateUser" class="btn btn-primary">确认创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Reset User Password Modal -->
+  <div id="resetUserPasswordModal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 450px;">
+      <div class="modal-header">
+        <h3 class="modal-title">重置用户密码</h3>
+        <button class="modal-close" onclick="window.closeResetUserPasswordModal()">&times;</button>
+      </div>
+      <form id="resetUserPasswordForm" onsubmit="window.handleResetUserPasswordSubmit(event)">
+        <div class="modal-body">
+          <div id="resetUserPasswordAlert" class="alert-error hidden" style="margin-bottom: 12px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+          <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:12px;">正在为用户 <strong id="resetPasswordUsernameDisplay" style="color:var(--text-primary);">-</strong> 重置登录密码：</p>
+          <div class="form-group">
+            <label for="resetUserNewPasswordInput">新登录密码</label>
+            <input type="password" id="resetUserNewPasswordInput" class="form-control" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="window.closeResetUserPasswordModal()">取消</button>
+          <button type="submit" class="btn btn-primary">确认重置</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Device Share Modal -->
+  <div id="deviceShareModal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 520px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">设备共享与访问授权</h3>
+          <div class="font-mono text-muted" id="shareModalDeviceTitle" style="font-size:0.75rem;margin-top:2px;"></div>
+        </div>
+        <button class="modal-close" onclick="window.closeDeviceShareModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="shareModalAlert" class="alert-error hidden" style="margin-bottom: 12px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+
+        <!-- Add New Grant Form -->
+        <form id="addGrantForm" onsubmit="window.handlePutGrantSubmit(event)" style="padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border-color); margin-bottom:16px;">
+          <h4 style="font-size:0.84rem; margin-bottom:10px; color:var(--text-primary);">授予新访问权限</h4>
+          <div class="form-group">
+            <label for="shareTargetUserSelect">目标用户</label>
+            <select id="shareTargetUserSelect" class="form-control" required>
+              <option value="">请选择目标用户...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="shareLevelSelect">权限级别</label>
+            <select id="shareLevelSelect" class="form-control">
+              <option value="read">只读 (Read - 查看状态与告警)</option>
+              <option value="operate">操作 (Operate - 同步、升级、唤醒与关机)</option>
+              <option value="manage">管理 (Manage - 修改别名与设备告警配置)</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm" style="width:100%; margin-top:8px;">确认授权</button>
+        </form>
+
+        <!-- Current Grants List -->
+        <div>
+          <h4 style="font-size:0.84rem; margin-bottom:8px; color:var(--text-secondary);">已获授权用户清单</h4>
+          <div id="deviceGrantsList" style="display:flex; flex-direction:column; gap:6px;">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="window.closeDeviceShareModal()">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Device Transfer Modal -->
+  <div id="deviceTransferModal" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width: 480px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">转移设备所有权</h3>
+          <div class="font-mono text-muted" id="transferModalDeviceTitle" style="font-size:0.75rem;margin-top:2px;"></div>
+        </div>
+        <button class="modal-close" onclick="window.closeDeviceTransferModal()">&times;</button>
+      </div>
+      <form id="deviceTransferForm" onsubmit="window.handleTransferSubmit(event)">
+        <div class="modal-body">
+          <div id="transferModalAlert" class="alert-error hidden" style="margin-bottom: 12px; font-size: 0.84rem; padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444;"></div>
+          <p style="font-size:0.85rem; color:var(--text-secondary); line-height:1.5; margin-bottom:14px;">
+            转移所有权后，该设备将直接归属于目标用户管理。原所有者将默认失去全部访问权限。
+          </p>
+          <div class="form-group">
+            <label for="transferNewOwnerSelect">新所有者用户</label>
+            <select id="transferNewOwnerSelect" class="form-control" required>
+              <option value="">请选择新所有者...</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="window.closeDeviceTransferModal()">取消</button>
+          <button type="submit" class="btn btn-primary">确认转移所有权</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- Login Overlay Modal -->
   <div id="loginOverlay" class="login-overlay hidden">

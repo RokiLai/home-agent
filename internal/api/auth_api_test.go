@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"homeagent/internal/auth"
 	"homeagent/internal/broker"
+	"homeagent/internal/device"
 	"homeagent/internal/registry"
 )
 
@@ -41,6 +43,7 @@ func setupTestServerWithAuth(t *testing.T) (*Server, *auth.SessionManager, *auth
 		Broker:            b,
 		SessionManager:    sm,
 		EnrollmentManager: em,
+		AuditLogger:       auth.NewMemoryAuditLogger(500),
 		RateLimiter:       rl,
 		AdminPublicKey:    "ssh-ed25519 ADMIN_KEY",
 		Token:             "legacy_secret_key",
@@ -395,5 +398,360 @@ func TestAuthChangePasswordFlow(t *testing.T) {
 	h.ServeHTTP(oldLoginRec, oldLoginReq)
 	if oldLoginRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected login with old password to fail (401), got %d", oldLoginRec.Code)
+	}
+}
+
+func TestMultiUser_DeviceIsolationAndGrants(t *testing.T) {
+	s, sm, em, r, _ := setupTestServerWithAuth(t)
+	h := s.Handler()
+
+	// 1. 初始化 Owner 用户 (admin)
+	ownerUser, _ := sm.GetUserByUsername("admin")
+	ownerToken, _, _ := sm.CreateUserSession(ownerUser.ID, false)
+	ownerCookie := &http.Cookie{Name: auth.SessionCookieName, Value: ownerToken}
+
+	// 2. 创建 Admin 用户 (sub_admin) 和 Viewer 用户 (guest_viewer)
+	adminUser, err := sm.CreateUser("sub_admin", "SubAdmin123!", auth.RoleAdmin, ownerUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken, _, _ := sm.CreateUserSession(adminUser.ID, false)
+	adminCookie := &http.Cookie{Name: auth.SessionCookieName, Value: adminToken}
+
+	viewerUser, err := sm.CreateUser("guest_viewer", "Viewer123!", auth.RoleViewer, ownerUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerToken, _, _ := sm.CreateUserSession(viewerUser.ID, false)
+	viewerCookie := &http.Cookie{Name: auth.SessionCookieName, Value: viewerToken}
+
+	// 3. Admin 使用 Claim Token 认领一台设备 (dev-admin)
+	_, tokenMeta, err := em.CreateClaimTokenForOwner(10*time.Minute, 1, "Admin Pi", adminUser.ID, adminUser.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	devAdminClaimReq := httptest.NewRequest("POST", "/api/v1/devices/claim", strings.NewReader(`{"hostname":"admin-pi","os":"linux","arch":"amd64","public_key":"ssh-ed25519 AAA"}`))
+	devAdminClaimReq.Header.Set("Authorization", "Bearer "+tokenMeta.ID)
+	// 由于 Token 取自真实 hash，使用原始 token 认领
+	// 我们直接在 registry 保存并绑定 owner
+	devAdmin, _ := r.Save(sampleDevice("dev-admin", adminUser.ID))
+	devOwnerOnly, _ := r.Save(sampleDevice("dev-owner-only", ownerUser.ID))
+
+	// 4. 验证设备列表资源隔离
+	// a. Owner 可以看到全部 2 台设备
+	reqListOwner := httptest.NewRequest("GET", "/api/v1/devices", nil)
+	reqListOwner.AddCookie(ownerCookie)
+	recListOwner := httptest.NewRecorder()
+	h.ServeHTTP(recListOwner, reqListOwner)
+	if recListOwner.Code != http.StatusOK {
+		t.Fatalf("Owner list devices failed: %d", recListOwner.Code)
+	}
+	var ownerListResp struct {
+		Devices []map[string]any `json:"devices"`
+	}
+	_ = json.Unmarshal(recListOwner.Body.Bytes(), &ownerListResp)
+	if len(ownerListResp.Devices) != 2 {
+		t.Fatalf("Owner should see 2 devices, got %d", len(ownerListResp.Devices))
+	}
+
+	// b. Admin 仅能看到自己拥有的 1 台设备 (dev-admin)
+	reqListAdmin := httptest.NewRequest("GET", "/api/v1/devices", nil)
+	reqListAdmin.AddCookie(adminCookie)
+	recListAdmin := httptest.NewRecorder()
+	h.ServeHTTP(recListAdmin, reqListAdmin)
+	if recListAdmin.Code != http.StatusOK {
+		t.Fatalf("Admin list devices failed: %d", recListAdmin.Code)
+	}
+	var adminListResp struct {
+		Devices []map[string]any `json:"devices"`
+	}
+	_ = json.Unmarshal(recListAdmin.Body.Bytes(), &adminListResp)
+	if len(adminListResp.Devices) != 1 || adminListResp.Devices[0]["id"] != "dev-admin" {
+		t.Fatalf("Admin should only see dev-admin, got: %+v", adminListResp.Devices)
+	}
+
+	// c. Viewer 初始没有任何设备可见 (0 台)
+	reqListViewer := httptest.NewRequest("GET", "/api/v1/devices", nil)
+	reqListViewer.AddCookie(viewerCookie)
+	recListViewer := httptest.NewRecorder()
+	h.ServeHTTP(recListViewer, reqListViewer)
+	var viewerListResp struct {
+		Devices []map[string]any `json:"devices"`
+	}
+	_ = json.Unmarshal(recListViewer.Body.Bytes(), &viewerListResp)
+	if len(viewerListResp.Devices) != 0 {
+		t.Fatalf("Viewer should see 0 devices, got %d", len(viewerListResp.Devices))
+	}
+
+	// 5. 验证 404 IDOR 隐藏保护：Admin 请求 dev-owner-only -> 必须返回 404 而不是 403
+	reqIDOR := httptest.NewRequest("GET", "/api/v1/devices/"+devOwnerOnly.ID, nil)
+	reqIDOR.AddCookie(adminCookie)
+	recIDOR := httptest.NewRecorder()
+	h.ServeHTTP(recIDOR, reqIDOR)
+	if recIDOR.Code != http.StatusNotFound {
+		t.Fatalf("Expected 404 for IDOR attempt on unshared device, got %d", recIDOR.Code)
+	}
+
+	// 6. 设备共享授权：Admin 将 dev-admin 共享给 Viewer (read 权限)
+	reqGrant := httptest.NewRequest("PUT", "/api/v1/devices/"+devAdmin.ID+"/grants/"+viewerUser.ID, strings.NewReader(`{"level":"read"}`))
+	reqGrant.AddCookie(adminCookie)
+	recGrant := httptest.NewRecorder()
+	h.ServeHTTP(recGrant, reqGrant)
+	if recGrant.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on granting device, got %d: %s", recGrant.Code, recGrant.Body.String())
+	}
+
+	// 7. 共享后 Viewer 可以看到 dev-admin 并读取详情
+	reqGetShared := httptest.NewRequest("GET", "/api/v1/devices/"+devAdmin.ID, nil)
+	reqGetShared.AddCookie(viewerCookie)
+	recGetShared := httptest.NewRecorder()
+	h.ServeHTTP(recGetShared, reqGetShared)
+	if recGetShared.Code != http.StatusOK {
+		t.Fatalf("Expected 200 for viewer accessing shared device, got %d", recGetShared.Code)
+	}
+
+	// 8. 但 Viewer 尝试操作关机/同步 -> 403 Forbidden（角色只读硬约束）
+	reqShutdown := httptest.NewRequest("POST", "/api/v1/devices/"+devAdmin.ID+"/shutdown", nil)
+	reqShutdown.AddCookie(viewerCookie)
+	recShutdown := httptest.NewRecorder()
+	h.ServeHTTP(recShutdown, reqShutdown)
+	if recShutdown.Code != http.StatusForbidden {
+		t.Fatalf("Expected 403 for viewer attempting write action, got %d", recShutdown.Code)
+	}
+
+	// 9. 用户管理与级联物理删除：删除 Admin 用户，关联的 dev-admin 必须被物理级联清理
+	reqDelUser := httptest.NewRequest("DELETE", "/api/v1/users/"+adminUser.ID, nil)
+	reqDelUser.AddCookie(ownerCookie)
+	recDelUser := httptest.NewRecorder()
+	h.ServeHTTP(recDelUser, reqDelUser)
+	if recDelUser.Code != http.StatusNoContent {
+		t.Fatalf("Expected 204 on deleting user, got %d", recDelUser.Code)
+	}
+
+	// 验证 dev-admin 在 Registry 中已不存在
+	if _, err := r.Get(devAdmin.ID); err == nil {
+		t.Fatal("dev-admin should be cascaded and purged after owner deleted")
+	}
+}
+
+func sampleDevice(id, ownerID string) device.Device {
+	return device.Device{
+		ID:          id,
+		OwnerUserID: ownerID,
+		Hostname:    id,
+		OS:          "linux",
+		Arch:        "amd64",
+		SSHUser:     "root",
+		SSHPort:     22,
+		PublicKey:   "ssh-ed25519 " + id,
+		Addresses:   []string{"192.168.1.100"},
+	}
+}
+
+func TestMultiUser_UserManagementAndTransferEndpoints(t *testing.T) {
+	s, sm, _, r, _ := setupTestServerWithAuth(t)
+	h := s.Handler()
+
+	ownerUser, _ := sm.GetUserByUsername("admin")
+	ownerToken, _, _ := sm.CreateUserSession(ownerUser.ID, false)
+	ownerCookie := &http.Cookie{Name: auth.SessionCookieName, Value: ownerToken}
+
+	// 1. 创建新用户 (POST /api/v1/users)
+	reqCreate := httptest.NewRequest("POST", "/api/v1/users", strings.NewReader(`{"username":"charlie","password":"Password123!","role":"admin"}`))
+	reqCreate.AddCookie(ownerCookie)
+	recCreate := httptest.NewRecorder()
+	h.ServeHTTP(recCreate, reqCreate)
+	if recCreate.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 on create user, got %d: %s", recCreate.Code, recCreate.Body.String())
+	}
+	var createdUser auth.User
+	_ = json.Unmarshal(recCreate.Body.Bytes(), &createdUser)
+	if createdUser.Username != "charlie" || createdUser.Role != auth.RoleAdmin {
+		t.Fatalf("Unexpected user: %+v", createdUser)
+	}
+
+	// 2. 列出用户 (GET /api/v1/users)
+	reqList := httptest.NewRequest("GET", "/api/v1/users", nil)
+	reqList.AddCookie(ownerCookie)
+	recList := httptest.NewRecorder()
+	h.ServeHTTP(recList, reqList)
+	if recList.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on list users, got %d", recList.Code)
+	}
+
+	// 3. 修改角色 (PATCH /api/v1/users/{id})
+	reqRole := httptest.NewRequest("PATCH", "/api/v1/users/"+createdUser.ID, strings.NewReader(`{"role":"viewer"}`))
+	reqRole.AddCookie(ownerCookie)
+	recRole := httptest.NewRecorder()
+	h.ServeHTTP(recRole, reqRole)
+	if recRole.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on update role, got %d", recRole.Code)
+	}
+
+	// 4. 禁用用户 (POST /api/v1/users/{id}/disable)
+	reqDisable := httptest.NewRequest("POST", "/api/v1/users/"+createdUser.ID+"/disable", nil)
+	reqDisable.AddCookie(ownerCookie)
+	recDisable := httptest.NewRecorder()
+	h.ServeHTTP(recDisable, reqDisable)
+	if recDisable.Code != http.StatusNoContent {
+		t.Fatalf("Expected 204 on disable user, got %d", recDisable.Code)
+	}
+
+	// 5. 启用用户 (POST /api/v1/users/{id}/enable)
+	reqEnable := httptest.NewRequest("POST", "/api/v1/users/"+createdUser.ID+"/enable", nil)
+	reqEnable.AddCookie(ownerCookie)
+	recEnable := httptest.NewRecorder()
+	h.ServeHTTP(recEnable, reqEnable)
+	if recEnable.Code != http.StatusNoContent {
+		t.Fatalf("Expected 204 on enable user, got %d", recEnable.Code)
+	}
+
+	// 6. 重置密码 (POST /api/v1/users/{id}/password-reset)
+	reqReset := httptest.NewRequest("POST", "/api/v1/users/"+createdUser.ID+"/password-reset", strings.NewReader(`{"new_password":"ResetPassword456!"}`))
+	reqReset.AddCookie(ownerCookie)
+	recReset := httptest.NewRecorder()
+	h.ServeHTTP(recReset, reqReset)
+	if recReset.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on password reset, got %d", recReset.Code)
+	}
+
+	// 7. 设备授权管理与所有权转移 (Grants & Transfer)
+	dev, _ := r.Save(sampleDevice("dev-charlie", ownerUser.ID))
+
+	// a. 设置授权 (PUT /api/v1/devices/{id}/grants/{user_id})
+	reqPutGrant := httptest.NewRequest("PUT", "/api/v1/devices/"+dev.ID+"/grants/"+createdUser.ID, strings.NewReader(`{"level":"operate"}`))
+	reqPutGrant.AddCookie(ownerCookie)
+	recPutGrant := httptest.NewRecorder()
+	h.ServeHTTP(recPutGrant, reqPutGrant)
+	if recPutGrant.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on put grant, got %d", recPutGrant.Code)
+	}
+
+	// b. 列出设备授权 (GET /api/v1/devices/{id}/grants)
+	reqListGrants := httptest.NewRequest("GET", "/api/v1/devices/"+dev.ID+"/grants", nil)
+	reqListGrants.AddCookie(ownerCookie)
+	recListGrants := httptest.NewRecorder()
+	h.ServeHTTP(recListGrants, reqListGrants)
+	if recListGrants.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on list grants, got %d", recListGrants.Code)
+	}
+
+	// c. 撤销授权 (DELETE /api/v1/devices/{id}/grants/{user_id})
+	reqDelGrant := httptest.NewRequest("DELETE", "/api/v1/devices/"+dev.ID+"/grants/"+createdUser.ID, nil)
+	reqDelGrant.AddCookie(ownerCookie)
+	recDelGrant := httptest.NewRecorder()
+	h.ServeHTTP(recDelGrant, reqDelGrant)
+	if recDelGrant.Code != http.StatusNoContent {
+		t.Fatalf("Expected 204 on delete grant, got %d", recDelGrant.Code)
+	}
+
+	// d. 转移所有权 (POST /api/v1/devices/{id}/transfer)
+	reqTransfer := httptest.NewRequest("POST", "/api/v1/devices/"+dev.ID+"/transfer", strings.NewReader(`{"new_owner_id":"`+createdUser.ID+`"}`))
+	reqTransfer.AddCookie(ownerCookie)
+	recTransfer := httptest.NewRecorder()
+	h.ServeHTTP(recTransfer, reqTransfer)
+	if recTransfer.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on transfer device, got %d: %s", recTransfer.Code, recTransfer.Body.String())
+	}
+}
+
+func TestMultiUser_AuditLoggingAndLogoutAll(t *testing.T) {
+	s, sm, _, _, _ := setupTestServerWithAuth(t)
+	h := s.Handler()
+
+	ownerUser, _ := sm.GetUserByUsername("admin")
+	ownerToken, _, _ := sm.CreateUserSession(ownerUser.ID, false)
+	ownerCookie := &http.Cookie{Name: auth.SessionCookieName, Value: ownerToken}
+
+	// 1. 创建新用户触发审计
+	reqCreate := httptest.NewRequest("POST", "/api/v1/users", strings.NewReader(`{"username":"diana","password":"Password123!","role":"admin"}`))
+	reqCreate.AddCookie(ownerCookie)
+	recCreate := httptest.NewRecorder()
+	h.ServeHTTP(recCreate, reqCreate)
+	if recCreate.Code != http.StatusCreated {
+		t.Fatalf("Create user failed: %d", recCreate.Code)
+	}
+
+	// 2. 查询审计日志 (GET /api/v1/audit/logs)
+	reqAudit := httptest.NewRequest("GET", "/api/v1/audit/logs", nil)
+	reqAudit.AddCookie(ownerCookie)
+	recAudit := httptest.NewRecorder()
+	h.ServeHTTP(recAudit, reqAudit)
+	if recAudit.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on audit logs, got %d", recAudit.Code)
+	}
+	var auditResp struct {
+		Events []auth.AuditEvent `json:"events"`
+		Count  int               `json:"count"`
+	}
+	_ = json.Unmarshal(recAudit.Body.Bytes(), &auditResp)
+	if auditResp.Count == 0 || len(auditResp.Events) == 0 {
+		t.Fatal("Expected recorded audit events, got 0")
+	}
+
+	// 3. 测试 Logout-All (POST /api/v1/auth/logout-all)
+	// 为 diana 创建两个会话
+	dianaUser, _ := sm.GetUserByUsername("diana")
+	sessToken1, _, _ := sm.CreateUserSession(dianaUser.ID, false)
+	sessToken2, _, _ := sm.CreateUserSession(dianaUser.ID, false)
+
+	// 使用 sessToken1 执行 logout-all
+	reqLogoutAll := httptest.NewRequest("POST", "/api/v1/auth/logout-all", nil)
+	reqLogoutAll.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sessToken1})
+	recLogoutAll := httptest.NewRecorder()
+	h.ServeHTTP(recLogoutAll, reqLogoutAll)
+	if recLogoutAll.Code != http.StatusOK {
+		t.Fatalf("Expected 200 on logout-all, got %d", recLogoutAll.Code)
+	}
+
+	// 验证两个 Token 均已被注销
+	if _, err := sm.ValidateSession(sessToken1); err == nil {
+		t.Fatal("sessToken1 should be invalidated after logout-all")
+	}
+	if _, err := sm.ValidateSession(sessToken2); err == nil {
+		t.Fatal("sessToken2 should be invalidated after logout-all")
+	}
+}
+
+func TestMultiUser_UpgradeAndRollbackCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+
+	// 1. 模拟 v1 单管理员历史持久化文件
+	legacyHash, _ := auth.HashPassword("OldAdminPass123!")
+	legacyJSON := `{"admin":{"username":"legacy_admin","password_hash":"` + legacyHash + `","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},"sessions":{}}`
+	if err := os.WriteFile(authPath, []byte(legacyJSON), 0600); err != nil {
+		t.Fatalf("write legacy auth file: %v", err)
+	}
+
+	// 2. 加载 SessionManager 执行自动迁移
+	sm, err := auth.NewSessionManager(authPath)
+	if err != nil {
+		t.Fatalf("NewSessionManager on legacy file: %v", err)
+	}
+
+	// 验证自动备份文件 .v1.bak 存在
+	bakPath := authPath + ".v1.bak"
+	if _, err := os.Stat(bakPath); err != nil {
+		t.Fatalf("expected backup file %s to exist: %v", bakPath, err)
+	}
+
+	// 验证旧密码能正常认证且角色为 Owner
+	user, err := sm.AuthenticateUser("legacy_admin", "OldAdminPass123!")
+	if err != nil {
+		t.Fatalf("Authenticate legacy admin after migration: %v", err)
+	}
+	if user.Role != auth.RoleOwner {
+		t.Fatalf("Expected legacy admin to have owner role, got %s", user.Role)
+	}
+
+	// 3. 再次重新 Open SessionManager，验证已是 v2 数据无重复迁移
+	sm2, err := auth.NewSessionManager(authPath)
+	if err != nil {
+		t.Fatalf("reload SessionManager v2: %v", err)
+	}
+	user2, err := sm2.AuthenticateUser("legacy_admin", "OldAdminPass123!")
+	if err != nil || user2.ID != user.ID {
+		t.Fatalf("failed reloading v2 store: %v", err)
 	}
 }
