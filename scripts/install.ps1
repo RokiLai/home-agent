@@ -46,7 +46,14 @@ Set-Service sshd -StartupType Automatic
 
 if ($token) {
     # 1. Claim device and persist dedicated Device Token locally
-    & $binary claim --server $env:HOMEAGENT_SERVER --claim-token $token
+    $claimArgs = @("claim", "--server", $env:HOMEAGENT_SERVER, "--claim-token", $token)
+    if ($env:HOMEAGENT_SSH_USER) {
+        $claimArgs += @("--ssh-user", $env:HOMEAGENT_SSH_USER)
+    }
+    if ($env:HOMEAGENT_SSH_PORT) {
+        $claimArgs += @("--ssh-port", $env:HOMEAGENT_SSH_PORT)
+    }
+    & $binary $claimArgs
 
     # 2. Setup background daemon service using persisted device configuration
     & $binary service install --server $env:HOMEAGENT_SERVER --binary $binary

@@ -276,8 +276,14 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 	d.AgentVersion = req.AgentVersion
 	d.OS = req.OS
 	d.Arch = req.Arch
-	d.SSHUser = req.SSHUser
-	d.SSHPort = req.SSHPort
+	if req.SSHUser != "" && !strings.HasSuffix(req.SSHUser, "$") {
+		d.SSHUser = req.SSHUser
+	} else if strings.HasSuffix(req.SSHUser, "$") && s.Log != nil {
+		s.Log.Warn("rejected_machine_account_ssh_user", "device_id", d.ID, "ssh_user", req.SSHUser)
+	}
+	if req.SSHPort > 0 {
+		d.SSHPort = req.SSHPort
+	}
 	d.Addresses = req.Addresses
 	if req.ControlProtocols != nil {
 		d.ControlProtocols = normalizeProtocols(*req.ControlProtocols)

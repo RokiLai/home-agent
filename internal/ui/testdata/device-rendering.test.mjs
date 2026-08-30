@@ -234,3 +234,33 @@ test('isDeviceOnline evaluates connected property and falls back to updated_at w
   assert.equal(isDeviceOnline({ updated_at: stale }), false);
   assert.equal(isDeviceOnline({}), false);
 });
+
+test('createDeviceCardHTML renders explicit Administrator and non-default SSH ports accurately', async () => {
+  const { createDeviceCardHTML } = await import('../static/js/devices/render.js');
+
+  const winDev = {
+    id: 'win-pc-1',
+    hostname: 'win-pc',
+    alias: 'Windows 工作站',
+    os: 'windows',
+    arch: 'amd64',
+    mac: 'aa:bb:cc:dd:ee:ff',
+    ssh_user: 'Administrator',
+    ssh_port: 22,
+    addresses: ['192.168.1.100'],
+    connected: true,
+    sync_status: 'synced',
+    health: { status: 'healthy', reasons: [] }
+  };
+
+  const html = createDeviceCardHTML(winDev);
+  assert.match(html, /ssh Administrator@192\.168\.1\.100/, 'Must render ssh Administrator@192.168.1.100 for port 22');
+  assert.doesNotMatch(html, /ROKILAI\$/, 'Must NOT render machine account');
+
+  const winCustomPort = {
+    ...winDev,
+    ssh_port: 2222
+  };
+  const htmlCustom = createDeviceCardHTML(winCustomPort);
+  assert.match(htmlCustom, /ssh -p 2222 Administrator@192\.168\.1\.100/, 'Must render ssh -p 2222 Administrator@192.168.1.100 for custom port');
+});

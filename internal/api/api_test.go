@@ -347,6 +347,65 @@ func TestPutDeviceFactsUpdatesDynamicFactsAndPreservesMACWhenMissing(t *testing.
 	}
 }
 
+func TestPutDeviceFactsSSHUserProtection(t *testing.T) {
+	r, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := device.Device{
+		ID: "dev-ssh-protect", Hostname: "win-host", MAC: "02:00:00:00:00:02",
+		AgentVersion: "v0.6.8", OS: "windows", Arch: "amd64", SSHUser: "Administrator",
+		SSHPort: 22, PublicKey: "ssh-ed25519 AAAA", Addresses: []string{"192.168.1.50"},
+	}
+	if _, err := r.Save(original); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Registry: r, Token: "device-token", Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	h := s.Handler()
+
+	// 1. Negative test: reporting a Windows machine account ending with $ must NOT overwrite existing SSHUser
+	machinePayload := `{"hostname":"win-host","os":"windows","arch":"amd64","ssh_user":"ROKILAI$","ssh_port":22,"addresses":["192.168.1.50"]}`
+	req1 := httptest.NewRequest(http.MethodPut, "/api/v1/devices/dev-ssh-protect/facts", strings.NewReader(machinePayload))
+	req1.Header.Set("Authorization", "Bearer device-token")
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("PUT facts with machine account status %d: %s", rec1.Code, rec1.Body.String())
+	}
+	got1, _ := r.Get("dev-ssh-protect")
+	if got1.SSHUser != "Administrator" {
+		t.Fatalf("machine account ROKILAI$ must be rejected, got %q, want Administrator", got1.SSHUser)
+	}
+
+	// 2. Negative test: reporting an empty ssh_user must NOT clear existing SSHUser
+	emptyPayload := `{"hostname":"win-host","os":"windows","arch":"amd64","ssh_user":"","ssh_port":22,"addresses":["192.168.1.50"]}`
+	req2 := httptest.NewRequest(http.MethodPut, "/api/v1/devices/dev-ssh-protect/facts", strings.NewReader(emptyPayload))
+	req2.Header.Set("Authorization", "Bearer device-token")
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("PUT facts with empty ssh_user status %d: %s", rec2.Code, rec2.Body.String())
+	}
+	got2, _ := r.Get("dev-ssh-protect")
+	if got2.SSHUser != "Administrator" {
+		t.Fatalf("empty ssh_user must preserve existing Administrator, got %q", got2.SSHUser)
+	}
+
+	// 3. Positive test: reporting a valid explicit ssh_user updates the record
+	validPayload := `{"hostname":"win-host","os":"windows","arch":"amd64","ssh_user":"customadmin","ssh_port":2222,"addresses":["192.168.1.50"]}`
+	req3 := httptest.NewRequest(http.MethodPut, "/api/v1/devices/dev-ssh-protect/facts", strings.NewReader(validPayload))
+	req3.Header.Set("Authorization", "Bearer device-token")
+	rec3 := httptest.NewRecorder()
+	h.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("PUT facts with valid ssh_user status %d: %s", rec3.Code, rec3.Body.String())
+	}
+	got3, _ := r.Get("dev-ssh-protect")
+	if got3.SSHUser != "customadmin" || got3.SSHPort != 2222 {
+		t.Fatalf("expected customadmin:2222, got %s:%d", got3.SSHUser, got3.SSHPort)
+	}
+}
+
 func TestSSEStreamingAndBroadcast(t *testing.T) {
 	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
 	b := broker.New()

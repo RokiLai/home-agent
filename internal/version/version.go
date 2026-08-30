@@ -6,13 +6,13 @@ import "strings"
 // Version 是 HomeAgent 组件的当前版本号。
 // 可在编译时通过以下方式覆盖：
 // -ldflags "-X homeagent/internal/version.Version=vX.Y.Z"
-var Version = "v0.6.9"
+var Version = "v0.6.10"
 
 // Get 返回当前版本字符串，若未设置或为空则返回默认版本号。
 func Get() string {
 	v := strings.TrimSpace(Version)
 	if v == "" {
-		return "v0.6.9"
+		return "v0.6.10"
 	}
 	return v
 }

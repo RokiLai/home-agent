@@ -559,7 +559,7 @@ func TestStartDeviceFactsReporterSendsInitialSnapshot(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	startDeviceFactsReporter(ctx, []string{server.URL}, nil, "device-token", "dev-start", nil)
+	startDeviceFactsReporter(ctx, []string{server.URL}, nil, "device-token", "dev-start", "testuser", 22, nil)
 
 	select {
 	case facts := <-received:
@@ -625,6 +625,73 @@ func TestClaimAndDeviceConfigPersistence(t *testing.T) {
 	}
 	if devCfg.DeviceID != "dev-claimed-12345" || devCfg.DeviceToken != "dev_secret_token_9999" || devCfg.ServerURL != server.URL {
 		t.Fatalf("unexpected devCfg: %+v", devCfg)
+	}
+	if devCfg.SSHUser != "tester" || devCfg.SSHPort != 22 {
+		t.Fatalf("unexpected SSH config persisted: SSHUser=%q SSHPort=%d", devCfg.SSHUser, devCfg.SSHPort)
+	}
+}
+
+func TestDeviceConfigBackwardsCompatibility(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "legacy-device.json")
+	legacyContent := `{"server_url":"https://homeagent.rokilai.online","device_id":"dev-legacy","device_token":"tok-legacy"}`
+	if err := os.WriteFile(cfgFile, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadDeviceConfig(cfgFile)
+	if err != nil {
+		t.Fatalf("failed to load legacy device.json: %v", err)
+	}
+	if cfg.DeviceID != "dev-legacy" || cfg.DeviceToken != "tok-legacy" {
+		t.Fatalf("unexpected legacy cfg: %+v", cfg)
+	}
+	if cfg.SSHUser != "" || cfg.SSHPort != 0 {
+		t.Fatalf("expected empty default SSHUser and 0 SSHPort for legacy config, got user=%q port=%d", cfg.SSHUser, cfg.SSHPort)
+	}
+}
+
+func TestCollectDeviceFactsWithConfiguredUserAndPort(t *testing.T) {
+	facts, err := collectDeviceFacts("Administrator", 2222)
+	if err != nil {
+		t.Fatalf("collectDeviceFacts failed: %v", err)
+	}
+	if facts.SSHUser != "Administrator" {
+		t.Fatalf("expected SSHUser Administrator, got %q", facts.SSHUser)
+	}
+	if facts.SSHPort != 2222 {
+		t.Fatalf("expected SSHPort 2222, got %d", facts.SSHPort)
+	}
+}
+
+func TestIsMachineOrServiceAccount(t *testing.T) {
+	negativeCases := []string{
+		"Administrator",
+		"roki",
+		"user1",
+		"root",
+		"ubuntu",
+	}
+	for _, u := range negativeCases {
+		if isMachineOrServiceAccount(u) {
+			t.Errorf("expected %q to NOT be machine/service account", u)
+		}
+	}
+
+	positiveCases := []string{
+		"ROKILAI$",
+		"DESKTOP-1234$",
+		"SYSTEM",
+		"system",
+		"LocalSystem",
+		"LOCAL SYSTEM",
+		"NetworkService",
+		"LOCAL SERVICE",
+	}
+	for _, u := range positiveCases {
+		if !isMachineOrServiceAccount(u) {
+			t.Errorf("expected %q to BE machine/service account", u)
+		}
 	}
 }
 

@@ -77,6 +77,20 @@ type DeviceConfigFile struct {
 	ServerURLs  []string `json:"server_urls,omitempty"`
 	DeviceID    string   `json:"device_id"`
 	DeviceToken string   `json:"device_token"`
+	SSHUser     string   `json:"ssh_user,omitempty"`
+	SSHPort     int      `json:"ssh_port,omitempty"`
+}
+
+func isMachineOrServiceAccount(username string) bool {
+	if strings.HasSuffix(username, "$") {
+		return true
+	}
+	upper := strings.ToUpper(strings.TrimSpace(username))
+	switch upper {
+	case "SYSTEM", "LOCALSYSTEM", "LOCAL SYSTEM", "NETWORKSERVICE", "NETWORK SERVICE", "LOCALSERVICE", "LOCAL SERVICE":
+		return true
+	}
+	return false
 }
 
 func splitAndNormalizeURLs(inputs ...string) []string {
@@ -274,6 +288,8 @@ func claim(args []string) error {
 		ServerURLs:  serverURLs,
 		DeviceID:    claimResp.DeviceID,
 		DeviceToken: claimResp.DeviceToken,
+		SSHUser:     d.SSHUser,
+		SSHPort:     d.SSHPort,
 	}
 	if err := saveDeviceConfig(cfgFile, devCfg); err != nil {
 		return fmt.Errorf("save device config: %w", err)
@@ -356,6 +372,8 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 	iface := fs.String("interface", os.Getenv("HOMEAGENT_INTERFACE"), "Interface name to monitor (defaults to auto)")
 	isRouter := fs.Bool("router", os.Getenv("HOMEAGENT_ROUTER") == "true", "Run as router agent reporting OpenWrt prefixes")
 	ipv6Report := fs.Bool("ipv6-report", true, "Enable IPv6 / prefix reporting")
+	sshUser := fs.String("ssh-user", os.Getenv("HOMEAGENT_SSH_USER"), "SSH user override")
+	sshPort := fs.Int("ssh-port", 0, "SSH port override")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -366,6 +384,8 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 	if cfgPath == "" {
 		cfgPath = getDeviceConfigPath()
 	}
+	var cfgSSHUser string
+	var cfgSSHPort int
 	if devCfg, err := loadDeviceConfig(cfgPath); err == nil && devCfg != nil {
 		if len(devCfg.ServerURLs) > 0 {
 			serverURLs = append(serverURLs, devCfg.ServerURLs...)
@@ -378,6 +398,8 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 		if *deviceID == "" && devCfg.DeviceID != "" {
 			*deviceID = devCfg.DeviceID
 		}
+		cfgSSHUser = devCfg.SSHUser
+		cfgSSHPort = devCfg.SSHPort
 	}
 
 	if *server != "" {
@@ -413,6 +435,18 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 		return err
 	}
 
+	finalSSHUser := *sshUser
+	if finalSSHUser == "" {
+		finalSSHUser = cfgSSHUser
+	}
+	finalSSHPort := *sshPort
+	if finalSSHPort <= 0 {
+		finalSSHPort = cfgSSHPort
+	}
+	if finalSSHPort <= 0 {
+		finalSSHPort = 22
+	}
+
 	revStore := newRevisionStore(filepath.Dir(cfgPath))
 	if *ipv6Report {
 		if *isRouter {
@@ -421,7 +455,7 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 			startIPv6Reporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, *networkID, *iface, revStore, logger)
 		}
 	}
-	startDeviceFactsReporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, logger)
+	startDeviceFactsReporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, finalSSHUser, finalSSHPort, logger)
 
 	return d.Run(ctx)
 }
@@ -446,8 +480,8 @@ type deviceFactsPayload struct {
 	Runtime          *device.RuntimeFacts  `json:"runtime,omitempty"`
 }
 
-func collectDeviceFacts() (deviceFactsPayload, error) {
-	d, _, err := localDevice("", 22)
+func collectDeviceFacts(sshUser string, port int) (deviceFactsPayload, error) {
+	d, _, err := localDevice(sshUser, port)
 	if err != nil {
 		return deviceFactsPayload{}, err
 	}
@@ -544,7 +578,7 @@ func sendDeviceFactsWithStatus(ctx context.Context, client *http.Client, serverU
 	return "", false, errors.New("no server reachable for device facts")
 }
 
-func startDeviceFactsReporter(ctx context.Context, serverURLs []string, getActiveServer func() string, token, deviceID string, logger *slog.Logger) {
+func startDeviceFactsReporter(ctx context.Context, serverURLs []string, getActiveServer func() string, token, deviceID, sshUser string, sshPort int, logger *slog.Logger) {
 	go func() {
 		poll := time.NewTicker(30 * time.Second)
 		heartbeat := time.NewTicker(10 * time.Minute)
@@ -555,7 +589,7 @@ func startDeviceFactsReporter(ctx context.Context, serverURLs []string, getActiv
 		legacyServerMode := false
 
 		report := func(force bool) {
-			facts, err := collectDeviceFacts()
+			facts, err := collectDeviceFacts(sshUser, sshPort)
 			if err != nil {
 				if logger != nil {
 					logger.Warn("failed_to_collect_device_facts", "error", err)
@@ -968,10 +1002,16 @@ func localDevice(sshUser string, port int) (device.Device, string, error) {
 	if err != nil {
 		return device.Device{}, "", err
 	}
+	if port <= 0 {
+		port = 22
+	}
 	if sshUser == "" {
 		sshUser = current.Username
 		if i := strings.LastIndexAny(sshUser, "\\/"); i >= 0 {
 			sshUser = sshUser[i+1:]
+		}
+		if isMachineOrServiceAccount(sshUser) {
+			sshUser = ""
 		}
 	}
 	machineID, err := readMachineID()
