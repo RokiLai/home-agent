@@ -35,11 +35,13 @@ import (
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/ui"
 	"homeagent/internal/upgradeplan"
@@ -83,6 +85,10 @@ type Server struct {
 	Alerting                 *alerting.Service
 	UpgradePlans             *upgradeplan.Service
 	MacOSAppUpgradeV2Enabled bool
+	UpgradeSource            string
+	GitHubRepo               string
+	GitHubMirrorPrefix       string
+	GitHubReleaseClient      *githubrelease.Client
 
 	version       int64
 	wakeRateLimit sync.Map
@@ -112,6 +118,16 @@ func (s *Server) Handler() http.Handler {
 
 	if s.Registry != nil && s.Authorizer == nil {
 		s.Authorizer = auth.NewAuthorizer(s.Registry)
+	}
+
+	if s.GitHubReleaseClient == nil {
+		s.GitHubReleaseClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+	if s.UpgradeSource == "" {
+		s.UpgradeSource = "auto"
 	}
 
 	// 统一细粒度权限鉴权中间件
@@ -217,6 +233,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/commands/{id}/cancel", requirePerm(auth.PermCommandsCancel, nil)(http.HandlerFunc(s.cancelCommand)))
 	mux.Handle("GET /api/v1/upgrade-plans", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.listUpgradePlans)))
 	mux.Handle("GET /api/v1/upgrade-plans/{id}", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getUpgradePlan)))
+
+	// System / Server Info & Self-Upgrade routes
+	mux.Handle("GET /api/v1/system/version-check", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.systemVersionCheck)))
+	mux.Handle("POST /api/v1/system/upgrade", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.systemUpgrade)))
 
 	// Health & Alerting Management routes
 	mux.Handle("GET /api/v1/health/summary", requirePerm(auth.PermHealthRead, nil)(http.HandlerFunc(s.handleHealthSummary)))
@@ -938,6 +958,7 @@ type UpgradeRequest struct {
 	URL           string `json:"url,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
 	Force         bool   `json:"force,omitempty"`
+	Source        string `json:"source,omitempty"`
 }
 
 // UpgradePayload 表示通过 SSE 下发给 Agent 的 upgrade 事件载荷。
@@ -960,6 +981,14 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 		targetVer = version.Get()
 	}
 
+	source := strings.ToLower(strings.TrimSpace(req.Source))
+	if source == "" {
+		source = strings.ToLower(strings.TrimSpace(s.UpgradeSource))
+	}
+	if source == "" {
+		source = "auto"
+	}
+
 	url := strings.TrimSpace(req.URL)
 	sha := strings.ToLower(strings.TrimSpace(req.SHA256))
 
@@ -978,38 +1007,66 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 			binaryName = fmt.Sprintf("homeagent-agent-windows-%s.exe", archName)
 		}
 
-		var binaryPath string
-		candidates := []string{}
-		if s.DownloadsDir != "" {
-			candidates = append(candidates, filepath.Join(s.DownloadsDir, binaryName))
-		}
-		candidates = append(candidates,
-			filepath.Join("dist", binaryName),
-			filepath.Join("bin", binaryName),
-		)
+		// 1. Try local candidate files if source is "local" or "auto"
+		if source == "local" || source == "auto" {
+			var binaryPath string
+			candidates := []string{}
+			if s.DownloadsDir != "" {
+				candidates = append(candidates, filepath.Join(s.DownloadsDir, binaryName))
+			}
+			candidates = append(candidates,
+				filepath.Join("dist", binaryName),
+				filepath.Join("bin", binaryName),
+			)
 
-		for _, cand := range candidates {
-			if info, err := os.Stat(cand); err == nil && !info.IsDir() {
-				binaryPath = cand
-				break
+			for _, cand := range candidates {
+				if info, err := os.Stat(cand); err == nil && !info.IsDir() {
+					binaryPath = cand
+					break
+				}
+			}
+
+			if binaryPath != "" {
+				if sha == "" {
+					b, err := os.ReadFile(binaryPath)
+					if err == nil {
+						sum := sha256.Sum256(b)
+						sha = hex.EncodeToString(sum[:])
+					}
+				}
+				if url == "" && r != nil {
+					scheme := "http"
+					if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+						scheme = "https"
+					}
+					host := resolveServerHost(r)
+					url = fmt.Sprintf("%s://%s/downloads/%s", scheme, host, binaryName)
+				}
 			}
 		}
 
-		if binaryPath != "" {
+		// 2. If still unpopulated and source is "github" or "auto", resolve from GitHub Releases
+		if (url == "" || sha == "") && source != "local" {
+			ghClient := s.GitHubReleaseClient
+			if ghClient == nil {
+				ghClient = githubrelease.NewClient(githubrelease.Config{
+					Repo:         s.GitHubRepo,
+					MirrorPrefix: s.GitHubMirrorPrefix,
+				})
+			}
+			if url == "" {
+				url = ghClient.BuildAssetDownloadURL(targetVer, binaryName)
+			}
 			if sha == "" {
-				b, err := os.ReadFile(binaryPath)
-				if err == nil {
-					sum := sha256.Sum256(b)
-					sha = hex.EncodeToString(sum[:])
+				ctx := context.Background()
+				if r != nil {
+					ctx = r.Context()
 				}
-			}
-			if url == "" && r != nil {
-				scheme := "http"
-				if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-					scheme = "https"
+				var err error
+				sha, err = ghClient.FetchAssetSHA256(ctx, targetVer, binaryName)
+				if err != nil {
+					return UpgradePayload{}, fmt.Errorf("failed to fetch sha256 for %s (%s) from github: %w", binaryName, targetVer, err)
 				}
-				host := resolveServerHost(r)
-				url = fmt.Sprintf("%s://%s/downloads/%s", scheme, host, binaryName)
 			}
 		}
 	}
@@ -2708,5 +2765,104 @@ func (s *Server) handleTestAlertChannel(w http.ResponseWriter, r *http.Request) 
 		"retryable":     res.Retryable,
 		"error_code":    res.ErrorCode,
 		"error_message": res.ErrorMessage,
+	})
+}
+
+func (s *Server) systemVersionCheck(w http.ResponseWriter, r *http.Request) {
+	ghClient := s.GitHubReleaseClient
+	if ghClient == nil {
+		ghClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+
+	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("force") == "true"
+	rel, err := ghClient.GetLatestRelease(r.Context(), forceRefresh)
+	currentVer := version.Get()
+
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Warn("system_version_check_failed", "error", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"current_version": currentVer,
+			"latest_version":  currentVer,
+			"has_update":      false,
+			"error":           err.Error(),
+		})
+		return
+	}
+
+	hasUpdate := githubrelease.CompareVersions(currentVer, rel.TagName) < 0
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current_version": currentVer,
+		"latest_version":  rel.TagName,
+		"has_update":      hasUpdate,
+		"release_url":     rel.HTMLURL,
+		"release_notes":   rel.Body,
+		"published_at":    rel.PublishedAt.Format(time.RFC3339),
+	})
+}
+
+type systemUpgradeReq struct {
+	TargetVersion string `json:"target_version,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+}
+
+func (s *Server) systemUpgrade(w http.ResponseWriter, r *http.Request) {
+	var req systemUpgradeReq
+	if r.Body != nil && r.ContentLength > 0 {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		_ = dec.Decode(&req)
+	}
+
+	ghClient := s.GitHubReleaseClient
+	if ghClient == nil {
+		ghClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+
+	res, err := serverupgrade.PerformServerSelfUpgrade(r.Context(), serverupgrade.Options{
+		TargetVersion: req.TargetVersion,
+		Force:         req.Force,
+		Client:        ghClient,
+		RestartCallback: func() error {
+			if s.Log != nil {
+				s.Log.Info("server_self_upgrade_exiting_for_restart")
+			}
+			os.Exit(0)
+			return nil
+		},
+	})
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Error("server_self_upgrade_failed", "error", err)
+		}
+		http.Error(w, fmt.Sprintf("server self-upgrade failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if !res.Updated {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":           "already_up_to_date",
+			"message":          fmt.Sprintf("Server is already up to date (%s)", res.TargetVersion),
+			"previous_version": res.PreviousVersion,
+			"target_version":   res.TargetVersion,
+		})
+		return
+	}
+
+	if s.Log != nil {
+		s.Log.Info("server_self_upgrade_succeeded_triggering_restart", "previous", res.PreviousVersion, "target", res.TargetVersion)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":           "upgrading",
+		"message":          fmt.Sprintf("Server upgraded from %s to %s, restarting...", res.PreviousVersion, res.TargetVersion),
+		"previous_version": res.PreviousVersion,
+		"target_version":   res.TargetVersion,
 	})
 }

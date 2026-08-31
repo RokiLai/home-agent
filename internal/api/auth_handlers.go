@@ -154,10 +154,20 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	if effectivePublicURL == "" {
 		effectivePublicURL = "https://homeagent.rokilai.online"
 	}
+	repo := s.GitHubRepo
+	if repo == "" {
+		repo = "RokiLai/home-agent"
+	}
+	upgradeSource := s.UpgradeSource
+	if upgradeSource == "" {
+		upgradeSource = "github"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"public_url":  effectivePublicURL,
-		"version":     version.Get(),
-		"github_repo": "RokiLai/home-agent",
+		"public_url":           effectivePublicURL,
+		"version":              version.Get(),
+		"github_repo":          repo,
+		"upgrade_source":       upgradeSource,
+		"github_mirror_prefix": s.GitHubMirrorPrefix,
 	})
 }
 

@@ -22,15 +22,16 @@ import (
 	"homeagent/internal/command"
 	commandfile "homeagent/internal/command/file"
 	"homeagent/internal/daemon"
+	"homeagent/internal/daemon/upgrade"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/upgradeplan"
-	"homeagent/internal/daemon/upgrade"
 )
 
 func TestRegisterListDelete(t *testing.T) {
@@ -2415,5 +2416,173 @@ func TestUpgradeAck_ProgressAndFencedConfirmation(t *testing.T) {
 	finalCmd, _ := cmdSvc.Get(cmd.ID)
 	if finalCmd.Status != command.StatusSucceeded {
 		t.Fatalf("expected command StatusSucceeded, got %s", finalCmd.Status)
+	}
+}
+
+func TestUpgradeDevice_GitHubSourceAndSHA256Resolution(t *testing.T) {
+	rawHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64.sha256":
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "%s  homeagent-agent-linux-amd64\n", rawHash)
+		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-darwin-arm64.sha256":
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "%s\n", rawHash)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockGitHub.Close()
+
+	reg, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	d := device.Device{
+		ID:               "dev-gh",
+		Hostname:         "host-gh",
+		MAC:              "12:22:33:44:55:66",
+		OS:               "linux",
+		Arch:             "amd64",
+		SSHUser:          "root",
+		SSHPort:          22,
+		PublicKey:        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+		ControlProtocols: []int{1},
+	}
+	if _, err := reg.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	b := broker.New()
+	cmdRepo, _ := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	cmdSvc := command.NewService(cmdRepo, nil)
+
+	ghClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:            "RokiLai/home-agent",
+		DownloadBaseURL: mockGitHub.URL,
+	})
+
+	s := &Server{
+		Registry:            reg,
+		Broker:              b,
+		Commands:            cmdSvc,
+		UpgradePlans:        upgradeplan.NewService(),
+		Token:               "admin-tok",
+		UpgradeSource:       "github",
+		GitHubReleaseClient: ghClient,
+		Log:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.Handler()
+
+	// Connect SSE listener
+	eventsReq := httptest.NewRequest("GET", "/api/v1/devices/dev-gh/events", nil)
+	eventsReq.Header.Set("Authorization", "Bearer admin-tok")
+	wEvents := httptest.NewRecorder()
+	go handler.ServeHTTP(wEvents, eventsReq)
+	time.Sleep(50 * time.Millisecond)
+
+	// 1. Trigger upgrade without custom url/sha -> should resolve GitHub release URL and fetch sha256
+	upgradeReq := httptest.NewRequest("POST", "/api/v1/devices/dev-gh/upgrade", strings.NewReader(`{"target_version":"v0.7.0"}`))
+	upgradeReq.Header.Set("Authorization", "Bearer admin-tok")
+	upgradeReq.Header.Set("Content-Type", "application/json")
+	wUpgrade := httptest.NewRecorder()
+	handler.ServeHTTP(wUpgrade, upgradeReq)
+
+	if wUpgrade.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from upgrade, got %d: %s", wUpgrade.Code, wUpgrade.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(wUpgrade.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedURL := mockGitHub.URL + "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64"
+	if resp["url"] != expectedURL {
+		t.Fatalf("expected URL %s, got %v", expectedURL, resp["url"])
+	}
+	if resp["sha256"] != rawHash {
+		t.Fatalf("expected SHA256 %s, got %v", rawHash, resp["sha256"])
+	}
+
+	// 2. Negative test: target version whose sha256 is missing on GitHub -> should fail 400
+	failReq := httptest.NewRequest("POST", "/api/v1/devices/dev-gh/upgrade", strings.NewReader(`{"target_version":"v9.9.9"}`))
+	failReq.Header.Set("Authorization", "Bearer admin-tok")
+	failReq.Header.Set("Content-Type", "application/json")
+	wFail := httptest.NewRecorder()
+	handler.ServeHTTP(wFail, failReq)
+
+	if wFail.Code == http.StatusOK {
+		t.Fatalf("expected failure for non-existent release, got 200: %s", wFail.Body.String())
+	}
+}
+
+func TestSystemVersionCheck_Endpoint(t *testing.T) {
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/RokiLai/home-agent/releases/latest" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{
+				"tag_name": "v99.0.0",
+				"name": "Release v99.0.0",
+				"body": "Breaking update",
+				"published_at": "2026-09-01T00:00:00Z",
+				"html_url": "https://github.com/RokiLai/home-agent/releases/tag/v99.0.0"
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockGitHub.Close()
+
+	ghClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:    "RokiLai/home-agent",
+		APIBase: mockGitHub.URL,
+	})
+
+	s := &Server{
+		Token:               "admin-token",
+		GitHubReleaseClient: ghClient,
+		Log:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/api/v1/system/version-check", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var res map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["has_update"] != true || res["latest_version"] != "v99.0.0" {
+		t.Fatalf("unexpected version-check response: %+v", res)
+	}
+}
+
+func TestGetConfig_UpgradeSource(t *testing.T) {
+	s := &Server{
+		Token:              "admin-token",
+		PublicURL:          "https://custom.domain",
+		GitHubRepo:         "custom/repo",
+		UpgradeSource:      "github",
+		GitHubMirrorPrefix: "https://ghproxy.net/",
+	}
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/api/v1/config", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+	var res map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["github_repo"] != "custom/repo" || res["upgrade_source"] != "github" || res["github_mirror_prefix"] != "https://ghproxy.net/" {
+		t.Fatalf("unexpected config output: %+v", res)
 	}
 }
