@@ -59,34 +59,45 @@ type ProjectionState struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// UpgradeProgress 记录升级专用阶段状态投影。
+type UpgradeProgress struct {
+	Phase           string    `json:"phase"`
+	Sequence        uint64    `json:"sequence"`
+	OccurredAt      time.Time `json:"occurred_at"`
+	DetailCode      string    `json:"detail_code,omitempty"`
+	ConfirmedDigest string    `json:"confirmed_digest,omitempty"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+}
+
 type Command struct {
-	ID                    ID              `json:"id"`
-	Kind                  Kind            `json:"kind"`
-	DeviceID              string          `json:"device_id"`
-	Status                Status          `json:"status"`
-	RequestedBy           Actor           `json:"requested_by"`
-	IdempotencyKey        string          `json:"idempotency_key,omitempty"`
-	Request               json.RawMessage `json:"request,omitempty"`
-	RequestDigest         string          `json:"request_digest,omitempty"`
-	Result                json.RawMessage `json:"result,omitempty"`
-	ErrorCode             string          `json:"error_code,omitempty"`
-	ErrorMessage          string          `json:"error_message,omitempty"`
-	CreatedAt             time.Time       `json:"created_at"`
-	UpdatedAt             time.Time       `json:"updated_at"`
-	DispatchedAt          *time.Time      `json:"dispatched_at,omitempty"`
-	AcceptedAt            *time.Time      `json:"accepted_at,omitempty"`
-	FinishedAt            *time.Time      `json:"finished_at,omitempty"`
-	TimeoutPolicy         TimeoutPolicy   `json:"timeout_policy"`
-	AcceptDeadline        *time.Time      `json:"accept_deadline,omitempty"`
-	FinishDeadline        *time.Time      `json:"finish_deadline,omitempty"`
-	FinalAckDigest        string          `json:"final_ack_digest,omitempty"`
-	LateAcks              []LateAck       `json:"late_acks,omitempty"`
-	OutcomeRevision       uint64          `json:"outcome_revision,omitempty"`
-	ProjectionInputDigest string          `json:"projection_input_digest,omitempty"`
-	Projection            ProjectionState `json:"projection"`
-	Revision              uint64          `json:"revision"`
-	Protocol              int             `json:"protocol"`
-	AttemptID             string          `json:"attempt_id,omitempty"`
+	ID                    ID               `json:"id"`
+	Kind                  Kind             `json:"kind"`
+	DeviceID              string           `json:"device_id"`
+	Status                Status           `json:"status"`
+	RequestedBy           Actor            `json:"requested_by"`
+	IdempotencyKey        string           `json:"idempotency_key,omitempty"`
+	Request               json.RawMessage  `json:"request,omitempty"`
+	RequestDigest         string           `json:"request_digest,omitempty"`
+	Result                json.RawMessage  `json:"result,omitempty"`
+	ErrorCode             string           `json:"error_code,omitempty"`
+	ErrorMessage          string           `json:"error_message,omitempty"`
+	CreatedAt             time.Time        `json:"created_at"`
+	UpdatedAt             time.Time        `json:"updated_at"`
+	DispatchedAt          *time.Time       `json:"dispatched_at,omitempty"`
+	AcceptedAt            *time.Time       `json:"accepted_at,omitempty"`
+	FinishedAt            *time.Time       `json:"finished_at,omitempty"`
+	TimeoutPolicy         TimeoutPolicy    `json:"timeout_policy"`
+	AcceptDeadline        *time.Time       `json:"accept_deadline,omitempty"`
+	FinishDeadline        *time.Time       `json:"finish_deadline,omitempty"`
+	FinalAckDigest        string           `json:"final_ack_digest,omitempty"`
+	LateAcks              []LateAck        `json:"late_acks,omitempty"`
+	OutcomeRevision       uint64           `json:"outcome_revision,omitempty"`
+	ProjectionInputDigest string           `json:"projection_input_digest,omitempty"`
+	Projection            ProjectionState  `json:"projection"`
+	Progress              *UpgradeProgress `json:"progress,omitempty"`
+	Revision              uint64           `json:"revision"`
+	Protocol              int              `json:"protocol"`
+	AttemptID             string           `json:"attempt_id,omitempty"`
 }
 
 func (c Command) Terminal() bool {
@@ -134,4 +145,5 @@ type Repository interface {
 	AppendLateAck(ID, uint64, LateAck) (Command, error)
 	UpdateProjection(ID, uint64, ProjectionState) (Command, error)
 	ListProjectionPending(int) ([]Command, error)
+	UpdateProgress(ID, uint64, UpgradeProgress) (Command, error)
 }

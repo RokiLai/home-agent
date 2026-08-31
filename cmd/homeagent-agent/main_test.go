@@ -563,7 +563,7 @@ func TestStartDeviceFactsReporterSendsInitialSnapshot(t *testing.T) {
 
 	select {
 	case facts := <-received:
-		if facts.Hostname == "" || facts.AgentVersion != version.Get() || facts.OS != runtime.GOOS || len(facts.ControlProtocols) != 1 || facts.ControlProtocols[0] != 1 {
+		if facts.Hostname == "" || facts.AgentVersion != version.Get() || facts.OS != runtime.GOOS || len(facts.ControlProtocols) == 0 || facts.ControlProtocols[0] != 1 {
 			t.Fatalf("unexpected initial facts: %+v", facts)
 		}
 	case <-time.After(5 * time.Second):

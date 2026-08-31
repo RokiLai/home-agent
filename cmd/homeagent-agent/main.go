@@ -468,16 +468,22 @@ func envOrDefault(key, fallback string) string {
 }
 
 type deviceFactsPayload struct {
-	Hostname         string                `json:"hostname"`
-	MAC              string                `json:"mac,omitempty"`
-	AgentVersion     string                `json:"agent_version,omitempty"`
-	OS               string                `json:"os"`
-	Arch             string                `json:"arch"`
-	SSHUser          string                `json:"ssh_user"`
-	SSHPort          int                   `json:"ssh_port"`
-	Addresses        []string              `json:"addresses"`
-	ControlProtocols []int                 `json:"control_protocols,omitempty"`
-	Runtime          *device.RuntimeFacts  `json:"runtime,omitempty"`
+	Hostname                string                `json:"hostname"`
+	MAC                     string                `json:"mac,omitempty"`
+	AgentVersion            string                `json:"agent_version,omitempty"`
+	OS                      string                `json:"os"`
+	Arch                    string                `json:"arch"`
+	SSHUser                 string                `json:"ssh_user"`
+	SSHPort                 int                   `json:"ssh_port"`
+	Addresses               []string              `json:"addresses"`
+	ControlProtocols        []int                 `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string                `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    uint64                `json:"upgrade_fence_revision,omitempty"`
+	UpgradeReleaseSequence  uint64                `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string                `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string                `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string                `json:"upgrade_security_mode,omitempty"`
+	Runtime                 *device.RuntimeFacts  `json:"runtime,omitempty"`
 }
 
 func collectDeviceFacts(sshUser string, port int) (deviceFactsPayload, error) {
@@ -489,7 +495,7 @@ func collectDeviceFacts(sshUser string, port int) (deviceFactsPayload, error) {
 		Hostname: d.Hostname, MAC: d.MAC, AgentVersion: d.AgentVersion,
 		OS: d.OS, Arch: d.Arch, SSHUser: d.SSHUser, SSHPort: d.SSHPort,
 		Addresses:        d.Addresses,
-		ControlProtocols: []int{1},
+		ControlProtocols: []int{1, 2},
 		Runtime:          getSystemRuntimeFacts(),
 	}, nil
 }
@@ -538,11 +544,20 @@ func sendDeviceFactsWithStatus(ctx context.Context, client *http.Client, serverU
 			return target, false, nil
 		}
 		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-			// 降级重试：若旧 Server 拒绝 control_protocols 或 runtime 字段
+			// 降级重试：若旧 Server 拒绝 control_protocols 或 runtime 扩展字段
 			legacyFacts := facts
 			modified := false
 			if len(facts.ControlProtocols) > 0 {
 				legacyFacts.ControlProtocols = nil
+				modified = true
+			}
+			if facts.UpgradeTransactionID != "" || facts.UpgradeFenceRevision > 0 || facts.UpgradeReleaseSequence > 0 || facts.ConfirmedManifestDigest != "" || facts.RunningBundleDigest != "" || facts.UpgradeSecurityMode != "" {
+				legacyFacts.UpgradeTransactionID = ""
+				legacyFacts.UpgradeFenceRevision = 0
+				legacyFacts.UpgradeReleaseSequence = 0
+				legacyFacts.ConfirmedManifestDigest = ""
+				legacyFacts.RunningBundleDigest = ""
+				legacyFacts.UpgradeSecurityMode = ""
 				modified = true
 			}
 			if facts.Runtime != nil {

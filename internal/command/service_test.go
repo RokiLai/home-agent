@@ -71,3 +71,34 @@ func TestAcceptDeadlineTimeout(t *testing.T) {
 		t.Fatalf("status %s", c.Status)
 	}
 }
+
+func TestUpdateProgress(t *testing.T) {
+	repo, err := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := command.NewService(repo, nil)
+	c, _, err := svc.Create(command.CreateRequest{
+		Kind:        command.KindUpgrade,
+		DeviceID:    "dev-upg",
+		RequestedBy: command.Actor{Type: "admin", ID: "a"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	progress := command.UpgradeProgress{
+		Phase:           "downloading",
+		Sequence:        1,
+		OccurredAt:      time.Now().UTC(),
+		DetailCode:      "bytes_read",
+		ConfirmedDigest: "",
+	}
+	updated, err := svc.UpdateProgress(c.ID, progress)
+	if err != nil {
+		t.Fatalf("UpdateProgress failed: %v", err)
+	}
+	if updated.Progress == nil || updated.Progress.Phase != "downloading" || updated.Progress.Sequence != 1 {
+		t.Fatalf("unexpected progress on command: %+v", updated.Progress)
+	}
+}

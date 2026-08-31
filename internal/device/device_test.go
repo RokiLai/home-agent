@@ -51,3 +51,28 @@ func TestValidateDevice(t *testing.T) {
 		t.Fatalf("unexpected error on valid MAC: %v", err)
 	}
 }
+
+func TestDeviceUpgradeFactsFields(t *testing.T) {
+	d := Device{
+		ID:                      "dev-upg",
+		Hostname:                "mac-mini",
+		OS:                      "darwin",
+		Arch:                    "arm64",
+		SSHUser:                 "roki",
+		SSHPort:                 22,
+		PublicKey:               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+		ControlProtocols:        []int{1, 2},
+		UpgradeTransactionID:    "tx-12345",
+		UpgradeFenceRevision:    42,
+		UpgradeReleaseSequence:  100,
+		ConfirmedManifestDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		RunningBundleDigest:     "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		UpgradeSecurityMode:     "v2_locked",
+	}
+	if err := Validate(d); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if d.UpgradeTransactionID != "tx-12345" || d.UpgradeFenceRevision != 42 || d.UpgradeSecurityMode != "v2_locked" {
+		t.Fatalf("unexpected upgrade facts values: %+v", d)
+	}
+}

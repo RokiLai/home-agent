@@ -72,6 +72,13 @@ func (s *Service) MarkProjection(id ID, status, errorMessage string) (Command, e
 	}
 	return s.repo.UpdateProjection(id, c.Revision, ProjectionState{Status: status, Error: errorMessage})
 }
+func (s *Service) UpdateProgress(id ID, progress UpgradeProgress) (Command, error) {
+	c, e := s.repo.Get(id)
+	if e != nil {
+		return Command{}, e
+	}
+	return s.repo.UpdateProgress(id, c.Revision, progress)
+}
 func (s *Service) ProjectionPending(limit int) ([]Command, error) {
 	return s.repo.ListProjectionPending(limit)
 }

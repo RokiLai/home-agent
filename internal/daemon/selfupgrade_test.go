@@ -170,6 +170,11 @@ func TestSelfUpgrade_Success(t *testing.T) {
 		t.Fatalf("unexpected content: %s", string(data))
 	}
 
+	// Verify timing metrics
+	if res.Timing.TotalDurationMs < 0 || res.Timing.DownloadDurationMs < 0 || res.Timing.HashDurationMs < 0 {
+		t.Fatalf("expected non-negative timing metrics, got %+v", res.Timing)
+	}
+
 	// Wait for restart callback
 	time.Sleep(500 * time.Millisecond)
 	if !restarted.Load() {

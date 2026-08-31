@@ -410,7 +410,9 @@ func (d *Daemon) handleEvent(ctx context.Context, eventType, data string) {
 		downloadURL := d.resolveDownloadURL(payload.URL)
 		d.log.Info("upgrade_instruction_received", "target_version", targetVer, "url", downloadURL, "original_url", payload.URL, "force", payload.Force)
 
+		cmdID, _ := ctx.Value(commandIDContextKey{}).(string)
 		opts := UpgradeOptions{
+			CommandID:       cmdID,
 			TargetVersion:   targetVer,
 			URL:             downloadURL,
 			SHA256:          payload.SHA256,
@@ -421,17 +423,29 @@ func (d *Daemon) handleEvent(ctx context.Context, eventType, data string) {
 		}
 		result, err := PerformSelfUpgrade(ctx, opts)
 		if err != nil {
-			d.log.Error("self_upgrade_failed", "error", err, "target_version", targetVer)
+			d.log.Error("self_upgrade_failed", "command_id", cmdID, "error", err, "target_version", targetVer)
 			_ = d.sendAck(ctx, "upgrade", "error", 0, "", fmt.Sprintf("upgrade failed: %v", err))
 			return
 		}
 		if !result.Updated {
-			d.log.Info("self_upgrade_skipped", "message", result.Message)
-			_ = d.sendAckResult(ctx, "upgrade", "synced", 0, "", result.Message, map[string]any{"previous_version": result.PreviousVersion, "target_version": result.TargetVersion, "binary_replaced": false, "restart_scheduled": false})
+			d.log.Info("self_upgrade_skipped", "command_id", cmdID, "message", result.Message, "total_ms", result.Timing.TotalDurationMs)
+			_ = d.sendAckResult(ctx, "upgrade", "synced", 0, "", result.Message, map[string]any{
+				"previous_version":  result.PreviousVersion,
+				"target_version":    result.TargetVersion,
+				"binary_replaced":   false,
+				"restart_scheduled": false,
+				"timing":            result.Timing,
+			})
 			return
 		}
-		d.log.Info("self_upgrade_successful", "previous", result.PreviousVersion, "target", result.TargetVersion)
-		_ = d.sendAckResult(ctx, "upgrade", "upgraded", 0, "", fmt.Sprintf("upgraded from %s to %s", result.PreviousVersion, result.TargetVersion), map[string]any{"previous_version": result.PreviousVersion, "target_version": result.TargetVersion, "binary_replaced": true, "restart_scheduled": true})
+		d.log.Info("self_upgrade_successful", "command_id", cmdID, "previous", result.PreviousVersion, "target", result.TargetVersion, "total_ms", result.Timing.TotalDurationMs)
+		_ = d.sendAckResult(ctx, "upgrade", "upgraded", 0, "", fmt.Sprintf("upgraded from %s to %s", result.PreviousVersion, result.TargetVersion), map[string]any{
+			"previous_version":  result.PreviousVersion,
+			"target_version":    result.TargetVersion,
+			"binary_replaced":   true,
+			"restart_scheduled": true,
+			"timing":            result.Timing,
+		})
 		if d.cfg.RestartCallback != nil {
 			go func() {
 				time.Sleep(500 * time.Millisecond)
