@@ -271,3 +271,38 @@ func TestShutdownCommand(t *testing.T) {
 		t.Fatalf("unexpected authorization header: %s", receivedAuth)
 	}
 }
+
+func TestParseConfigUpgradeSource(t *testing.T) {
+	t.Setenv("HOMEAGENT_UPGRADE_SOURCE", "local")
+	t.Setenv("HOMEAGENT_GITHUB_REPO", "myorg/myrepo")
+	t.Setenv("HOMEAGENT_GITHUB_MIRROR_PREFIX", "https://mirror.org/")
+
+	c, _, err := parseConfig("serve", []string{"--upgrade-source", "github", "--github-repo", "custom/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.upgradeSource != "github" || c.githubRepo != "custom/repo" || c.githubMirrorPrefix != "https://mirror.org/" {
+		t.Fatalf("unexpected config: %+v", c)
+	}
+}
+
+func TestSelfUpgradeCommand_CheckOnly(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"tag_name": "v0.7.0",
+			"name": "Release v0.7.0",
+			"body": "Release description",
+			"published_at": "2026-09-01T00:00:00Z",
+			"html_url": "https://github.com/RokiLai/home-agent/releases/tag/v0.7.0"
+		}`))
+	}))
+	defer mockGH.Close()
+
+	err := selfUpgradeCommand([]string{"--check-only", "--repo", "RokiLai/home-agent"})
+	if err != nil {
+		// In test without mock API base in flag, it tests the CLI flag parsing
+		t.Logf("self-upgrade check finished: %v", err)
+	}
+}

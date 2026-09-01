@@ -40,9 +40,15 @@ type Device struct {
 	GitHubKeyID       int64     `json:"github_key_id,omitempty"`
 	GitHubFingerprint string    `json:"github_fingerprint,omitempty"`
 	GitHubUpdatedAt   time.Time `json:"github_updated_at,omitempty"`
-	DeviceTokenHash   string        `json:"device_token_hash,omitempty"`
-	ControlProtocols  []int         `json:"control_protocols,omitempty"`
-	RuntimeFacts      *RuntimeFacts `json:"runtime,omitempty"`
+	DeviceTokenHash        string        `json:"device_token_hash,omitempty"`
+	ControlProtocols       []int         `json:"control_protocols,omitempty"`
+	UpgradeTransactionID   string        `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision   uint64        `json:"upgrade_fence_revision,omitempty"`
+	UpgradeReleaseSequence uint64        `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string       `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest    string        `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode    string        `json:"upgrade_security_mode,omitempty"`
+	RuntimeFacts           *RuntimeFacts `json:"runtime,omitempty"`
 }
 
 // RuntimeFacts 包含 Agent 上报的系统运行指标快照。

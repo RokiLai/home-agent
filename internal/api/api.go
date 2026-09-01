@@ -4,7 +4,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,55 +30,65 @@ import (
 	"homeagent/internal/auth"
 	"homeagent/internal/broker"
 	"homeagent/internal/command"
+	"homeagent/internal/daemon/upgrade"
 	"homeagent/internal/ddns"
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/ui"
+	"homeagent/internal/upgradeplan"
 	"homeagent/internal/version"
 	"homeagent/internal/wol"
 )
 
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
-	Registry              *registry.Registry
-	Authorizer            *auth.Authorizer
-	AuditLogger           auth.AuditLogger
-	Broker                *broker.Broker
-	SessionManager        *auth.SessionManager
-	EnrollmentManager     *auth.EnrollmentManager
-	RateLimiter           *auth.RateLimiter
-	ACLPath               string
-	Token, AdminPublicKey string
-	Sync                  *sshsync.Controller
-	GitHubSyncService     *githubsync.Service
-	Log                   *slog.Logger
-	DownloadsDir          string
-	ScriptsDir            string
-	PublicURL             string
-	PingInterval          time.Duration
-	DeviceStateService    *devicestate.Service
-	PrefixStateService    *prefixstate.Service
-	DDNSService           *ddns.Service
-	CloudflareClient      *cloudflare.Client
-	Domain                string
-	ZoneID                string
-	TTL                   int
-	Proxied               bool
-	RateLimitDuration     time.Duration
-	RecordComment         string
-	AutoDeleteStale       bool
-	StaleThreshold        time.Duration
-	Commands              *command.Service
-	CommandTimeouts       map[command.Kind]command.TimeoutPolicy
-	Health                *health.Service
-	Alerting              *alerting.Service
+	Registry                 *registry.Registry
+	Authorizer               *auth.Authorizer
+	AuditLogger              auth.AuditLogger
+	Broker                   *broker.Broker
+	SessionManager           *auth.SessionManager
+	EnrollmentManager        *auth.EnrollmentManager
+	RateLimiter              *auth.RateLimiter
+	ACLPath                  string
+	Token, AdminPublicKey    string
+	Sync                     *sshsync.Controller
+	GitHubSyncService        *githubsync.Service
+	Log                      *slog.Logger
+	DownloadsDir             string
+	ScriptsDir               string
+	PublicURL                string
+	PingInterval             time.Duration
+	DeviceStateService       *devicestate.Service
+	PrefixStateService       *prefixstate.Service
+	DDNSService              *ddns.Service
+	CloudflareClient         *cloudflare.Client
+	Domain                   string
+	ZoneID                   string
+	TTL                      int
+	Proxied                  bool
+	RateLimitDuration        time.Duration
+	RecordComment            string
+	AutoDeleteStale          bool
+	StaleThreshold           time.Duration
+	Commands                 *command.Service
+	CommandTimeouts          map[command.Kind]command.TimeoutPolicy
+	Health                   *health.Service
+	Alerting                 *alerting.Service
+	UpgradePlans             *upgradeplan.Service
+	MacOSAppUpgradeV2Enabled bool
+	UpgradeSource            string
+	GitHubRepo               string
+	GitHubMirrorPrefix       string
+	GitHubReleaseClient      *githubrelease.Client
 
 	version       int64
 	wakeRateLimit sync.Map
@@ -84,6 +96,9 @@ type Server struct {
 
 // Handler 构建并返回包含所有 REST API、SSE 控制流及 Web UI 的 HTTP 请求多路复用路由处理器。
 func (s *Server) Handler() http.Handler {
+	if s.UpgradePlans == nil {
+		s.UpgradePlans = upgradeplan.NewService()
+	}
 	if s.Commands != nil && s.Registry != nil {
 		s.recoverCommandProjections()
 	}
@@ -103,6 +118,16 @@ func (s *Server) Handler() http.Handler {
 
 	if s.Registry != nil && s.Authorizer == nil {
 		s.Authorizer = auth.NewAuthorizer(s.Registry)
+	}
+
+	if s.GitHubReleaseClient == nil {
+		s.GitHubReleaseClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+	if s.UpgradeSource == "" {
+		s.UpgradeSource = "auto"
 	}
 
 	// 统一细粒度权限鉴权中间件
@@ -206,6 +231,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/commands", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.listCommands)))
 	mux.Handle("GET /api/v1/commands/{id}", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.getCommand)))
 	mux.Handle("POST /api/v1/commands/{id}/cancel", requirePerm(auth.PermCommandsCancel, nil)(http.HandlerFunc(s.cancelCommand)))
+	mux.Handle("GET /api/v1/upgrade-plans", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.listUpgradePlans)))
+	mux.Handle("GET /api/v1/upgrade-plans/{id}", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getUpgradePlan)))
+
+	// System / Server Info & Self-Upgrade routes
+	mux.Handle("GET /api/v1/system/version-check", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.systemVersionCheck)))
+	mux.Handle("POST /api/v1/system/upgrade", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.systemUpgrade)))
 
 	// Health & Alerting Management routes
 	mux.Handle("GET /api/v1/health/summary", requirePerm(auth.PermHealthRead, nil)(http.HandlerFunc(s.handleHealthSummary)))
@@ -243,16 +274,24 @@ func (s *Server) Handler() http.Handler {
 }
 
 type deviceFactsReq struct {
-	Hostname         string                `json:"hostname"`
-	MAC              string                `json:"mac,omitempty"`
-	AgentVersion     string                `json:"agent_version,omitempty"`
-	OS               string                `json:"os"`
-	Arch             string                `json:"arch"`
-	SSHUser          string                `json:"ssh_user"`
-	SSHPort          int                   `json:"ssh_port"`
-	Addresses        []string              `json:"addresses"`
-	ControlProtocols *[]int                `json:"control_protocols,omitempty"`
-	Runtime          *device.RuntimeFacts  `json:"runtime,omitempty"`
+	Hostname                string                `json:"hostname"`
+	MAC                     string                `json:"mac,omitempty"`
+	AgentVersion            string                `json:"agent_version,omitempty"`
+	OS                      string                `json:"os"`
+	Arch                    string                `json:"arch"`
+	SSHUser                 string                `json:"ssh_user"`
+	SSHPort                 int                   `json:"ssh_port"`
+	Addresses               []string              `json:"addresses"`
+	ControlProtocols        *[]int                `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string                `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    *uint64               `json:"upgrade_fence_revision,omitempty"`
+	UpgradeFenceToken       string                `json:"upgrade_fence_token,omitempty"`
+	UpgradeReleaseSequence  *uint64               `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string                `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string                `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string                `json:"upgrade_security_mode,omitempty"`
+	CommandID               string                `json:"command_id,omitempty"`
+	Runtime                 *device.RuntimeFacts  `json:"runtime,omitempty"`
 }
 
 // putDeviceFacts refreshes mutable host facts using the device's own credential.
@@ -287,6 +326,24 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 	d.Addresses = req.Addresses
 	if req.ControlProtocols != nil {
 		d.ControlProtocols = normalizeProtocols(*req.ControlProtocols)
+	}
+	if req.UpgradeTransactionID != "" {
+		d.UpgradeTransactionID = req.UpgradeTransactionID
+	}
+	if req.UpgradeFenceRevision != nil {
+		d.UpgradeFenceRevision = *req.UpgradeFenceRevision
+	}
+	if req.UpgradeReleaseSequence != nil {
+		d.UpgradeReleaseSequence = *req.UpgradeReleaseSequence
+	}
+	if req.ConfirmedManifestDigest != "" {
+		d.ConfirmedManifestDigest = req.ConfirmedManifestDigest
+	}
+	if req.RunningBundleDigest != "" {
+		d.RunningBundleDigest = req.RunningBundleDigest
+	}
+	if req.UpgradeSecurityMode != "" {
+		d.UpgradeSecurityMode = req.UpgradeSecurityMode
 	}
 	if req.Runtime != nil {
 		rf := req.Runtime
@@ -329,7 +386,49 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 	if s.Log != nil {
 		s.Log.Info("device_facts_updated", "device_id", saved.ID, "addresses", len(saved.Addresses), "mac", saved.MAC, "agent_version", saved.AgentVersion)
 	}
-	writeJSON(w, http.StatusOK, s.toDeviceDTO(saved))
+
+	var conf *upgrade.UpgradeConfirmation
+	if req.UpgradeFenceRevision != nil && req.UpgradeFenceToken != "" {
+		tokenBytes, decErr := base64.RawURLEncoding.DecodeString(req.UpgradeFenceToken)
+		if decErr == nil && len(tokenBytes) == 32 {
+			fenceDigest := upgrade.ComputeFenceDigest(tokenBytes)
+			factsDigest, _ := upgrade.ComputeFactsDigest(upgrade.FactsDigestParams{
+				DeviceID:            saved.ID,
+				CommandID:           req.CommandID,
+				TransactionID:       saved.UpgradeTransactionID,
+				TargetVersion:       saved.AgentVersion,
+				UpgradeSecurityMode: saved.UpgradeSecurityMode,
+				FenceRevision:       *req.UpgradeFenceRevision,
+				ReleaseSequence:     saved.UpgradeReleaseSequence,
+				FenceTokenDigest:    fenceDigest,
+				ManifestDigest:      saved.ConfirmedManifestDigest,
+				RunningBundleDigest: saved.RunningBundleDigest,
+			})
+			nonceBytes := make([]byte, 24)
+			_, _ = rand.Read(nonceBytes)
+			serverNonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+			conf = &upgrade.UpgradeConfirmation{
+				State:         "prepared",
+				CommandID:     req.CommandID,
+				FenceRevision: *req.UpgradeFenceRevision,
+				FenceDigest:   fenceDigest,
+				FactsDigest:   factsDigest,
+				ServerNonce:   serverNonce,
+			}
+		}
+	}
+
+	dto := s.toDeviceDTO(saved)
+	if conf != nil {
+		respMap := make(map[string]any)
+		b, _ := json.Marshal(dto)
+		_ = json.Unmarshal(b, &respMap)
+		respMap["upgrade_confirmation"] = conf
+		writeJSON(w, http.StatusOK, respMap)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -859,6 +958,7 @@ type UpgradeRequest struct {
 	URL           string `json:"url,omitempty"`
 	SHA256        string `json:"sha256,omitempty"`
 	Force         bool   `json:"force,omitempty"`
+	Source        string `json:"source,omitempty"`
 }
 
 // UpgradePayload 表示通过 SSE 下发给 Agent 的 upgrade 事件载荷。
@@ -881,6 +981,14 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 		targetVer = version.Get()
 	}
 
+	source := strings.ToLower(strings.TrimSpace(req.Source))
+	if source == "" {
+		source = strings.ToLower(strings.TrimSpace(s.UpgradeSource))
+	}
+	if source == "" {
+		source = "auto"
+	}
+
 	url := strings.TrimSpace(req.URL)
 	sha := strings.ToLower(strings.TrimSpace(req.SHA256))
 
@@ -899,38 +1007,66 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 			binaryName = fmt.Sprintf("homeagent-agent-windows-%s.exe", archName)
 		}
 
-		var binaryPath string
-		candidates := []string{}
-		if s.DownloadsDir != "" {
-			candidates = append(candidates, filepath.Join(s.DownloadsDir, binaryName))
-		}
-		candidates = append(candidates,
-			filepath.Join("dist", binaryName),
-			filepath.Join("bin", binaryName),
-		)
+		// 1. Try local candidate files if source is "local" or "auto"
+		if source == "local" || source == "auto" {
+			var binaryPath string
+			candidates := []string{}
+			if s.DownloadsDir != "" {
+				candidates = append(candidates, filepath.Join(s.DownloadsDir, binaryName))
+			}
+			candidates = append(candidates,
+				filepath.Join("dist", binaryName),
+				filepath.Join("bin", binaryName),
+			)
 
-		for _, cand := range candidates {
-			if info, err := os.Stat(cand); err == nil && !info.IsDir() {
-				binaryPath = cand
-				break
+			for _, cand := range candidates {
+				if info, err := os.Stat(cand); err == nil && !info.IsDir() {
+					binaryPath = cand
+					break
+				}
+			}
+
+			if binaryPath != "" {
+				if sha == "" {
+					b, err := os.ReadFile(binaryPath)
+					if err == nil {
+						sum := sha256.Sum256(b)
+						sha = hex.EncodeToString(sum[:])
+					}
+				}
+				if url == "" && r != nil {
+					scheme := "http"
+					if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+						scheme = "https"
+					}
+					host := resolveServerHost(r)
+					url = fmt.Sprintf("%s://%s/downloads/%s", scheme, host, binaryName)
+				}
 			}
 		}
 
-		if binaryPath != "" {
+		// 2. If still unpopulated and source is "github" or "auto", resolve from GitHub Releases
+		if (url == "" || sha == "") && source != "local" {
+			ghClient := s.GitHubReleaseClient
+			if ghClient == nil {
+				ghClient = githubrelease.NewClient(githubrelease.Config{
+					Repo:         s.GitHubRepo,
+					MirrorPrefix: s.GitHubMirrorPrefix,
+				})
+			}
+			if url == "" {
+				url = ghClient.BuildAssetDownloadURL(targetVer, binaryName)
+			}
 			if sha == "" {
-				b, err := os.ReadFile(binaryPath)
-				if err == nil {
-					sum := sha256.Sum256(b)
-					sha = hex.EncodeToString(sum[:])
+				ctx := context.Background()
+				if r != nil {
+					ctx = r.Context()
 				}
-			}
-			if url == "" && r != nil {
-				scheme := "http"
-				if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-					scheme = "https"
+				var err error
+				sha, err = ghClient.FetchAssetSHA256(ctx, targetVer, binaryName)
+				if err != nil {
+					return UpgradePayload{}, fmt.Errorf("failed to fetch sha256 for %s (%s) from github: %w", binaryName, targetVer, err)
 				}
-				host := resolveServerHost(r)
-				url = fmt.Sprintf("%s://%s/downloads/%s", scheme, host, binaryName)
 			}
 		}
 	}
@@ -961,6 +1097,11 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if d.UpgradeSecurityMode == "v2_locked" && !s.MacOSAppUpgradeV2Enabled {
+		http.Error(w, "v2_upgrade_temporarily_unavailable", http.StatusBadRequest)
+		return
+	}
+
 	var req UpgradeRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
@@ -971,6 +1112,49 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	var plan *upgradeplan.UpgradePlan
+	if s.UpgradePlans != nil {
+		idemKey := r.Header.Get("Idempotency-Key")
+		actor := auth.GetActorFromContext(r.Context())
+		actorObj := command.Actor{Type: "anonymous", ID: "anonymous"}
+		if actor != nil {
+			actorObj = command.Actor{Type: "user", ID: actor.UserID, DisplayName: actor.Username}
+		}
+
+		reqDigestSum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%v", payload.TargetVersion, payload.URL, payload.SHA256, payload.Force)))
+		reqDigest := hex.EncodeToString(reqDigestSum[:])
+
+		var bridgeVerPtr *string
+		if len(d.ControlProtocols) < 2 {
+			bv := payload.TargetVersion
+			bridgeVerPtr = &bv
+		}
+
+		p, _, pErr := s.UpgradePlans.CreatePlan(upgradeplan.CreatePlanRequest{
+			DeviceID:       deviceID,
+			RequestedBy:    actorObj,
+			IdempotencyKey: idemKey,
+			TargetVersion:  payload.TargetVersion,
+			BridgeVersion:  bridgeVerPtr,
+			Snapshot: upgradeplan.PlanSnapshot{
+				TargetVersion:       payload.TargetVersion,
+				TargetURL:           payload.URL,
+				TargetSHA256:        payload.SHA256,
+				InitialSecurityMode: d.UpgradeSecurityMode,
+				InitialProtocols:    d.ControlProtocols,
+				RequestDigest:       reqDigest,
+			},
+		})
+		if errors.Is(pErr, upgradeplan.ErrIdempotencyConflict) {
+			http.Error(w, "idempotency conflict on upgrade plan", http.StatusConflict)
+			return
+		} else if errors.Is(pErr, upgradeplan.ErrPlanInProgress) {
+			http.Error(w, "upgrade plan already in progress for device", http.StatusConflict)
+			return
+		}
+		plan = p
 	}
 
 	listeners := 0
@@ -1016,7 +1200,49 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 		response["legacy_status"] = response["status"]
 		response["status"] = cmd.Status
 	}
+	if plan != nil {
+		response["plan_id"] = plan.PlanID
+		response["plan_stage"] = plan.Stage
+		if plan.BridgeCommandID != nil {
+			response["bridge_command_id"] = *plan.BridgeCommandID
+		}
+		if plan.TargetCommandID != nil {
+			response["target_command_id"] = *plan.TargetCommandID
+		}
+	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) listUpgradePlans(w http.ResponseWriter, r *http.Request) {
+	if s.UpgradePlans == nil {
+		writeJSON(w, http.StatusOK, []upgradeplan.UpgradePlan{})
+		return
+	}
+	deviceID := r.URL.Query().Get("device_id")
+	stage := upgradeplan.PlanStage(r.URL.Query().Get("stage"))
+	plans, err := s.UpgradePlans.ListPlans(upgradeplan.Filter{
+		DeviceID: deviceID,
+		Stage:    stage,
+	})
+	if err != nil {
+		statusError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plans)
+}
+
+func (s *Server) getUpgradePlan(w http.ResponseWriter, r *http.Request) {
+	if s.UpgradePlans == nil {
+		http.Error(w, "upgrade plans not supported", http.StatusNotFound)
+		return
+	}
+	planID := r.PathValue("id")
+	p, err := s.UpgradePlans.GetPlan(planID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
@@ -1209,19 +1435,24 @@ func (s *Server) deviceEvents(w http.ResponseWriter, r *http.Request) {
 
 // AckRequest 表示 Agent 守护进程在应用配置或自升级后向服务端发送的状态确认回执（ACK）。
 type AckRequest struct {
-	CommandID      command.ID      `json:"command_id,omitempty"`
-	Protocol       int             `json:"protocol,omitempty"`
-	AckMode        string          `json:"ack_mode,omitempty"`
-	Module         string          `json:"module"`
-	Status         string          `json:"status"`
-	AppliedVersion int64           `json:"applied_version"`
-	AppliedHash    string          `json:"applied_hash"`
-	ErrorMessage   string          `json:"error_message"`
-	AgentVersion   string          `json:"agent_version,omitempty"`
-	SSHFingerprint string          `json:"ssh_fingerprint,omitempty"`
-	GitHubVersion  int64           `json:"github_version,omitempty"`
-	Result         json.RawMessage `json:"result,omitempty"`
-	ErrorCode      string          `json:"error_code,omitempty"`
+	CommandID            command.ID      `json:"command_id,omitempty"`
+	Protocol             int             `json:"protocol,omitempty"`
+	AckMode              string          `json:"ack_mode,omitempty"`
+	Module               string          `json:"module"`
+	Status               string          `json:"status"`
+	AppliedVersion       int64           `json:"applied_version"`
+	AppliedHash          string          `json:"applied_hash"`
+	ErrorMessage         string          `json:"error_message"`
+	AgentVersion         string          `json:"agent_version,omitempty"`
+	SSHFingerprint       string          `json:"ssh_fingerprint,omitempty"`
+	GitHubVersion        int64           `json:"github_version,omitempty"`
+	Result               json.RawMessage `json:"result,omitempty"`
+	ErrorCode            string          `json:"error_code,omitempty"`
+	Sequence             *uint64         `json:"sequence,omitempty"`
+	Phase                string          `json:"phase,omitempty"`
+	OccurredAt           *int64          `json:"occurred_at,omitempty"`
+	PhaseResult          json.RawMessage `json:"phase_result,omitempty"`
+	UpgradeTransactionID string          `json:"upgrade_transaction_id,omitempty"`
 }
 
 // 客户端状态 ACK 上报端点：POST /api/v1/devices/{id}/ack
@@ -1237,7 +1468,7 @@ func (s *Server) deviceAck(w http.ResponseWriter, r *http.Request) {
 	}
 	var commandForProjection *command.Command
 	if req.CommandID != "" && s.Commands != nil {
-		if req.Status != "accepted" && req.Status != "succeeded" && req.Status != "failed" && req.Status != "error" {
+		if req.Status != "accepted" && req.Status != "succeeded" && req.Status != "failed" && req.Status != "error" && req.Status != "progress" && req.Status != "synced" && req.Status != "upgraded" {
 			http.Error(w, "invalid ACK status", http.StatusBadRequest)
 			return
 		}
@@ -1260,6 +1491,60 @@ func (s *Server) deviceAck(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"success": true})
 			return
 		}
+		if req.Status == "progress" {
+			if req.Module != "upgrade" {
+				http.Error(w, "status=progress only allowed for upgrade module", http.StatusBadRequest)
+				return
+			}
+			var seq uint64
+			if req.Sequence != nil {
+				seq = *req.Sequence
+			}
+			var occ time.Time
+			if req.OccurredAt != nil {
+				occ = time.UnixMilli(*req.OccurredAt).UTC()
+			} else {
+				occ = time.Now().UTC()
+			}
+			p := command.UpgradeProgress{
+				Phase:        req.Phase,
+				Sequence:     seq,
+				OccurredAt:   occ,
+				ErrorMessage: req.ErrorMessage,
+			}
+			_, _ = s.Commands.UpdateProgress(req.CommandID, p)
+
+			if req.Phase == "commit_ready" {
+				var subResult struct {
+					FenceDigest string `json:"fence_digest"`
+					FactsDigest string `json:"facts_digest"`
+					ServerNonce string `json:"server_nonce"`
+				}
+				if len(req.PhaseResult) > 0 {
+					_ = json.Unmarshal(req.PhaseResult, &subResult)
+				}
+				_, _ = s.Commands.Finish(req.CommandID, command.StatusSucceeded, json.RawMessage(`{"status":"converged"}`), "", "")
+				if s.UpgradePlans != nil {
+					if activePlan, pErr := s.UpgradePlans.GetActivePlanByDevice(deviceID); pErr == nil {
+						_, _ = s.UpgradePlans.TransitionStage(activePlan.PlanID, activePlan.Revision, upgradeplan.StageSucceeded, "")
+					}
+				}
+				conf := &upgrade.UpgradeConfirmation{
+					State:         "committed",
+					CommandID:     string(req.CommandID),
+					FenceRevision: 0,
+					FenceDigest:   subResult.FenceDigest,
+					FactsDigest:   subResult.FactsDigest,
+					ServerNonce:   subResult.ServerNonce,
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"success": true, "upgrade_confirmation": conf})
+				return
+			}
+
+			writeJSON(w, http.StatusOK, map[string]any{"success": true})
+			return
+		}
+
 		status := command.StatusSucceeded
 		if req.Status == "failed" || req.Status == "error" {
 			status = command.StatusFailed
@@ -2480,5 +2765,104 @@ func (s *Server) handleTestAlertChannel(w http.ResponseWriter, r *http.Request) 
 		"retryable":     res.Retryable,
 		"error_code":    res.ErrorCode,
 		"error_message": res.ErrorMessage,
+	})
+}
+
+func (s *Server) systemVersionCheck(w http.ResponseWriter, r *http.Request) {
+	ghClient := s.GitHubReleaseClient
+	if ghClient == nil {
+		ghClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+
+	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("force") == "true"
+	rel, err := ghClient.GetLatestRelease(r.Context(), forceRefresh)
+	currentVer := version.Get()
+
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Warn("system_version_check_failed", "error", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"current_version": currentVer,
+			"latest_version":  currentVer,
+			"has_update":      false,
+			"error":           err.Error(),
+		})
+		return
+	}
+
+	hasUpdate := githubrelease.CompareVersions(currentVer, rel.TagName) < 0
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current_version": currentVer,
+		"latest_version":  rel.TagName,
+		"has_update":      hasUpdate,
+		"release_url":     rel.HTMLURL,
+		"release_notes":   rel.Body,
+		"published_at":    rel.PublishedAt.Format(time.RFC3339),
+	})
+}
+
+type systemUpgradeReq struct {
+	TargetVersion string `json:"target_version,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+}
+
+func (s *Server) systemUpgrade(w http.ResponseWriter, r *http.Request) {
+	var req systemUpgradeReq
+	if r.Body != nil && r.ContentLength > 0 {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		_ = dec.Decode(&req)
+	}
+
+	ghClient := s.GitHubReleaseClient
+	if ghClient == nil {
+		ghClient = githubrelease.NewClient(githubrelease.Config{
+			Repo:         s.GitHubRepo,
+			MirrorPrefix: s.GitHubMirrorPrefix,
+		})
+	}
+
+	res, err := serverupgrade.PerformServerSelfUpgrade(r.Context(), serverupgrade.Options{
+		TargetVersion: req.TargetVersion,
+		Force:         req.Force,
+		Client:        ghClient,
+		RestartCallback: func() error {
+			if s.Log != nil {
+				s.Log.Info("server_self_upgrade_exiting_for_restart")
+			}
+			os.Exit(0)
+			return nil
+		},
+	})
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Error("server_self_upgrade_failed", "error", err)
+		}
+		http.Error(w, fmt.Sprintf("server self-upgrade failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if !res.Updated {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":           "already_up_to_date",
+			"message":          fmt.Sprintf("Server is already up to date (%s)", res.TargetVersion),
+			"previous_version": res.PreviousVersion,
+			"target_version":   res.TargetVersion,
+		})
+		return
+	}
+
+	if s.Log != nil {
+		s.Log.Info("server_self_upgrade_succeeded_triggering_restart", "previous", res.PreviousVersion, "target", res.TargetVersion)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":           "upgrading",
+		"message":          fmt.Sprintf("Server upgraded from %s to %s, restarting...", res.PreviousVersion, res.TargetVersion),
+		"previous_version": res.PreviousVersion,
+		"target_version":   res.TargetVersion,
 	})
 }

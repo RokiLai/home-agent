@@ -19,14 +19,19 @@ import (
 	"homeagent/internal/alerting"
 	"homeagent/internal/auth"
 	"homeagent/internal/broker"
+	"homeagent/internal/command"
+	commandfile "homeagent/internal/command/file"
 	"homeagent/internal/daemon"
+	"homeagent/internal/daemon/upgrade"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
+	"homeagent/internal/upgradeplan"
 )
 
 func TestRegisterListDelete(t *testing.T) {
@@ -1769,7 +1774,7 @@ func TestUpgradeAllReportsPerDeviceDispatchResults(t *testing.T) {
 	defer unsubscribeMissing()
 
 	s := &Server{
-		Registry: r, Broker: b, Token: "secret", DownloadsDir: downloadsDir,
+		Registry: r, Broker: b, Token: "secret", DownloadsDir: downloadsDir, UpgradeSource: "local",
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices/upgrade-all", nil)
@@ -2109,5 +2114,475 @@ func TestAuthStatusPublicURL(t *testing.T) {
 	}
 	if respCustom["public_url"] != "https://custom.selfhost.net" {
 		t.Fatalf("expected custom public_url https://custom.selfhost.net, got %v", respCustom["public_url"])
+	}
+}
+
+func TestUpgradePlan_OrchestrationAndIdempotency(t *testing.T) {
+	tempDir := t.TempDir()
+	r, err := registry.Open(filepath.Join(tempDir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdRepo, err := commandfile.Open(filepath.Join(tempDir, "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdSvc := command.NewService(cmdRepo, nil)
+	b := broker.New()
+
+	d := device.Device{
+		ID:        "dev-plan-1",
+		Hostname:  "mac-mini",
+		OS:        "darwin",
+		Arch:      "arm64",
+		SSHUser:   "roki",
+		SSHPort:   22,
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+	}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		Registry: r,
+		Commands: cmdSvc,
+		Broker:   b,
+		Token:    "secret",
+	}
+	handler := s.Handler()
+
+	// 1. First upgrade request with Idempotency-Key
+	upgradeBody := `{"version":"v0.7.0","url":"https://example.com/bin","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`
+	req := httptest.NewRequest("POST", "/api/v1/devices/dev-plan-1/upgrade", strings.NewReader(upgradeBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Idempotency-Key", "idem-plan-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var res map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	planID, ok := res["plan_id"].(string)
+	if !ok || planID == "" {
+		t.Fatalf("expected plan_id in response, got %+v", res)
+	}
+	if res["plan_stage"] != "bridge_pending" && res["plan_stage"] != "target_pending" {
+		t.Fatalf("unexpected plan_stage: %v", res["plan_stage"])
+	}
+
+	// 2. Same Idempotency-Key -> returns same plan
+	req2 := httptest.NewRequest("POST", "/api/v1/devices/dev-plan-1/upgrade", strings.NewReader(upgradeBody))
+	req2.Header.Set("Authorization", "Bearer secret")
+	req2.Header.Set("Idempotency-Key", "idem-plan-1")
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on idempotent retry, got %d", w2.Code)
+	}
+	var res2 map[string]any
+	_ = json.NewDecoder(w2.Body).Decode(&res2)
+	if res2["plan_id"] != planID {
+		t.Fatalf("expected same plan_id %s, got %s", planID, res2["plan_id"])
+	}
+
+	// 3. GET /api/v1/upgrade-plans
+	getPlansReq := httptest.NewRequest("GET", "/api/v1/upgrade-plans?device_id=dev-plan-1", nil)
+	getPlansReq.Header.Set("Authorization", "Bearer secret")
+	wPlans := httptest.NewRecorder()
+	handler.ServeHTTP(wPlans, getPlansReq)
+	if wPlans.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for list upgrade plans, got %d", wPlans.Code)
+	}
+	var plansList []upgradeplan.UpgradePlan
+	if err := json.NewDecoder(wPlans.Body).Decode(&plansList); err != nil {
+		t.Fatal(err)
+	}
+	if len(plansList) != 1 || plansList[0].PlanID != planID {
+		t.Fatalf("unexpected plans list: %+v", plansList)
+	}
+
+	// 4. GET /api/v1/upgrade-plans/{id}
+	getPlanReq := httptest.NewRequest("GET", "/api/v1/upgrade-plans/"+planID, nil)
+	getPlanReq.Header.Set("Authorization", "Bearer secret")
+	wPlan := httptest.NewRecorder()
+	handler.ServeHTTP(wPlan, getPlanReq)
+	if wPlan.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for get upgrade plan, got %d", wPlan.Code)
+	}
+	var singlePlan upgradeplan.UpgradePlan
+	if err := json.NewDecoder(wPlan.Body).Decode(&singlePlan); err != nil {
+		t.Fatal(err)
+	}
+	if singlePlan.PlanID != planID {
+		t.Fatalf("expected plan_id %s, got %s", planID, singlePlan.PlanID)
+	}
+}
+
+func TestUpgrade_V2LockedDisabledSafety(t *testing.T) {
+	tempDir := t.TempDir()
+	r, err := registry.Open(filepath.Join(tempDir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := device.Device{
+		ID:                  "dev-locked",
+		Hostname:            "mac-locked",
+		OS:                  "darwin",
+		Arch:                "arm64",
+		SSHUser:             "roki",
+		SSHPort:             22,
+		PublicKey:           "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+		UpgradeSecurityMode: "v2_locked",
+	}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		Registry:                 r,
+		Token:                    "secret",
+		MacOSAppUpgradeV2Enabled: false, // Switch is disabled
+	}
+	handler := s.Handler()
+
+	upgradeBody := `{"version":"v0.7.0","url":"https://example.com/bin","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`
+	req := httptest.NewRequest("POST", "/api/v1/devices/dev-locked/upgrade", strings.NewReader(upgradeBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for v2_locked with v2 disabled, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "v2_upgrade_temporarily_unavailable") {
+		t.Fatalf("expected v2_upgrade_temporarily_unavailable message, got %s", w.Body.String())
+	}
+}
+
+func TestUpgradeAck_ProgressAndFencedConfirmation(t *testing.T) {
+	tempDir := t.TempDir()
+	r, err := registry.Open(filepath.Join(tempDir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdRepo, err := commandfile.Open(filepath.Join(tempDir, "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdSvc := command.NewService(cmdRepo, nil)
+	b := broker.New()
+
+	devToken := "dev-token-secret-123"
+	d := device.Device{
+		ID:              "dev-fenced",
+		Hostname:        "mac-fenced",
+		OS:              "darwin",
+		Arch:            "arm64",
+		SSHUser:         "roki",
+		SSHPort:         22,
+		PublicKey:       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+		DeviceTokenHash: auth.HashToken(devToken),
+	}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		Registry: r,
+		Commands: cmdSvc,
+		Broker:   b,
+		Token:    "secret",
+	}
+	handler := s.Handler()
+
+	// 1. Create upgrade command
+	cmd, _, err := cmdSvc.Create(command.CreateRequest{
+		Kind:        command.KindUpgrade,
+		DeviceID:    "dev-fenced",
+		RequestedBy: command.Actor{Type: "user", ID: "admin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmdSvc.StartDispatch(cmd.ID)
+	_, _ = cmdSvc.DispatchResult(cmd.ID, true)
+
+	// 2. Send progress ACK
+	seq := uint64(1)
+	occ := time.Now().UnixMilli()
+	ackBody, _ := json.Marshal(AckRequest{
+		CommandID:    cmd.ID,
+		Module:       "upgrade",
+		Status:       "progress",
+		Phase:        "downloading",
+		Sequence:     &seq,
+		OccurredAt:   &occ,
+		ErrorMessage: "",
+	})
+	ackReq := httptest.NewRequest("POST", "/api/v1/devices/dev-fenced/ack", bytes.NewReader(ackBody))
+	ackReq.Header.Set("Authorization", "Bearer "+devToken)
+	wAck := httptest.NewRecorder()
+	handler.ServeHTTP(wAck, ackReq)
+	if wAck.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on progress ACK, got %d: %s", wAck.Code, wAck.Body.String())
+	}
+
+	// Verify command progress updated but command not terminal
+	updatedCmd, _ := cmdSvc.Get(cmd.ID)
+	if updatedCmd.Terminal() {
+		t.Fatal("command should not be terminal after progress ACK")
+	}
+	if updatedCmd.Progress == nil || updatedCmd.Progress.Phase != "downloading" {
+		t.Fatalf("unexpected command progress: %+v", updatedCmd.Progress)
+	}
+
+	// 3. PUT facts with Fenced token -> receives prepared confirmation
+	tokenStr, _, err := upgrade.GenerateFenceToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fenceRev := uint64(10)
+	factsBody, _ := json.Marshal(map[string]any{
+		"hostname":                  "mac-fenced",
+		"agent_version":             "v0.7.0",
+		"os":                        "darwin",
+		"arch":                      "arm64",
+		"ssh_user":                  "roki",
+		"ssh_port":                  22,
+		"addresses":                 []string{"192.168.1.100"},
+		"control_protocols":         []int{1, 2},
+		"command_id":                string(cmd.ID),
+		"upgrade_transaction_id":    "tx-999",
+		"upgrade_fence_revision":    fenceRev,
+		"upgrade_fence_token":       tokenStr,
+		"confirmed_manifest_digest": strings.Repeat("a", 64),
+		"running_bundle_digest":     strings.Repeat("b", 64),
+		"upgrade_security_mode":     "v2_locked",
+	})
+	factsReq := httptest.NewRequest("PUT", "/api/v1/devices/dev-fenced/facts", bytes.NewReader(factsBody))
+	factsReq.Header.Set("Authorization", "Bearer "+devToken)
+	wFacts := httptest.NewRecorder()
+	handler.ServeHTTP(wFacts, factsReq)
+	if wFacts.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on facts PUT, got %d: %s", wFacts.Code, wFacts.Body.String())
+	}
+	var factsResp map[string]any
+	if err := json.NewDecoder(wFacts.Body).Decode(&factsResp); err != nil {
+		t.Fatal(err)
+	}
+	confMap, ok := factsResp["upgrade_confirmation"].(map[string]any)
+	if !ok || confMap["state"] != "prepared" {
+		t.Fatalf("expected prepared confirmation, got %+v", factsResp)
+	}
+	serverNonce, _ := confMap["server_nonce"].(string)
+	fenceDigest, _ := confMap["fence_digest"].(string)
+	factsDigest, _ := confMap["facts_digest"].(string)
+
+	// 4. Send commit_ready progress ACK -> finishes command as succeeded and returns committed confirmation
+	commitResult, _ := json.Marshal(map[string]string{
+		"fence_digest": fenceDigest,
+		"facts_digest": factsDigest,
+		"server_nonce": serverNonce,
+	})
+	seq2 := uint64(2)
+	commitAckBody, _ := json.Marshal(AckRequest{
+		CommandID:   cmd.ID,
+		Module:      "upgrade",
+		Status:      "progress",
+		Phase:       "commit_ready",
+		Sequence:    &seq2,
+		PhaseResult: commitResult,
+	})
+	commitReq := httptest.NewRequest("POST", "/api/v1/devices/dev-fenced/ack", bytes.NewReader(commitAckBody))
+	commitReq.Header.Set("Authorization", "Bearer "+devToken)
+	wCommit := httptest.NewRecorder()
+	handler.ServeHTTP(wCommit, commitReq)
+	if wCommit.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on commit_ready ACK, got %d: %s", wCommit.Code, wCommit.Body.String())
+	}
+	var commitResp map[string]any
+	if err := json.NewDecoder(wCommit.Body).Decode(&commitResp); err != nil {
+		t.Fatal(err)
+	}
+	commitConf, ok := commitResp["upgrade_confirmation"].(map[string]any)
+	if !ok || commitConf["state"] != "committed" {
+		t.Fatalf("expected committed confirmation, got %+v", commitResp)
+	}
+
+	// Verify command is now succeeded
+	finalCmd, _ := cmdSvc.Get(cmd.ID)
+	if finalCmd.Status != command.StatusSucceeded {
+		t.Fatalf("expected command StatusSucceeded, got %s", finalCmd.Status)
+	}
+}
+
+func TestUpgradeDevice_GitHubSourceAndSHA256Resolution(t *testing.T) {
+	rawHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64.sha256":
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "%s  homeagent-agent-linux-amd64\n", rawHash)
+		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-darwin-arm64.sha256":
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, "%s\n", rawHash)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockGitHub.Close()
+
+	reg, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	d := device.Device{
+		ID:               "dev-gh",
+		Hostname:         "host-gh",
+		MAC:              "12:22:33:44:55:66",
+		OS:               "linux",
+		Arch:             "amd64",
+		SSHUser:          "root",
+		SSHPort:          22,
+		PublicKey:        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+		ControlProtocols: []int{1},
+	}
+	if _, err := reg.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	b := broker.New()
+	cmdRepo, _ := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	cmdSvc := command.NewService(cmdRepo, nil)
+
+	ghClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:            "RokiLai/home-agent",
+		DownloadBaseURL: mockGitHub.URL,
+	})
+
+	s := &Server{
+		Registry:            reg,
+		Broker:              b,
+		Commands:            cmdSvc,
+		UpgradePlans:        upgradeplan.NewService(),
+		Token:               "admin-tok",
+		UpgradeSource:       "github",
+		GitHubReleaseClient: ghClient,
+		Log:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.Handler()
+
+	// Connect SSE listener
+	eventsReq := httptest.NewRequest("GET", "/api/v1/devices/dev-gh/events", nil)
+	eventsReq.Header.Set("Authorization", "Bearer admin-tok")
+	wEvents := httptest.NewRecorder()
+	go handler.ServeHTTP(wEvents, eventsReq)
+	time.Sleep(50 * time.Millisecond)
+
+	// 1. Trigger upgrade without custom url/sha -> should resolve GitHub release URL and fetch sha256
+	upgradeReq := httptest.NewRequest("POST", "/api/v1/devices/dev-gh/upgrade", strings.NewReader(`{"target_version":"v0.7.0"}`))
+	upgradeReq.Header.Set("Authorization", "Bearer admin-tok")
+	upgradeReq.Header.Set("Content-Type", "application/json")
+	wUpgrade := httptest.NewRecorder()
+	handler.ServeHTTP(wUpgrade, upgradeReq)
+
+	if wUpgrade.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from upgrade, got %d: %s", wUpgrade.Code, wUpgrade.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(wUpgrade.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedURL := mockGitHub.URL + "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64"
+	if resp["url"] != expectedURL {
+		t.Fatalf("expected URL %s, got %v", expectedURL, resp["url"])
+	}
+	if resp["sha256"] != rawHash {
+		t.Fatalf("expected SHA256 %s, got %v", rawHash, resp["sha256"])
+	}
+
+	// 2. Negative test: target version whose sha256 is missing on GitHub -> should fail 400
+	failReq := httptest.NewRequest("POST", "/api/v1/devices/dev-gh/upgrade", strings.NewReader(`{"target_version":"v9.9.9"}`))
+	failReq.Header.Set("Authorization", "Bearer admin-tok")
+	failReq.Header.Set("Content-Type", "application/json")
+	wFail := httptest.NewRecorder()
+	handler.ServeHTTP(wFail, failReq)
+
+	if wFail.Code == http.StatusOK {
+		t.Fatalf("expected failure for non-existent release, got 200: %s", wFail.Body.String())
+	}
+}
+
+func TestSystemVersionCheck_Endpoint(t *testing.T) {
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/RokiLai/home-agent/releases/latest" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{
+				"tag_name": "v99.0.0",
+				"name": "Release v99.0.0",
+				"body": "Breaking update",
+				"published_at": "2026-09-01T00:00:00Z",
+				"html_url": "https://github.com/RokiLai/home-agent/releases/tag/v99.0.0"
+			}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockGitHub.Close()
+
+	ghClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:    "RokiLai/home-agent",
+		APIBase: mockGitHub.URL,
+	})
+
+	s := &Server{
+		Token:               "admin-token",
+		GitHubReleaseClient: ghClient,
+		Log:                 slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/api/v1/system/version-check", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var res map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["has_update"] != true || res["latest_version"] != "v99.0.0" {
+		t.Fatalf("unexpected version-check response: %+v", res)
+	}
+}
+
+func TestGetConfig_UpgradeSource(t *testing.T) {
+	s := &Server{
+		Token:              "admin-token",
+		PublicURL:          "https://custom.domain",
+		GitHubRepo:         "custom/repo",
+		UpgradeSource:      "github",
+		GitHubMirrorPrefix: "https://ghproxy.net/",
+	}
+	handler := s.Handler()
+
+	req := httptest.NewRequest("GET", "/api/v1/config", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+	var res map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res["github_repo"] != "custom/repo" || res["upgrade_source"] != "github" || res["github_mirror_prefix"] != "https://ghproxy.net/" {
+		t.Fatalf("unexpected config output: %+v", res)
 	}
 }

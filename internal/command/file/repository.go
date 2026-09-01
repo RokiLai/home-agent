@@ -357,6 +357,29 @@ func (r *Repository) ListProjectionPending(limit int) ([]command.Command, error)
 	}
 	return out, nil
 }
+
+func (r *Repository) UpdateProgress(id command.ID, rev uint64, p command.UpgradeProgress) (command.Command, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.commands[id]
+	if !ok {
+		return command.Command{}, command.ErrNotFound
+	}
+	if c.Revision != rev {
+		return command.Command{}, command.ErrConflict
+	}
+	old := c
+	c.Progress = &p
+	c.Revision++
+	c.UpdatedAt = time.Now().UTC()
+	r.commands[id] = c
+	if err := r.write(); err != nil {
+		r.commands[id] = old
+		return command.Command{}, err
+	}
+	return c, nil
+}
+
 func (r *Repository) write() error {
 	drop := r.pruneIDsLocked(time.Now().UTC())
 	if err := os.MkdirAll(filepath.Dir(r.path), 0700); err != nil {

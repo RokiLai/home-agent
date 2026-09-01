@@ -23,6 +23,7 @@ import (
 
 // UpgradeOptions 配置 Agent 目标二进制下载、校验、冒烟测试及重启回调。
 type UpgradeOptions struct {
+	CommandID       string
 	TargetVersion   string
 	URL             string
 	SHA256          string
@@ -35,12 +36,24 @@ type UpgradeOptions struct {
 	Logger          *slog.Logger
 }
 
+// StageTiming 记录自升级各阶段单调时钟耗时（毫秒）。
+type StageTiming struct {
+	DownloadDurationMs int64 `json:"download_duration_ms"`
+	DownloadFsyncMs    int64 `json:"download_fsync_ms"`
+	HashDurationMs     int64 `json:"hash_duration_ms"`
+	SmokeDurationMs    int64 `json:"smoke_duration_ms"`
+	ReplaceDurationMs  int64 `json:"replace_duration_ms"`
+	CodesignDurationMs int64 `json:"codesign_duration_ms"`
+	TotalDurationMs    int64 `json:"total_duration_ms"`
+}
+
 // UpgradeResult 记录自升级执行的结果与版本变化。
 type UpgradeResult struct {
-	PreviousVersion string `json:"previous_version"`
-	TargetVersion   string `json:"target_version"`
-	Updated         bool   `json:"updated"`
-	Message         string `json:"message"`
+	PreviousVersion string      `json:"previous_version"`
+	TargetVersion   string      `json:"target_version"`
+	Updated         bool        `json:"updated"`
+	Message         string      `json:"message"`
+	Timing          StageTiming `json:"timing"`
 }
 
 // UpgradePayload 表示服务端通过 SSE 下发的 upgrade 升级指令载荷。
@@ -55,6 +68,8 @@ type UpgradePayload struct {
 // PerformSelfUpgrade 执行完整的客户端自升级流程：流式下载目标二进制文件、SHA256 完整性校验、
 // 启动前置冒烟测试（执行 info 子命令验证可运行性），并安全地原子替换当前正在运行的可执行文件。
 func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResult, error) {
+	totalStart := time.Now()
+	var timing StageTiming
 
 	currentVer := version.Get()
 	targetVer := strings.TrimSpace(opts.TargetVersion)
@@ -67,12 +82,14 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 	}
 
 	if !opts.Force && targetVer != "" && targetVer == currentVer {
-		log.Info("self_upgrade_skipped_already_latest", "current_version", currentVer, "target_version", targetVer)
+		timing.TotalDurationMs = time.Since(totalStart).Milliseconds()
+		log.Info("self_upgrade_skipped_already_latest", "command_id", opts.CommandID, "current_version", currentVer, "target_version", targetVer, "total_ms", timing.TotalDurationMs)
 		return &UpgradeResult{
 			PreviousVersion: currentVer,
 			TargetVersion:   targetVer,
 			Updated:         false,
 			Message:         fmt.Sprintf("already up to date (%s)", currentVer),
+			Timing:          timing,
 		}, nil
 	}
 
@@ -125,12 +142,13 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 		httpClient = &http.Client{Timeout: 60 * time.Second}
 	}
 
-	log.Info("downloading_agent_binary", "url", url, "dest", tmpPath)
+	log.Info("downloading_agent_binary", "command_id", opts.CommandID, "url", url, "dest", tmpPath)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
 	}
 
+	dlStart := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download binary: %w", err)
@@ -146,13 +164,19 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 	if _, err := io.Copy(writer, resp.Body); err != nil {
 		return nil, fmt.Errorf("write downloaded binary: %w", err)
 	}
+	timing.DownloadDurationMs = time.Since(dlStart).Milliseconds()
+
+	fsyncStart := time.Now()
 	if err := tmpFile.Sync(); err != nil {
 		return nil, fmt.Errorf("sync downloaded binary: %w", err)
 	}
+	timing.DownloadFsyncMs = time.Since(fsyncStart).Milliseconds()
 	_ = tmpFile.Close()
 
+	hashStart := time.Now()
 	actualSHA := hex.EncodeToString(hasher.Sum(nil))
-	log.Info("download_completed", "sha256", actualSHA)
+	timing.HashDurationMs = time.Since(hashStart).Milliseconds()
+	log.Info("download_completed", "command_id", opts.CommandID, "sha256", actualSHA, "download_ms", timing.DownloadDurationMs, "fsync_ms", timing.DownloadFsyncMs)
 
 	// 2. SHA256 integrity verification
 	if expectedSHA != "" && !strings.EqualFold(actualSHA, expectedSHA) {
@@ -168,6 +192,7 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 
 	// 4. Smoke preflight test
 	if !opts.SkipSmoke {
+		smokeStart := time.Now()
 		subcmd := opts.SmokeSubcommand
 		if subcmd == "" {
 			subcmd = "info"
@@ -201,26 +226,30 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 		if candidate.OS != runtime.GOOS || candidate.Arch != runtime.GOARCH {
 			return nil, fmt.Errorf("candidate platform mismatch: got %s/%s, want %s/%s", candidate.OS, candidate.Arch, runtime.GOOS, runtime.GOARCH)
 		}
-		log.Info("smoke_preflight_passed", "subcommand", subcmd)
+		timing.SmokeDurationMs = time.Since(smokeStart).Milliseconds()
+		log.Info("smoke_preflight_passed", "command_id", opts.CommandID, "subcommand", subcmd, "smoke_ms", timing.SmokeDurationMs)
 	}
 
 	// 5. Cross-platform atomic replacement
+	replaceStart := time.Now()
 	oldPath := execPath + ".old"
 	_ = os.Remove(oldPath) // clean previous leftover .old
 
-	// If binary is in same filesystem/directory:
+	var codesignMs int64
+	var replaceErr error
 	if filepath.Dir(tmpPath) == filepath.Dir(execPath) {
-		if err := atomicReplaceSameDir(execPath, tmpPath, oldPath); err != nil {
-			return nil, err
-		}
+		codesignMs, replaceErr = atomicReplaceSameDir(execPath, tmpPath, oldPath, log)
 	} else {
-		if err := atomicReplaceCrossDir(execPath, tmpPath, oldPath); err != nil {
-			return nil, err
-		}
+		codesignMs, replaceErr = atomicReplaceCrossDir(execPath, tmpPath, oldPath, log)
+	}
+	if replaceErr != nil {
+		return nil, replaceErr
 	}
 
+	timing.ReplaceDurationMs = time.Since(replaceStart).Milliseconds()
+	timing.CodesignDurationMs = codesignMs
 	cleanedUp = true // Don't remove tmpPath since it was renamed
-	log.Info("agent_binary_atomically_replaced", "path", execPath)
+	log.Info("agent_binary_atomically_replaced", "command_id", opts.CommandID, "path", execPath, "replace_ms", timing.ReplaceDurationMs, "codesign_ms", timing.CodesignDurationMs)
 
 	// 6. Trigger restart
 	if opts.RestartCallback != nil {
@@ -230,18 +259,31 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 		}()
 	}
 
+	timing.TotalDurationMs = time.Since(totalStart).Milliseconds()
+	log.Info("self_upgrade_stage_timing",
+		"command_id", opts.CommandID,
+		"download_ms", timing.DownloadDurationMs,
+		"fsync_ms", timing.DownloadFsyncMs,
+		"hash_ms", timing.HashDurationMs,
+		"smoke_ms", timing.SmokeDurationMs,
+		"replace_ms", timing.ReplaceDurationMs,
+		"codesign_ms", timing.CodesignDurationMs,
+		"total_ms", timing.TotalDurationMs,
+	)
+
 	return &UpgradeResult{
 		PreviousVersion: currentVer,
 		TargetVersion:   targetVer,
 		Updated:         true,
 		Message:         fmt.Sprintf("successfully upgraded from %s to %s", currentVer, targetVer),
+		Timing:          timing,
 	}, nil
 }
 
-func atomicReplaceSameDir(targetPath, newPath, oldPath string) error {
+func atomicReplaceSameDir(targetPath, newPath, oldPath string, log *slog.Logger) (int64, error) {
 	if _, err := os.Stat(targetPath); err == nil {
 		if err := os.Rename(targetPath, oldPath); err != nil {
-			return fmt.Errorf("backup existing executable to %s: %w", oldPath, err)
+			return 0, fmt.Errorf("backup existing executable to %s: %w", oldPath, err)
 		}
 	}
 
@@ -250,7 +292,7 @@ func atomicReplaceSameDir(targetPath, newPath, oldPath string) error {
 		if _, statErr := os.Stat(oldPath); statErr == nil {
 			_ = os.Rename(oldPath, targetPath)
 		}
-		return fmt.Errorf("replace executable: %w", err)
+		return 0, fmt.Errorf("replace executable: %w", err)
 	}
 
 	// Apply Windows ACL if on Windows
@@ -259,12 +301,18 @@ func atomicReplaceSameDir(targetPath, newPath, oldPath string) error {
 	}
 
 	// Apply macOS Ad-hoc codesign if on Darwin
+	var codesignMs int64
 	if runtime.GOOS == "darwin" {
-		_ = applyDarwinCodesign(targetPath)
+		csStart := time.Now()
+		csErr := applyDarwinCodesign(targetPath)
+		codesignMs = time.Since(csStart).Milliseconds()
+		if csErr != nil && log != nil {
+			log.Warn("darwin_codesign_failed_nonfatal", "path", targetPath, "error", csErr, "codesign_ms", codesignMs)
+		}
 	}
 
 	_ = os.Remove(oldPath)
-	return nil
+	return codesignMs, nil
 }
 
 func applyDarwinCodesign(targetPath string) error {
@@ -294,11 +342,11 @@ func applyDarwinCodesign(targetPath string) error {
 	return nil
 }
 
-func atomicReplaceCrossDir(targetPath, srcNewPath, oldPath string) error {
+func atomicReplaceCrossDir(targetPath, srcNewPath, oldPath string, log *slog.Logger) (int64, error) {
 	destDir := filepath.Dir(targetPath)
 	tempInDest, err := os.CreateTemp(destDir, ".homeagent-agent-staged-*.tmp")
 	if err != nil {
-		return fmt.Errorf("stage binary in destination directory: %w", err)
+		return 0, fmt.Errorf("stage binary in destination directory: %w", err)
 	}
 	tempInDestPath := tempInDest.Name()
 	defer func() {
@@ -308,15 +356,15 @@ func atomicReplaceCrossDir(targetPath, srcNewPath, oldPath string) error {
 
 	srcFile, err := os.Open(srcNewPath)
 	if err != nil {
-		return fmt.Errorf("open downloaded binary: %w", err)
+		return 0, fmt.Errorf("open downloaded binary: %w", err)
 	}
 	defer srcFile.Close()
 
 	if _, err := io.Copy(tempInDest, srcFile); err != nil {
-		return fmt.Errorf("copy staged binary: %w", err)
+		return 0, fmt.Errorf("copy staged binary: %w", err)
 	}
 	if err := tempInDest.Sync(); err != nil {
-		return fmt.Errorf("sync staged binary: %w", err)
+		return 0, fmt.Errorf("sync staged binary: %w", err)
 	}
 	_ = tempInDest.Close()
 
@@ -324,5 +372,5 @@ func atomicReplaceCrossDir(targetPath, srcNewPath, oldPath string) error {
 		_ = os.Chmod(tempInDestPath, 0755)
 	}
 
-	return atomicReplaceSameDir(targetPath, tempInDestPath, oldPath)
+	return atomicReplaceSameDir(targetPath, tempInDestPath, oldPath, log)
 }

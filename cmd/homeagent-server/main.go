@@ -33,10 +33,12 @@ import (
 	"homeagent/internal/ddns"
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/store"
 	"homeagent/internal/store/consul"
@@ -51,6 +53,7 @@ type config struct {
 	adminUser, adminPass                                  string
 	storageDriver, mysqlDSN                               string
 	consulAddr, consulService                             string
+	githubRepo, githubMirrorPrefix, upgradeSource         string
 	timeout                                               time.Duration
 	sync                                                  bool
 	mac, broadcast                                        string
@@ -64,6 +67,12 @@ func main() {
 	}
 	if os.Args[1] == "version" || os.Args[1] == "-v" || os.Args[1] == "--version" {
 		fmt.Printf("homeagent-server %s (%s/%s)\n", version.Get(), runtime.GOOS, runtime.GOARCH)
+		return
+	}
+	if os.Args[1] == "self-upgrade" {
+		if err := selfUpgradeCommand(os.Args[2:]); err != nil {
+			fatal(err)
+		}
 		return
 	}
 	cfg, rest, err := parseConfig(os.Args[1], os.Args[2:])
@@ -95,7 +104,7 @@ func main() {
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|rename|sync|ssh-test|wake|shutdown|ipv6|upgrade|version> [flags] [device-id|alias] [alias]")
+	fmt.Fprintln(os.Stderr, "usage: homeagent-server <serve|devices|rename|sync|ssh-test|wake|shutdown|ipv6|upgrade|self-upgrade|version> [flags] [device-id|alias] [alias]")
 	os.Exit(2)
 }
 func fatal(err error) { fmt.Fprintln(os.Stderr, "homeagent-server:", err); os.Exit(1) }
@@ -117,13 +126,16 @@ func parseConfig(name string, args []string) (config, []string, error) {
 		mysqlDSN:      os.Getenv("HOMEAGENT_MYSQL_DSN"),
 		consulAddr:    env("HOMEAGENT_CONSUL_ADDRESS", "127.0.0.1:8500"),
 		consulService: os.Getenv("HOMEAGENT_CONSUL_MYSQL_SERVICE"),
-		downloads:     os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
-		scripts:       env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
-		timeout:       5 * time.Second,
-		sync:          true,
-		burst:         3,
-		port:          9,
-		interval:      50 * time.Millisecond,
+		downloads:          os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
+		scripts:            env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
+		githubRepo:         env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"),
+		githubMirrorPrefix: env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""),
+		upgradeSource:      env("HOMEAGENT_UPGRADE_SOURCE", "github"),
+		timeout:            5 * time.Second,
+		sync:               true,
+		burst:              3,
+		port:               9,
+		interval:           50 * time.Millisecond,
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&c.listen, "listen", c.listen, "listen address")
@@ -138,6 +150,9 @@ func parseConfig(name string, args []string) (config, []string, error) {
 	fs.StringVar(&c.consulService, "consul-mysql-service", c.consulService, "Consul service name for MySQL/ProxySQL")
 	fs.StringVar(&c.downloads, "downloads-dir", c.downloads, "agent binary directory")
 	fs.StringVar(&c.scripts, "scripts-dir", c.scripts, "installer scripts directory")
+	fs.StringVar(&c.githubRepo, "github-repo", c.githubRepo, "GitHub repository (owner/repo)")
+	fs.StringVar(&c.githubMirrorPrefix, "github-mirror-prefix", c.githubMirrorPrefix, "GitHub mirror or proxy prefix")
+	fs.StringVar(&c.upgradeSource, "upgrade-source", c.upgradeSource, "upgrade source mode (github or local)")
 	fs.DurationVar(&c.timeout, "ssh-timeout", c.timeout, "SSH timeout")
 	fs.BoolVar(&c.sync, "sync", c.sync, "enable SSH synchronization")
 	fs.StringVar(&c.mac, "mac", c.mac, "target MAC address for wake")
@@ -434,6 +449,9 @@ func serve(c config) error {
 		Health:             healthSvc,
 		Alerting:           alertingSvc,
 		AuditLogger:        auditLogger,
+		UpgradeSource:      c.upgradeSource,
+		GitHubRepo:         c.githubRepo,
+		GitHubMirrorPrefix: c.githubMirrorPrefix,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -857,5 +875,68 @@ func shutdownCommand(c config, args []string) error {
 	}
 
 	fmt.Printf("[OK] Remote shutdown command dispatched to %s\n", targetDisplayName)
+	return nil
+}
+
+func selfUpgradeCommand(args []string) error {
+	fs := flag.NewFlagSet("self-upgrade", flag.ContinueOnError)
+	targetVer := fs.String("version", "", "Target version (e.g. v0.7.0, defaults to latest release)")
+	repo := fs.String("repo", env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"), "GitHub repository (owner/repo)")
+	mirror := fs.String("mirror", env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""), "Optional GitHub mirror/proxy prefix")
+	force := fs.Bool("force", false, "Force re-download and upgrade even if already on target version")
+	checkOnly := fs.Bool("check-only", false, "Only check if a new version is available without upgrading")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ghClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:         *repo,
+		MirrorPrefix: *mirror,
+	})
+
+	if *checkOnly {
+		rel, err := ghClient.GetLatestRelease(context.Background(), true)
+		if err != nil {
+			return fmt.Errorf("failed to check latest release from GitHub (%s): %w", *repo, err)
+		}
+		currentVer := version.Get()
+		cmp := githubrelease.CompareVersions(currentVer, rel.TagName)
+		fmt.Printf("Current Version: %s\n", currentVer)
+		fmt.Printf("Latest Version:  %s\n", rel.TagName)
+		fmt.Printf("Published At:    %s\n", rel.PublishedAt.Format(time.RFC3339))
+		fmt.Printf("Release URL:     %s\n", rel.HTMLURL)
+		if cmp < 0 {
+			fmt.Printf("Status:          New version available! Run 'homeagent-server self-upgrade' to update.\n")
+		} else {
+			fmt.Printf("Status:          Already up to date.\n")
+		}
+		return nil
+	}
+
+	fmt.Printf("[...] Checking and downloading server binary from GitHub (%s)...\n", *repo)
+	res, err := serverupgrade.PerformServerSelfUpgrade(context.Background(), serverupgrade.Options{
+		TargetVersion: *targetVer,
+		Repo:          *repo,
+		MirrorPrefix:  *mirror,
+		Force:         *force,
+		Client:        ghClient,
+		RestartCallback: func() error {
+			fmt.Printf("[OK] Server binary replaced successfully (%s -> %s).\n", version.Get(), *targetVer)
+			fmt.Printf("[...] Exiting process to allow service manager (launchd/systemd) to restart server.\n")
+			os.Exit(0)
+			return nil
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("self-upgrade failed: %w", err)
+	}
+
+	if !res.Updated {
+		fmt.Printf("[OK] Server is already up to date (%s).\n", res.TargetVersion)
+		return nil
+	}
+
+	fmt.Printf("[OK] Successfully upgraded server from %s to %s.\n", res.PreviousVersion, res.TargetVersion)
 	return nil
 }
