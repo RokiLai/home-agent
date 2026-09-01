@@ -1,0 +1,10 @@
+task: update-design-docs-status
+description: 更新 P0/P1 设计文档、部署方案与产品演进路线图的阶段状态与已完成条目，并修复批量升级单测的本地源隔离。
+allowed_paths:
+  - changes/update-design-docs-status.yaml
+  - docs/architecture/P0命令任务模型设计.md
+  - docs/architecture/中心化设备接入与SSH公钥管理实现方案.md
+  - docs/deployment/公网访问认证与设备认领设计方案.md
+  - docs/fixes/P1设备健康与告警系统设计.md
+  - docs/planning/产品演进路线图.md
+  - internal/api/api_test.go

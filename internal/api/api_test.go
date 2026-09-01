@@ -1774,7 +1774,7 @@ func TestUpgradeAllReportsPerDeviceDispatchResults(t *testing.T) {
 	defer unsubscribeMissing()
 
 	s := &Server{
-		Registry: r, Broker: b, Token: "secret", DownloadsDir: downloadsDir,
+		Registry: r, Broker: b, Token: "secret", DownloadsDir: downloadsDir, UpgradeSource: "local",
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/devices/upgrade-all", nil)
