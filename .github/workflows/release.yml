@@ -1,0 +1,82 @@
+name: Create Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read release version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^var Version = "\([^"]*\)"/\1/p' internal/version/version.go)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release assets
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          while read -r component goos goarch output; do
+            package="./cmd/homeagent-${component}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath \
+              -ldflags "-s -w -X homeagent/internal/version.Version=${VERSION}" \
+              -o "dist/${output}" "$package"
+            (
+              cd dist
+              sha256sum "$output" > "${output}.sha256"
+            )
+          done <<'TARGETS'
+          server linux amd64 homeagent-server-linux-amd64
+          server linux arm64 homeagent-server-linux-arm64
+          server linux arm homeagent-server-linux-arm
+          server darwin amd64 homeagent-server-darwin-amd64
+          server darwin arm64 homeagent-server-darwin-arm64
+          server windows amd64 homeagent-server-windows-amd64.exe
+          server windows arm64 homeagent-server-windows-arm64.exe
+          agent linux amd64 homeagent-agent-linux-amd64
+          agent linux arm64 homeagent-agent-linux-arm64
+          agent linux arm homeagent-agent-linux-arm
+          agent linux mips homeagent-agent-linux-mips
+          agent linux mipsle homeagent-agent-linux-mipsle
+          agent darwin amd64 homeagent-agent-darwin-amd64
+          agent darwin arm64 homeagent-agent-darwin-arm64
+          agent windows amd64 homeagent-agent-windows-amd64.exe
+          agent windows arm64 homeagent-agent-windows-arm64.exe
+          TARGETS
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MERGE_SHA" \
+            --title "$VERSION" \
+            --generate-notes

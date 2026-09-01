@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestLocalCIUsesSingleRepositoryEntry(t *testing.T) {
+func TestLocalQualityGateUsesSingleRepositoryEntry(t *testing.T) {
 	workflow := filepath.Join("..", "..", ".github", "workflows", "quality-gate.yml")
 	if _, err := os.Stat(workflow); !os.IsNotExist(err) {
-		t.Fatalf("GitHub Actions workflow must not be present, stat error: %v", err)
+		t.Fatalf("hosted quality-gate workflow must not be present, stat error: %v", err)
 	}
 	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
