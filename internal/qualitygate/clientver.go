@@ -161,6 +161,13 @@ func CheckClientVersion(rootDir, mergeBase string, allChangedFiles []string) (*C
 	if err != nil {
 		return nil, fmt.Errorf("read internal/version/version.go failed: %w", err)
 	}
+	for _, changedFile := range allChangedFiles {
+		if filepath.ToSlash(filepath.Clean(changedFile)) == "internal/version/version.go" && versionImplementationChanged(string(baseVerBytes), string(candVerBytes)) {
+			res.BehaviorChanged = true
+			res.ChangedFiles = append(res.ChangedFiles, "internal/version/version.go")
+			break
+		}
+	}
 
 	baseVer, err := extractVersionLiteral(string(baseVerBytes))
 	if err != nil {
@@ -282,21 +289,45 @@ func extractGitTree(rootDir, ref string) (string, func(), error) {
 }
 
 var (
-	versionLiteralRegex  = regexp.MustCompile(`(?m)^\s*var\s+Version\s*=\s*"([^"]+)"`)
-	fallbackVersionRegex = regexp.MustCompile(`(?m)^\s*return\s+"(v[^"]+)"`)
+	versionLiteralRegex      = regexp.MustCompile(`(?m)^\s*var\s+Version\s*=\s*"([^"]+)"\s*$`)
+	fallbackVersionRegex     = regexp.MustCompile(`(?m)^\s*return\s+"(v[^"]+)"\s*$`)
+	defaultVersionRegex      = regexp.MustCompile(`(?m)^\s*const\s+defaultVersion\s*=\s*"([^"]+)"\s*$`)
+	versionDefaultRefRegex   = regexp.MustCompile(`(?m)^\s*var\s+Version\s*=\s*defaultVersion\s*$`)
+	fallbackDefaultRefRegex  = regexp.MustCompile(`(?m)^\s*return\s+defaultVersion\s*$`)
+	semanticVersionTextRegex = regexp.MustCompile(`v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`)
 )
 
 func extractVersionLiteral(content string) (string, error) {
-	matches := versionLiteralRegex.FindAllStringSubmatch(content, -1)
-	if len(matches) != 1 {
-		return "", fmt.Errorf("expected exactly one Version default definition, found %d", len(matches))
+	legacyDefaults := versionLiteralRegex.FindAllStringSubmatch(content, -1)
+	legacyFallbacks := fallbackVersionRegex.FindAllStringSubmatch(content, -1)
+	singleDefaults := defaultVersionRegex.FindAllStringSubmatch(content, -1)
+	versionRefs := versionDefaultRefRegex.FindAllString(content, -1)
+	fallbackRefs := fallbackDefaultRefRegex.FindAllString(content, -1)
+
+	legacy := len(legacyDefaults) == 1 && len(legacyFallbacks) == 1 && len(singleDefaults) == 0 && len(versionRefs) == 0 && len(fallbackRefs) == 0
+	if legacy {
+		if legacyDefaults[0][1] != legacyFallbacks[0][1] {
+			return "", fmt.Errorf("Version default %s does not match fallback %s", legacyDefaults[0][1], legacyFallbacks[0][1])
+		}
+		return legacyDefaults[0][1], nil
 	}
-	fallbacks := fallbackVersionRegex.FindAllStringSubmatch(content, -1)
-	if len(fallbacks) != 1 {
-		return "", fmt.Errorf("expected exactly one fallback version, found %d", len(fallbacks))
+
+	singleSource := len(singleDefaults) == 1 && len(versionRefs) == 1 && len(fallbackRefs) == 1 && len(legacyDefaults) == 0 && len(legacyFallbacks) == 0
+	if singleSource {
+		return singleDefaults[0][1], nil
 	}
-	if matches[0][1] != fallbacks[0][1] {
-		return "", fmt.Errorf("Version default %s does not match fallback %s", matches[0][1], fallbacks[0][1])
+
+	return "", fmt.Errorf("expected exactly one supported version metadata definition")
+}
+
+func versionImplementationChanged(baseContent, candidateContent string) bool {
+	_, baseErr := extractVersionLiteral(baseContent)
+	_, candidateErr := extractVersionLiteral(candidateContent)
+	if baseErr != nil || candidateErr != nil {
+		return true
 	}
-	return matches[0][1], nil
+	normalize := func(content string) string {
+		return semanticVersionTextRegex.ReplaceAllString(content, "v0.0.0")
+	}
+	return normalize(baseContent) != normalize(candidateContent)
 }

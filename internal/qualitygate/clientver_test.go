@@ -185,9 +185,53 @@ func TestExtractVersionLiteralRejectsDuplicateAndMismatchedFallback(t *testing.T
 	for _, content := range []string{
 		"var Version = \"v1.0.0\"\nvar Version = \"v1.0.1\"\nreturn \"v1.0.0\"\n",
 		"var Version = \"v1.0.0\"\nreturn \"v1.0.1\"\n",
+		"const defaultVersion = \"v1.0.0\"\nconst defaultVersion = \"v1.0.1\"\nvar Version = defaultVersion\nreturn defaultVersion\n",
+		"const defaultVersion = \"v1.0.0\"\nvar Version = \"v1.0.0\"\nreturn defaultVersion\n",
+		"const defaultVersion = \"v1.0.0\"\nvar Version = otherVersion\nreturn defaultVersion\n",
+		"const defaultVersion = \"v1.0.0\"\nvar Version = defaultVersion\nreturn \"v1.0.0\"\n",
 	} {
 		if _, err := extractVersionLiteral(content); err == nil {
 			t.Errorf("invalid version metadata accepted: %q", content)
 		}
+	}
+}
+
+func TestExtractVersionLiteralAcceptsLegacyAndSingleSource(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "legacy",
+			content: "var Version = \"v1.2.3\"\nfunc Get() string {\n\treturn \"v1.2.3\"\n}\n",
+		},
+		{
+			name:    "single source",
+			content: "const defaultVersion = \"v1.2.3\"\nvar Version = defaultVersion\nfunc Get() string {\n\treturn defaultVersion\n}\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := extractVersionLiteral(test.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "v1.2.3" {
+				t.Fatalf("extractVersionLiteral() = %q, want v1.2.3", got)
+			}
+		})
+	}
+}
+
+func TestVersionImplementationChanged(t *testing.T) {
+	legacyV1 := "package version\nvar Version = \"v1.0.0\"\nfunc Get() string {\n\treturn \"v1.0.0\"\n}\n"
+	legacyV2 := "package version\nvar Version = \"v1.0.1\"\nfunc Get() string {\n\treturn \"v1.0.1\"\n}\n"
+	singleSource := "package version\nconst defaultVersion = \"v1.0.1\"\nvar Version = defaultVersion\nfunc Get() string {\n\treturn defaultVersion\n}\n"
+
+	if versionImplementationChanged(legacyV1, legacyV2) {
+		t.Fatal("pure version literal change must not count as client behavior")
+	}
+	if !versionImplementationChanged(legacyV1, singleSource) {
+		t.Fatal("version implementation structure change must count as client behavior")
 	}
 }
