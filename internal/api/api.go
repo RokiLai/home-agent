@@ -41,6 +41,7 @@ import (
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/servernetwork"
 	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/ui"
@@ -89,6 +90,7 @@ type Server struct {
 	GitHubRepo               string
 	GitHubMirrorPrefix       string
 	GitHubReleaseClient      *githubrelease.Client
+	ServerNetworkCoordinator *servernetwork.Coordinator
 
 	version       int64
 	wakeRateLimit sync.Map
@@ -269,6 +271,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/github/disconnect", requirePerm(auth.PermGitHubManage, nil)(http.HandlerFunc(s.githubDisconnect)))
 	mux.HandleFunc("GET /api/v1/github/avatar", s.githubAvatar)
 	mux.Handle("POST /api/v1/devices/{id}/github/ssh-key", requireDevice(http.HandlerFunc(s.deviceRegisterGitHubSSHKey)))
+
+	// Server Network Bootstrap routes (Admin Protected)
+	mux.Handle("GET /api/v1/server/network", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.getServerNetwork)))
+	mux.Handle("PUT /api/v1/server/network", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putServerNetwork)))
 
 	return withCORS(mux)
 }
@@ -2864,5 +2870,83 @@ func (s *Server) systemUpgrade(w http.ResponseWriter, r *http.Request) {
 		"message":          fmt.Sprintf("Server upgraded from %s to %s, restarting...", res.PreviousVersion, res.TargetVersion),
 		"previous_version": res.PreviousVersion,
 		"target_version":   res.TargetVersion,
+	})
+}
+
+type serverNetworkReq struct {
+	Enabled   bool     `json:"enabled"`
+	Interface string   `json:"interface"`
+	Records   []string `json:"records"`
+}
+
+func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
+	if s.ServerNetworkCoordinator == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"configured": false,
+			"enabled":    false,
+			"status":     "not_configured",
+		})
+		return
+	}
+
+	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured":        true,
+		"enabled":           status.Enabled,
+		"interface":         status.Interface,
+		"records":           status.Records,
+		"status":            status.Status,
+		"current_address":   status.CurrentAddress,
+		"last_success_time": status.LastSuccessTime,
+		"last_error":        status.LastError,
+	})
+}
+
+func (s *Server) putServerNetwork(w http.ResponseWriter, r *http.Request) {
+	if s.ServerNetworkCoordinator == nil {
+		http.Error(w, "server network coordinator not configured", http.StatusNotImplemented)
+		return
+	}
+
+	var req serverNetworkReq
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cfg := s.ServerNetworkCoordinator.GetConfig()
+	cfg.Enabled = req.Enabled
+	cfg.Interface = strings.TrimSpace(req.Interface)
+	cfg.Records = req.Records
+
+	if req.Enabled {
+		if cfg.Interface == "" {
+			http.Error(w, "interface cannot be empty when enabled", http.StatusBadRequest)
+			return
+		}
+		if len(cfg.Records) == 0 {
+			http.Error(w, "records cannot be empty when enabled", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := s.ServerNetworkCoordinator.UpdateConfig(r.Context(), cfg); err != nil {
+		http.Error(w, "update server network config failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured":        true,
+		"enabled":           status.Enabled,
+		"interface":         status.Interface,
+		"records":           status.Records,
+		"status":            status.Status,
+		"current_address":   status.CurrentAddress,
+		"current_ip":        status.CurrentAddress,
+		"last_success_time": status.LastSuccessTime,
+		"last_sync":         status.LastSuccessTime,
+		"last_error":        status.LastError,
 	})
 }
