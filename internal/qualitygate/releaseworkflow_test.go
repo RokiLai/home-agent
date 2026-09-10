@@ -76,3 +76,55 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseWorkflowVersionExtraction(t *testing.T) {
+	path := filepath.Join("..", "..", ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(raw)
+
+	// 断言工作流包含版本提取与防空检查
+	requiredFragments := []string{
+		"Read release version",
+		"grep -E '^(const defaultVersion|var Version) = \"'",
+		"Failed to read release version from internal/version/version.go",
+	}
+	for _, frag := range requiredFragments {
+		if !strings.Contains(workflow, frag) {
+			t.Errorf("release workflow missing required version extraction fragment %q", frag)
+		}
+	}
+
+	// 验证在当前 version.go 文件上的实际提取结果
+	versionGoPath := filepath.Join("..", "..", "internal", "version", "version.go")
+	versionGoContent, err := os.ReadFile(versionGoPath)
+	if err != nil {
+		t.Fatalf("read version.go: %v", err)
+	}
+
+	extracted := extractVersionFromContent(string(versionGoContent))
+	if extracted == "" || !strings.HasPrefix(extracted, "v") {
+		t.Fatalf("expected valid semantic version starting with 'v', got %q", extracted)
+	}
+
+	// 负例断言：损坏或缺失版本号时提取必须失败并返回空
+	corrupted := "package version\nvar other = 123\n"
+	if bad := extractVersionFromContent(corrupted); bad != "" {
+		t.Fatalf("expected empty version for corrupted content, got %q", bad)
+	}
+}
+
+func extractVersionFromContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "const defaultVersion = \"") || strings.HasPrefix(line, "var Version = \"") {
+			parts := strings.Split(line, "\"")
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+	}
+	return ""
+}

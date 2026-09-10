@@ -30,7 +30,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          version=$(sed -n 's/^var Version = "\([^"]*\)"/\1/p' internal/version/version.go)
+          version=$(grep -E '^(const defaultVersion|var Version) = "' internal/version/version.go | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ -z "$version" ]]; then
+            echo "Failed to read release version from internal/version/version.go" >&2
+            exit 1
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Build release assets
