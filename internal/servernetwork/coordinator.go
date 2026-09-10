@@ -28,6 +28,17 @@ type Config struct {
 	ConflictChecker func(records []string) error
 }
 
+// StatusView 提供给外部或 API 展示的服务端网络自举当前状态快照。
+type StatusView struct {
+	Enabled         bool         `json:"enabled"`
+	Interface       string       `json:"interface"`
+	Records         []string     `json:"records"`
+	Status          RecordStatus `json:"status"`
+	CurrentAddress  string       `json:"current_address"`
+	LastSuccessTime *time.Time   `json:"last_success_time,omitempty"`
+	LastError       string       `json:"last_error,omitempty"`
+}
+
 // Coordinator 实现服务端 DNS 自更新、自举恢复与独占调和控制器。
 type Coordinator struct {
 	cfg       Config
@@ -355,4 +366,138 @@ func (c *Coordinator) calculateBackoff(retryCount int) time.Duration {
 		backoff = c.cfg.MaxBackoff
 	}
 	return backoff
+}
+
+// GetConfig 返回当前协调器生效的配置副本。
+func (c *Coordinator) GetConfig() Config {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cfg
+}
+
+// GetStatus 获取服务端自举网络的综合状态视图。
+func (c *Coordinator) GetStatus(ctx context.Context) StatusView {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	view := StatusView{
+		Enabled:   c.cfg.Enabled,
+		Interface: c.cfg.Interface,
+		Records:   c.cfg.Records,
+		Status:    StatusDisabled,
+	}
+
+	if !c.cfg.Enabled {
+		return view
+	}
+
+	state, err := c.store.Load()
+	if err != nil || state == nil || len(state.Records) == 0 {
+		view.Status = StatusPending
+		return view
+	}
+
+	// 汇总首个受管域名的状态作为代表状态
+	for _, rec := range c.cfg.Records {
+		if rs := state.Records[rec]; rs != nil {
+			view.Status = rs.Status
+			view.CurrentAddress = rs.ConfirmedAddress
+			if view.CurrentAddress == "" {
+				view.CurrentAddress = rs.DesiredAddress
+			}
+			view.LastSuccessTime = rs.LastSuccessTime
+			view.LastError = rs.LastError
+			break
+		}
+	}
+
+	return view
+}
+
+// UpdateConfig 动态更新自举网络配置并热生效。
+func (c *Coordinator) UpdateConfig(ctx context.Context, newCfg Config) error {
+	// 规范化并校验
+	if newCfg.Interval <= 0 {
+		newCfg.Interval = 30 * time.Second
+	}
+	if newCfg.Debounce <= 0 {
+		newCfg.Debounce = 3 * time.Second
+	}
+	if newCfg.MaxBackoff <= 0 {
+		newCfg.MaxBackoff = 60 * time.Second
+	}
+	if newCfg.TTL <= 0 {
+		newCfg.TTL = 300
+	}
+
+	normalizedRecords := make([]string, 0, len(newCfg.Records))
+	seen := make(map[string]bool)
+	for _, r := range newCfg.Records {
+		rec := strings.TrimSpace(strings.ToLower(r))
+		if rec != "" && !seen[rec] {
+			seen[rec] = true
+			normalizedRecords = append(normalizedRecords, rec)
+		}
+	}
+	slices.Sort(normalizedRecords)
+	newCfg.Records = normalizedRecords
+
+	if newCfg.Enabled {
+		if newCfg.Interface == "" {
+			return errors.New("server ipv6 interface cannot be empty when self update is enabled")
+		}
+		if len(newCfg.Records) == 0 {
+			return errors.New("server ddns records cannot be empty when self update is enabled")
+		}
+		if c.cfg.ConflictChecker != nil {
+			if err := c.cfg.ConflictChecker(newCfg.Records); err != nil {
+				return fmt.Errorf("ddns record conflict check: %w", err)
+			}
+		}
+	}
+
+	c.mu.Lock()
+	c.cfg.Enabled = newCfg.Enabled
+	c.cfg.Interface = newCfg.Interface
+	c.cfg.Records = newCfg.Records
+	if c.collector != nil {
+		c.collector.iface = newCfg.Interface
+	}
+
+	// 保存配置到持久化存储
+	if cStore, ok := c.store.(ConfigStore); ok {
+		_ = cStore.SaveConfig(&PersistedConfig{
+			Enabled:   newCfg.Enabled,
+			Interface: newCfg.Interface,
+			Records:   newCfg.Records,
+		})
+	}
+
+	// 动态管理 Watcher
+	if c.running {
+		if !newCfg.Enabled {
+			if c.watcher != nil {
+				c.watcher.Stop()
+				c.watcher = nil
+			}
+		} else if c.watcher == nil && c.collector != nil && c.collector.provider != nil {
+			c.watcher = networkaddr.NewWatcher(networkaddr.WatcherConfig{
+				Interface:         c.cfg.Interface,
+				DebounceDuration:  c.cfg.Debounce,
+				HeartbeatInterval: c.cfg.Interval * 2,
+				PollInterval:      c.cfg.Interval,
+				Provider:          c.collector.provider,
+				OnSnapshot: func(snapshot []networkaddr.ReportedIPv6Address, changed bool) {
+					if changed {
+						_ = c.Reconcile(context.Background())
+					}
+				},
+			})
+			c.watcher.Start()
+		}
+	}
+	c.mu.Unlock()
+
+	// 立即触发一次调和以刷新状态
+	return c.Reconcile(ctx)
 }

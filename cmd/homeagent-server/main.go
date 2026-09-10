@@ -343,10 +343,12 @@ func serve(c config) error {
 	prefixStateSvc := prefixstate.NewService(nil)
 
 	var ddnsSvc *ddns.Service
+	var cfClient *cloudflare.Client
 	cfToken := os.Getenv("HOMEAGENT_CLOUDFLARE_TOKEN")
+	cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
 	if cfToken != "" {
-		cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
-		cfClient, err := cloudflare.NewClient(cloudflare.Config{
+		var err error
+		cfClient, err = cloudflare.NewClient(cloudflare.Config{
 			APIToken: cfToken,
 			ZoneID:   cfZoneID,
 		})
@@ -379,48 +381,53 @@ func serve(c config) error {
 	}
 
 	var serverNetworkCoord *servernetwork.Coordinator
-	if c.serverIPv6SelfUpdate {
-		cfToken := os.Getenv("HOMEAGENT_CLOUDFLARE_TOKEN")
-		cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
-		if cfToken == "" || cfZoneID == "" {
-			logger.Error("server_ipv6_self_update_disabled_missing_cloudflare_credentials")
-		} else {
-			cfClient, err := cloudflare.NewClient(cloudflare.Config{
-				APIToken: cfToken,
-				ZoneID:   cfZoneID,
-			})
-			if err != nil {
-				logger.Error("failed_to_init_cloudflare_client_for_server_ddns", "error", err)
-			} else {
-				records := strings.Split(c.serverDDNSRecords, ",")
-				collector := servernetwork.NewCollector(c.serverIPv6Interface, networkaddr.NewDefaultProvider())
-				store := servernetwork.NewFileStateStore(c.dataDir)
-				coord, err := servernetwork.NewCoordinator(servernetwork.Config{
-					Enabled:    true,
-					Interface:  c.serverIPv6Interface,
-					Records:    records,
-					Interval:   c.serverDDNSInterval,
-					Debounce:   c.serverDDNSDebounce,
-					MaxBackoff: 60 * time.Second,
-					TTL:        300,
-					ConflictChecker: func(recs []string) error {
-						targetDevID := os.Getenv("HOMEAGENT_DDNS_DEVICE_ID")
-						devRecord := os.Getenv("HOMEAGENT_DDNS_RECORD")
-						if targetDevID != "" && devRecord != "" {
-							for _, r := range recs {
-								if strings.EqualFold(strings.TrimSpace(r), strings.TrimSpace(devRecord)) {
-									return fmt.Errorf("ownership conflict: record %s is already managed by device DDNS", r)
-								}
-							}
-						}
-						return nil
-					},
-				}, collector, cfClient, store, logger)
-				if err != nil {
-					return fmt.Errorf("init server ipv6 coordinator: %w", err)
-				}
-				serverNetworkCoord = coord
+	if cfClient != nil {
+		store := servernetwork.NewFileStateStore(c.dataDir)
+		enabled := c.serverIPv6SelfUpdate
+		iface := c.serverIPv6Interface
+		records := strings.Split(c.serverDDNSRecords, ",")
+
+		// 优先读取 Web 管理端已保存的持久化配置
+		if persistedCfg, err := store.LoadConfig(); err == nil && persistedCfg != nil {
+			enabled = persistedCfg.Enabled
+			if persistedCfg.Interface != "" {
+				iface = persistedCfg.Interface
 			}
+			if len(persistedCfg.Records) > 0 {
+				records = persistedCfg.Records
+			}
+		}
+
+		if iface == "" && runtime.GOOS == "darwin" {
+			iface = "en0"
+		}
+
+		collector := servernetwork.NewCollector(iface, networkaddr.NewDefaultProvider())
+		coord, err := servernetwork.NewCoordinator(servernetwork.Config{
+			Enabled:    enabled,
+			Interface:  iface,
+			Records:    records,
+			Interval:   c.serverDDNSInterval,
+			Debounce:   c.serverDDNSDebounce,
+			MaxBackoff: 60 * time.Second,
+			TTL:        300,
+			ConflictChecker: func(recs []string) error {
+				targetDevID := os.Getenv("HOMEAGENT_DDNS_DEVICE_ID")
+				devRecord := os.Getenv("HOMEAGENT_DDNS_RECORD")
+				if targetDevID != "" && devRecord != "" {
+					for _, r := range recs {
+						if strings.EqualFold(strings.TrimSpace(r), strings.TrimSpace(devRecord)) {
+							return fmt.Errorf("ownership conflict: record %s is already managed by device DDNS", r)
+						}
+					}
+				}
+				return nil
+			},
+		}, collector, cfClient, store, logger)
+		if err != nil {
+			logger.Warn("init_server_ipv6_coordinator_failed", "error", err)
+		} else {
+			serverNetworkCoord = coord
 		}
 	}
 
@@ -521,9 +528,10 @@ func serve(c config) error {
 		Health:             healthSvc,
 		Alerting:           alertingSvc,
 		AuditLogger:        auditLogger,
-		UpgradeSource:      c.upgradeSource,
-		GitHubRepo:         c.githubRepo,
-		GitHubMirrorPrefix: c.githubMirrorPrefix,
+		UpgradeSource:            c.upgradeSource,
+		GitHubRepo:               c.githubRepo,
+		GitHubMirrorPrefix:       c.githubMirrorPrefix,
+		ServerNetworkCoordinator: serverNetworkCoord,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

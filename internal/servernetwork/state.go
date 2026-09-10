@@ -53,22 +53,38 @@ type PersistedState struct {
 	Records map[string]*RecordState `json:"records"`
 }
 
+// PersistedConfig 保存服务端 IPv6 自举网络配置。
+type PersistedConfig struct {
+	Enabled   bool     `json:"enabled"`
+	Interface string   `json:"interface"`
+	Records   []string `json:"records"`
+}
+
+// ConfigStore 定义自举配置持久化接口。
+type ConfigStore interface {
+	LoadConfig() (*PersistedConfig, error)
+	SaveConfig(cfg *PersistedConfig) error
+}
+
 // StateStore 定义状态持久化接口。
 type StateStore interface {
 	Load() (*PersistedState, error)
 	Save(state *PersistedState) error
+	ConfigStore
 }
 
 // FileStateStore 基于本地文件系统的原子持久化存储实现。
 type FileStateStore struct {
-	path string
-	mu   sync.RWMutex
+	statePath  string
+	configPath string
+	mu         sync.RWMutex
 }
 
 // NewFileStateStore 创建基于文件目录的状态持久化存储器。
 func NewFileStateStore(dataDir string) *FileStateStore {
 	return &FileStateStore{
-		path: filepath.Join(dataDir, "server_network_state.json"),
+		statePath:  filepath.Join(dataDir, "server_network_state.json"),
+		configPath: filepath.Join(dataDir, "server_network_config.json"),
 	}
 }
 
@@ -77,7 +93,7 @@ func (s *FileStateStore) Load() (*PersistedState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	data, err := os.ReadFile(s.path)
+	data, err := os.ReadFile(s.statePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &PersistedState{Records: make(map[string]*RecordState)}, nil
@@ -113,7 +129,7 @@ func (s *FileStateStore) Save(state *PersistedState) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	dir := filepath.Dir(s.path)
+	dir := filepath.Dir(s.statePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -139,8 +155,75 @@ func (s *FileStateStore) Save(state *PersistedState) error {
 		return fmt.Errorf("close temp state file: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, s.path); err != nil {
+	if err := os.Rename(tmpPath, s.statePath); err != nil {
 		return fmt.Errorf("atomic rename state file: %w", err)
+	}
+
+	return nil
+}
+
+// LoadConfig 从磁盘读取持久化配置，若文件不存在返回 nil, nil。
+func (s *FileStateStore) LoadConfig() (*PersistedConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	data, err := os.ReadFile(s.configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read config file: %w", err)
+	}
+
+	var cfg PersistedConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("unmarshal config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// SaveConfig 原子保存网络自举配置。
+func (s *FileStateStore) SaveConfig(cfg *PersistedConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cfg == nil {
+		cfg = &PersistedConfig{}
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	dir := filepath.Dir(s.configPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(dir, "server_network_config.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write temp config file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync temp config file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp config file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, s.configPath); err != nil {
+		return fmt.Errorf("atomic rename config file: %w", err)
 	}
 
 	return nil

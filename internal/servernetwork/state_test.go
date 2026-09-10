@@ -105,3 +105,37 @@ func TestStateStore_SaveNilOrEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigFileStore_SaveAndLoad(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewFileStateStore(tempDir)
+
+	cfg := &PersistedConfig{
+		Enabled:   true,
+		Interface: "en0",
+		Records:   []string{"hub.example.com"},
+	}
+
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	loaded, err := store.LoadConfig()
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !loaded.Enabled || loaded.Interface != "en0" || len(loaded.Records) != 1 || loaded.Records[0] != "hub.example.com" {
+		t.Fatalf("unexpected loaded config: %+v", loaded)
+	}
+
+	// Non-existent file returns nil, nil
+	tempDir2 := t.TempDir()
+	store2 := NewFileStateStore(tempDir2)
+	loaded2, err := store2.LoadConfig()
+	if err != nil {
+		t.Fatalf("expected no error for non-existent config, got %v", err)
+	}
+	if loaded2 != nil {
+		t.Fatalf("expected nil for non-existent config, got %+v", loaded2)
+	}
+}

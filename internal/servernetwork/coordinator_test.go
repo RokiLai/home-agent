@@ -375,3 +375,61 @@ func TestCoordinator_InvalidConfigValidation(t *testing.T) {
 	}
 }
 
+func TestCoordinator_GetStatusAndUpdateConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewFileStateStore(tempDir)
+	pub := newMockDNSPublisher()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	prov := &mockAddressProvider{
+		addrs: []networkaddr.ReportedIPv6Address{
+			{Address: "240e:390:1234::100", Interface: "en0"},
+		},
+	}
+	collector := NewCollector("en0", prov)
+
+	coord, err := NewCoordinator(Config{
+		Enabled:   false,
+		Interface: "en0",
+		Records:   []string{"hub.example.com"},
+	}, collector, pub, store, logger)
+	if err != nil {
+		t.Fatalf("failed to create coordinator: %v", err)
+	}
+
+	ctx := context.Background()
+	status := coord.GetStatus(ctx)
+	if status.Enabled || status.Status != StatusDisabled {
+		t.Fatalf("expected disabled status, got %+v", status)
+	}
+
+	// 动态开启
+	err = coord.UpdateConfig(ctx, Config{
+		Enabled:   true,
+		Interface: "en0",
+		Records:   []string{"hub.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("update config failed: %v", err)
+	}
+
+	status = coord.GetStatus(ctx)
+	if !status.Enabled || status.Status != StatusSynced || status.CurrentAddress != "240e:390:1234::100" {
+		t.Fatalf("expected synced status after update, got %+v", status)
+	}
+
+	// 动态关闭
+	err = coord.UpdateConfig(ctx, Config{
+		Enabled:   false,
+		Interface: "en0",
+		Records:   []string{"hub.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("update config to disabled failed: %v", err)
+	}
+
+	status = coord.GetStatus(ctx)
+	if status.Enabled || status.Status != StatusDisabled {
+		t.Fatalf("expected disabled status after toggle, got %+v", status)
+	}
+}
