@@ -36,8 +36,10 @@ import (
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
+	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/servernetwork"
 	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/store"
@@ -59,6 +61,9 @@ type config struct {
 	mac, broadcast                                        string
 	burst, port                                           int
 	interval                                              time.Duration
+	serverIPv6SelfUpdate                                  bool
+	serverIPv6Interface, serverDDNSRecords                string
+	serverDDNSInterval, serverDDNSDebounce                time.Duration
 }
 
 func main() {
@@ -136,6 +141,11 @@ func parseConfig(name string, args []string) (config, []string, error) {
 		burst:              3,
 		port:               9,
 		interval:           50 * time.Millisecond,
+		serverIPv6SelfUpdate: boolEnv("HOMEAGENT_SERVER_IPV6_SELF_UPDATE", false),
+		serverIPv6Interface:  env("HOMEAGENT_SERVER_IPV6_INTERFACE", ""),
+		serverDDNSRecords:    env("HOMEAGENT_SERVER_DDNS_RECORDS", ""),
+		serverDDNSInterval:   durationEnv("HOMEAGENT_SERVER_DDNS_INTERVAL", 30*time.Second),
+		serverDDNSDebounce:   durationEnv("HOMEAGENT_SERVER_DDNS_DEBOUNCE", 3*time.Second),
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.StringVar(&c.listen, "listen", c.listen, "listen address")
@@ -160,6 +170,11 @@ func parseConfig(name string, args []string) (config, []string, error) {
 	fs.IntVar(&c.burst, "burst", c.burst, "burst count for wake")
 	fs.IntVar(&c.port, "port", c.port, "UDP port for wake")
 	fs.DurationVar(&c.interval, "interval", c.interval, "burst interval for wake")
+	fs.BoolVar(&c.serverIPv6SelfUpdate, "server-ipv6-self-update", c.serverIPv6SelfUpdate, "enable server IPv6 DDNS self update")
+	fs.StringVar(&c.serverIPv6Interface, "server-ipv6-interface", c.serverIPv6Interface, "server network interface for IPv6 self update")
+	fs.StringVar(&c.serverDDNSRecords, "server-ddns-records", c.serverDDNSRecords, "comma-separated DDNS records for server self update")
+	fs.DurationVar(&c.serverDDNSInterval, "server-ddns-interval", c.serverDDNSInterval, "server DDNS reconcile interval")
+	fs.DurationVar(&c.serverDDNSDebounce, "server-ddns-debounce", c.serverDDNSDebounce, "server DDNS debounce duration")
 	if err := fs.Parse(args); err != nil {
 		return c, nil, err
 	}
@@ -170,6 +185,17 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+func boolEnv(name string, fallback bool) bool {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 func durationEnv(name string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(name)
@@ -352,6 +378,52 @@ func serve(c config) error {
 		}
 	}
 
+	var serverNetworkCoord *servernetwork.Coordinator
+	if c.serverIPv6SelfUpdate {
+		cfToken := os.Getenv("HOMEAGENT_CLOUDFLARE_TOKEN")
+		cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
+		if cfToken == "" || cfZoneID == "" {
+			logger.Error("server_ipv6_self_update_disabled_missing_cloudflare_credentials")
+		} else {
+			cfClient, err := cloudflare.NewClient(cloudflare.Config{
+				APIToken: cfToken,
+				ZoneID:   cfZoneID,
+			})
+			if err != nil {
+				logger.Error("failed_to_init_cloudflare_client_for_server_ddns", "error", err)
+			} else {
+				records := strings.Split(c.serverDDNSRecords, ",")
+				collector := servernetwork.NewCollector(c.serverIPv6Interface, networkaddr.NewDefaultProvider())
+				store := servernetwork.NewFileStateStore(c.dataDir)
+				coord, err := servernetwork.NewCoordinator(servernetwork.Config{
+					Enabled:    true,
+					Interface:  c.serverIPv6Interface,
+					Records:    records,
+					Interval:   c.serverDDNSInterval,
+					Debounce:   c.serverDDNSDebounce,
+					MaxBackoff: 60 * time.Second,
+					TTL:        300,
+					ConflictChecker: func(recs []string) error {
+						targetDevID := os.Getenv("HOMEAGENT_DDNS_DEVICE_ID")
+						devRecord := os.Getenv("HOMEAGENT_DDNS_RECORD")
+						if targetDevID != "" && devRecord != "" {
+							for _, r := range recs {
+								if strings.EqualFold(strings.TrimSpace(r), strings.TrimSpace(devRecord)) {
+									return fmt.Errorf("ownership conflict: record %s is already managed by device DDNS", r)
+								}
+							}
+						}
+						return nil
+					},
+				}, collector, cfClient, store, logger)
+				if err != nil {
+					return fmt.Errorf("init server ipv6 coordinator: %w", err)
+				}
+				serverNetworkCoord = coord
+			}
+		}
+	}
+
 	ghSvc, err := githubsync.NewService(c.dataDir, nil, logger)
 	if err != nil {
 		logger.Warn("failed_to_initialize_github_sync_service", "error", err)
@@ -476,6 +548,9 @@ func serve(c config) error {
 	}()
 	go func() {
 		<-ctx.Done()
+		if serverNetworkCoord != nil {
+			serverNetworkCoord.Stop()
+		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
@@ -485,6 +560,9 @@ func serve(c config) error {
 	}
 	if ddnsSvc != nil {
 		ddnsSvc.StartBackgroundSweep(ctx, 1*time.Minute)
+	}
+	if serverNetworkCoord != nil {
+		serverNetworkCoord.Start(ctx)
 	}
 	logger.Info("server_started", "listen", c.listen)
 	err = server.ListenAndServe()

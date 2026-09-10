@@ -306,3 +306,50 @@ func TestSelfUpgradeCommand_CheckOnly(t *testing.T) {
 		t.Logf("self-upgrade check finished: %v", err)
 	}
 }
+
+func TestParseConfigServerIPv6SelfUpdate(t *testing.T) {
+	t.Setenv("HOMEAGENT_SERVER_IPV6_SELF_UPDATE", "true")
+	t.Setenv("HOMEAGENT_SERVER_IPV6_INTERFACE", "en0")
+	t.Setenv("HOMEAGENT_SERVER_DDNS_RECORDS", "hub.example.com,agent.example.com")
+	t.Setenv("HOMEAGENT_SERVER_DDNS_INTERVAL", "15s")
+	t.Setenv("HOMEAGENT_SERVER_DDNS_DEBOUNCE", "2s")
+
+	c, _, err := parseConfig("serve", []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.serverIPv6SelfUpdate {
+		t.Errorf("expected serverIPv6SelfUpdate to be true")
+	}
+	if c.serverIPv6Interface != "en0" {
+		t.Errorf("expected serverIPv6Interface en0, got %s", c.serverIPv6Interface)
+	}
+	if c.serverDDNSRecords != "hub.example.com,agent.example.com" {
+		t.Errorf("expected records, got %s", c.serverDDNSRecords)
+	}
+	if c.serverDDNSInterval != 15*time.Second {
+		t.Errorf("expected interval 15s, got %v", c.serverDDNSInterval)
+	}
+	if c.serverDDNSDebounce != 2*time.Second {
+		t.Errorf("expected debounce 2s, got %v", c.serverDDNSDebounce)
+	}
+
+	// CLI override
+	c2, _, err := parseConfig("serve", []string{
+		"--server-ipv6-self-update=false",
+		"--server-ipv6-interface", "eth0",
+		"--server-ddns-records", "custom.domain.org",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.serverIPv6SelfUpdate {
+		t.Errorf("expected serverIPv6SelfUpdate to be overridden to false")
+	}
+	if c2.serverIPv6Interface != "eth0" {
+		t.Errorf("expected interface eth0, got %s", c2.serverIPv6Interface)
+	}
+	if c2.serverDDNSRecords != "custom.domain.org" {
+		t.Errorf("expected records custom.domain.org, got %s", c2.serverDDNSRecords)
+	}
+}
