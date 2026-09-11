@@ -1,7 +1,7 @@
 import { state } from '../state.js';
 import { apiFetch } from '../api.js';
 import { showToast, copyToClipboard, addLog, filterAndClassifyIPs, escapeHTML } from '../utils.js';
-import { updateStats, renderDashboardSummary, renderDevices } from './render.js';
+import { updateStats, renderDashboardSummary, renderDevices, renderDeviceDetailView } from './render.js';
 import { renderGitHubDeviceMatrix, handleToggleGitHubSync, fetchGitHubStatus } from '../github.js';
 import { openRenameModal, openIpModal, closeAllDropdowns, requestOpenModal, requestCloseModal } from '../modals.js';
 import { createIdempotencyKey } from '../idempotency.mjs';
@@ -110,6 +110,9 @@ export async function fetchDevices() {
     updateStats();
     renderDashboardSummary();
     renderDevices();
+    if (state.currentPage === 'deviceDetail' && state.currentDetailDeviceId) {
+      renderDeviceDetailView(state.currentDetailDeviceId, state.currentDetailSection);
+    }
     renderGitHubDeviceMatrix((id, checked) => handleToggleGitHubSync(id, checked, () => {
       fetchDevices();
       fetchGitHubStatus();
@@ -888,6 +891,58 @@ export async function handleTransferSubmit(e) {
   }
 }
 
+export async function handleDetailShutdown(deviceId, hostname) {
+  if (!confirm(`确认要远程关闭设备 [${hostname || deviceId}] 吗？`)) return;
+  if (!confirm(`再次确认：关机后无法通过网络连接该设备，仅支持在同一局域网内通过 WOL 唤醒或物理开机。`)) return;
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/shutdown`, {
+      method: 'POST',
+      headers: commandHeaders(),
+      body: JSON.stringify({ reason: 'web_console_user_action' })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('已下发远程关机指令');
+    addLog('warn', `设备 [${deviceId}] 关机指令已下发`);
+    fetchDevices();
+  } catch (err) {
+    showToast(`关机失败: ${err.message}`, 'error');
+  }
+}
+
+export async function handleDetailRemove(deviceId, hostname) {
+  if (!confirm(`确认要移除设备 [${hostname || deviceId}] 吗？该操作不可逆。`)) return;
+  if (!confirm(`再次确认：移除后该设备将无法访问控制平面，需重新通过安装命令接入。`)) return;
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}`, {
+      method: 'DELETE',
+      headers: commandHeaders()
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast('设备已成功移除');
+    addLog('warn', `设备 [${deviceId}] 已被移除`);
+    if (typeof window !== 'undefined') {
+      window.location.hash = '#/devices';
+    }
+    fetchDevices();
+  } catch (err) {
+    showToast(`移除设备失败: ${err.message}`, 'error');
+  }
+}
+
+export async function handleDetailSync(deviceId, hostname) {
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/sync`, {
+      method: 'POST',
+      headers: commandHeaders()
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    showToast(`已向设备 [${hostname || deviceId}] 触发配置同步`);
+    fetchDevices();
+  } catch (err) {
+    showToast(`同步失败: ${err.message}`, 'error');
+  }
+}
+
 // 暴露给全局 window 供 HTML inline 事件调用
 if (typeof window !== 'undefined') {
   window.openDeviceShareModal = openDeviceShareModal;
@@ -897,4 +952,7 @@ if (typeof window !== 'undefined') {
   window.openDeviceTransferModal = openDeviceTransferModal;
   window.closeDeviceTransferModal = closeDeviceTransferModal;
   window.handleTransferSubmit = handleTransferSubmit;
+  window.handleDetailShutdown = handleDetailShutdown;
+  window.handleDetailRemove = handleDetailRemove;
+  window.handleDetailSync = handleDetailSync;
 }

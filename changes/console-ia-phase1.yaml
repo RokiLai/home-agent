@@ -1,0 +1,18 @@
+task: console-ia-phase1
+description: 控制台信息架构与核心任务流第一期实施：收敛四项一级导航、首页减法聚焦异常与最近操作、设备列表紧凑化与添加设备入口、新增设备详情（概览与健康分区）、映射权威任务枚举及全套契约测试。
+allowed_paths:
+  - changes/console-ia-phase1.yaml
+  - docs/ui/控制台信息架构与核心任务流设计方案.md
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router.js
+  - internal/ui/static/js/state.js
+  - internal/ui/static/js/app.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/commands.js
+  - internal/ui/testdata/console-ia-phase1.test.mjs
+  - internal/ui/testdata/device-rendering.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/ui/testdata/mobile-responsive.test.mjs
+  - internal/ui/embed_test.go

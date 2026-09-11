@@ -1,0 +1,19 @@
+task: console-ia-phase2
+description: 控制台信息架构与核心任务流第二期实施：补齐设备详情全部 6 个分区（概览、健康、SSH与访问、网络、操作记录、设备设置/危险区）、统一危险操作显式确认、升级服务端版本号至 v0.6.16 及全套契约测试。
+allowed_paths:
+  - changes/console-ia-phase2.yaml
+  - docs/ui/控制台信息架构与核心任务流设计方案.md
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router.js
+  - internal/ui/static/js/app.js
+  - internal/ui/static/js/state.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/commands.js
+  - internal/ui/testdata/console-ia-phase1.test.mjs
+  - internal/ui/testdata/console-ia-phase2.test.mjs
+  - internal/ui/embed_test.go
+  - internal/qualitygate/releaseworkflow_test.go

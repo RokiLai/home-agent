@@ -3,11 +3,11 @@ import { showToast, spinRefresh, copyToClipboard, addLog } from './utils.js';
 import { setupRouter, openMobileSidebar, closeMobileSidebar } from './router.js';
 import { checkAuthStatus, handleLogin, handleLogout, handleChangePassword } from './auth.js';
 import { fetchOrRefreshClaimToken, updateInstallCommand } from './onboarding.js';
-import { initSettingsForm, saveSettingsForm, clearSettingsToken } from './settings.js';
+import { initSettingsForm, saveSettingsForm, clearSettingsToken, switchSettingsSection } from './settings.js';
 import { openRenameModal, closeRenameModal, saveRenameDevice, closeIpModal, closeAllDropdowns, closeAllModals, closeActiveModal } from './modals.js';
 import { fetchGitHubStatus, startGitHubDeviceFlow, closeGithubDeviceModal, handleDisconnectGitHub } from './github.js';
 import { fetchDevices, handleSyncAll, handleUpgradeAll } from './devices/actions.js';
-import { renderDevices } from './devices/render.js';
+import { renderDevices, renderDeviceDetailView, renderDashboardFocus } from './devices/render.js';
 import { fetchCommands } from './commands.js';
 import { fetchUsersList } from './users.js';
 
@@ -205,9 +205,15 @@ export function bindEventListeners() {
 }
 
 export async function init() {
-  setupRouter((page) => {
+  setupRouter((page, route) => {
     if (page === 'users' && state.currentUser && state.currentUser.role === 'owner') {
       fetchUsersList();
+    } else if (page === 'deviceDetail' && route) {
+      renderDeviceDetailView(route.deviceId, route.section);
+    } else if (page === 'dashboard') {
+      renderDashboardFocus();
+    } else if (page === 'settings' && route) {
+      switchSettingsSection(route.section || 'general');
     }
   });
   bindEventListeners();

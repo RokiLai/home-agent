@@ -1,6 +1,7 @@
 import { state } from '../state.js';
 import { escapeHTML, formatRelativeTime, getOSInfo, filterAndClassifyIPs } from '../utils.js';
 import { attachDeviceCardEvents } from './actions.js';
+import { mapCommandStatus } from '../commands.js';
 
 export function getDeviceSyncStatus(d) {
   if (!d) return 'pending';
@@ -49,38 +50,132 @@ export function isDeviceOnline(d) {
 
 export function renderDashboardSummary() {
   const dashboardDeviceSummary = document.getElementById('dashboardDeviceSummary');
-  if (!dashboardDeviceSummary) return;
+  if (dashboardDeviceSummary) {
+    if (state.devices.length === 0) {
+      dashboardDeviceSummary.innerHTML = `
+        <div class="text-muted" style="font-size:0.85rem; padding: 10px 0;">暂无接入设备，请通过快速接入向导添加新主机。</div>
+      `;
+    } else {
+      const previewDevices = state.devices.slice(0, 6);
+      dashboardDeviceSummary.innerHTML = previewDevices.map(d => {
+        const online = isDeviceOnline(d);
+        const displayName = d.alias ? `${escapeHTML(d.alias)} (${escapeHTML(d.hostname)})` : escapeHTML(d.hostname);
+        const isSynced = isDeviceSynced(d);
 
-  if (state.devices.length === 0) {
-    dashboardDeviceSummary.innerHTML = `
-      <div class="text-muted" style="font-size:0.85rem; padding: 10px 0;">暂无接入设备，请通过快速接入向导添加新主机。</div>
+        return `
+          <div class="summary-device-chip">
+            <div class="summary-device-left">
+              <span class="pulse-dot" style="background-color: ${online ? 'var(--emerald)' : 'var(--text-muted)'}; box-shadow: ${online ? '0 0 6px var(--emerald)' : 'none'};"></span>
+              <div style="min-width: 0;">
+                <div style="font-size: 0.86rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px;">
+                  ${displayName}
+                </div>
+                <div class="font-mono text-muted" style="font-size: 0.7rem;">${escapeHTML(d.os || 'Unknown')} • ${escapeHTML(d.arch || '')}</div>
+              </div>
+            </div>
+            <span class="status-badge ${isSynced ? 'status-synced' : 'status-pending'}">
+              ${isSynced ? 'SYNCED' : 'PENDING'}
+            </span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+  renderDashboardFocus();
+}
+
+export function renderDashboardFocus() {
+  const actionableList = document.getElementById('dashboardActionableList');
+  const recentCommandsList = document.getElementById('dashboardRecentCommandsList');
+  const healthStatsSummary = document.getElementById('dashboardHealthStatsSummary');
+
+  const total = state.devices.length;
+  let healthyCount = 0;
+  let degradedCount = 0;
+  let offlineCount = 0;
+  let unknownCount = 0;
+
+  state.devices.forEach(d => {
+    const s = (d.health && d.health.status) || 'unknown';
+    if (s === 'healthy') healthyCount++;
+    else if (s === 'degraded') degradedCount++;
+    else if (s === 'offline') offlineCount++;
+    else unknownCount++;
+  });
+
+  if (healthStatsSummary) {
+    healthStatsSummary.innerHTML = `
+      <div class="health-stat-pill stat-healthy"><span class="pulse-dot" style="background-color: var(--emerald);"></span> 正常 ${healthyCount}</div>
+      <div class="health-stat-pill stat-degraded"><span class="pulse-dot" style="background-color: var(--amber);"></span> 异常 ${degradedCount}</div>
+      <div class="health-stat-pill stat-offline"><span class="pulse-dot" style="background-color: var(--rose);"></span> 离线 ${offlineCount}</div>
+      ${unknownCount > 0 ? `<div class="health-stat-pill stat-unknown"><span class="pulse-dot" style="background-color: var(--text-muted);"></span> 未知 ${unknownCount}</div>` : ''}
     `;
-    return;
   }
 
-  const previewDevices = state.devices.slice(0, 6);
-  dashboardDeviceSummary.innerHTML = previewDevices.map(d => {
-    const online = isDeviceOnline(d);
-    const displayName = d.alias ? `${escapeHTML(d.alias)} (${escapeHTML(d.hostname)})` : escapeHTML(d.hostname);
-    const isSynced = isDeviceSynced(d);
+  if (actionableList) {
+    if (total === 0) {
+      actionableList.innerHTML = `<div class="text-muted" style="padding: 16px; text-align: center;">暂无接入设备，请通过添加设备接入新主机。</div>`;
+    } else {
+      // Actionable: offline first, then degraded, stable sort by id
+      const actionable = state.devices
+        .filter(d => d.health && (d.health.status === 'offline' || d.health.status === 'degraded'))
+        .sort((a, b) => {
+          const rank = s => s === 'offline' ? 0 : 1;
+          const diff = rank(a.health.status) - rank(b.health.status);
+          if (diff !== 0) return diff;
+          return a.id.localeCompare(b.id);
+        })
+        .slice(0, 10);
 
-    return `
-      <div class="summary-device-chip">
-        <div class="summary-device-left">
-          <span class="pulse-dot" style="background-color: ${online ? 'var(--emerald)' : 'var(--text-muted)'}; box-shadow: ${online ? '0 0 6px var(--emerald)' : 'none'};"></span>
-          <div style="min-width: 0;">
-            <div style="font-size: 0.86rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px;">
-              ${displayName}
+      if (actionable.length === 0) {
+        actionableList.innerHTML = `<div class="dashboard-empty-ok" style="padding: 16px; text-align: center; color: var(--emerald); font-weight: 500;">✓ 全网设备运行状态良好，暂无待处理异常。</div>`;
+      } else {
+        actionableList.innerHTML = actionable.map(d => {
+          const isOffline = d.health.status === 'offline';
+          const reasons = d.health.reasons || [];
+          const mainReason = reasons.length > 0 ? reasons[0].summary : (isOffline ? '设备当前处于离线状态' : '存在异常状态');
+          const remaining = reasons.length > 1 ? `（还有 ${reasons.length - 1} 项）` : '';
+          const devName = d.alias || d.hostname || d.id;
+
+          return `
+            <div class="actionable-device-card ${isOffline ? 'border-offline' : 'border-degraded'}">
+              <div class="actionable-header">
+                <span class="actionable-name">${escapeHTML(devName)}</span>
+                <span class="status-badge ${isOffline ? 'health-offline' : 'health-degraded'}">
+                  ${isOffline ? 'OFFLINE' : 'DEGRADED'}
+                </span>
+              </div>
+              <div class="actionable-reason text-muted" style="font-size: 0.82rem; margin: 4px 0;">
+                ${escapeHTML(mainReason)} ${escapeHTML(remaining)}
+              </div>
+              <div class="actionable-footer">
+                <a href="#/devices/${encodeURIComponent(d.id)}/health" class="btn btn-sm btn-outline-secondary">查看健康原因</a>
+              </div>
             </div>
-            <div class="font-mono text-muted" style="font-size: 0.7rem;">${escapeHTML(d.os || 'Unknown')} • ${escapeHTML(d.arch || '')}</div>
+          `;
+        }).join('');
+      }
+    }
+  }
+
+  if (recentCommandsList) {
+    const recents = (state.recentCommands || []).slice(0, 5);
+    if (recents.length === 0) {
+      recentCommandsList.innerHTML = `<div class="text-muted" style="padding: 16px; text-align: center;">暂无最近操作记录</div>`;
+    } else {
+      recentCommandsList.innerHTML = recents.map(c => `
+        <div class="recent-command-row" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
+          <div>
+            <div style="font-weight: 600; font-size: 0.85rem;">${escapeHTML(c.kind)} · <span class="font-mono">${escapeHTML(c.device_id)}</span></div>
+            <div class="text-muted" style="font-size: 0.75rem;">${escapeHTML(new Date(c.created_at).toLocaleTimeString())}</div>
+          </div>
+          <div>
+            <span class="status-badge" title="${escapeHTML(c.status)}">${escapeHTML(mapCommandStatus(c.status))}</span>
           </div>
         </div>
-        <span class="status-badge ${isSynced ? 'status-synced' : 'status-pending'}">
-          ${isSynced ? 'SYNCED' : 'PENDING'}
-        </span>
-      </div>
-    `;
-  }).join('');
+      `).join('');
+    }
+  }
 }
 
 export function renderDevices() {
@@ -413,6 +508,14 @@ export function createDeviceCardHTML(d) {
                 </svg>
                 <span>${isShuttingDown ? '正在关机...' : '远程关闭设备'}</span>
               </button>
+              <a href="#/devices/${encodeURIComponent(d.id)}/overview" class="dropdown-item btn-view-detail" style="text-decoration:none;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="16" x2="12" y2="12"/>
+                  <line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                <span>查看详情</span>
+              </a>
               <button class="dropdown-item is-danger btn-del btn-menu-del" data-id="${escapeHTML(d.id)}" data-hostname="${escapeHTML(d.hostname || '')}">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
@@ -426,4 +529,242 @@ export function createDeviceCardHTML(d) {
       </div>
     </div>
   `;
+}
+
+export function renderDeviceDetailView(deviceId, section = 'overview') {
+  const container = document.getElementById('deviceDetailContainer');
+  const titleEl = document.getElementById('deviceDetailTitle');
+  const badgeEl = document.getElementById('deviceDetailBadge');
+  if (!container) return;
+
+  const device = (state.devices || []).find(d => d.id === deviceId);
+  if (!device) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding: 32px; text-align: center;">
+        <p style="color: var(--rose); font-weight: 600;">未找到该设备或暂无访问权限。</p>
+        <p class="text-muted" style="margin-top: 8px;">设备 ID: ${escapeHTML(deviceId)}</p>
+        <a href="#/devices" class="btn btn-secondary mt-3">返回设备列表</a>
+      </div>
+    `;
+    if (titleEl) titleEl.innerText = '设备不存在';
+    if (badgeEl) badgeEl.innerHTML = '';
+    return;
+  }
+
+  const displayName = device.alias ? `${device.alias} (${device.hostname})` : (device.hostname || device.id);
+  if (titleEl) titleEl.innerText = displayName;
+
+  const hStatus = (device.health && device.health.status) || 'unknown';
+  if (badgeEl) {
+    badgeEl.innerHTML = `<span class="health-badge health-${hStatus}">${hStatus.toUpperCase()}</span>`;
+  }
+
+  const tabLinks = document.querySelectorAll('.detail-tab');
+  tabLinks.forEach(tab => {
+    if (tab.dataset && tab.dataset.section === section) {
+      tab.classList.add('active');
+    } else if (tab.classList) {
+      tab.classList.remove('active');
+    }
+  });
+
+  if (section === 'health') {
+    const reasons = (device.health && device.health.reasons) || [];
+    const metrics = (device.health && device.health.metrics) || {};
+    const cpu = metrics.cpu_usage !== undefined ? `${metrics.cpu_usage}%` : '未上报';
+    const mem = metrics.mem_usage !== undefined ? `${metrics.mem_usage}%` : '未上报';
+    const sampledAt = metrics.sampled_at ? new Date(metrics.sampled_at).toLocaleString() : '未上报';
+
+    container.innerHTML = `
+      <div class="detail-section-health">
+        <div class="card mb-3">
+          <div class="card-header"><strong>当前健康原因与诊断</strong></div>
+          <div class="card-body">
+            ${reasons.length === 0 ? '<p class="text-success">设备当前各项指标与健康结论正常。</p>' : reasons.map(r => `
+              <div class="reason-item mb-2" style="border-left: 3px solid var(--amber); padding-left: 10px;">
+                <div style="font-weight: 600;">${escapeHTML(r.summary)}</div>
+                ${r.suggestion ? `<div class="text-muted font-sm">${escapeHTML(r.suggestion)}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><strong>运行指标与采样时间</strong></div>
+          <div class="card-body detail-grid">
+            <div><span class="text-muted">CPU 使用率:</span> <strong>${escapeHTML(cpu)}</strong></div>
+            <div><span class="text-muted">内存使用率:</span> <strong>${escapeHTML(mem)}</strong></div>
+            <div><span class="text-muted">采样时间:</span> <span>${escapeHTML(sampledAt)}</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (section === 'ssh') {
+    const isSynced = isDeviceSynced(device);
+    const portArg = device.ssh_port && device.ssh_port !== 22 ? `-p ${device.ssh_port} ` : '';
+    const primaryIP = (device.addresses && device.addresses[0]) || device.hostname || '127.0.0.1';
+    const sshCmd = `ssh ${portArg}${device.ssh_user || 'root'}@${primaryIP}`;
+    const shared = device.shared_users || [];
+
+    container.innerHTML = `
+      <div class="detail-section-ssh">
+        <div class="card mb-3">
+          <div class="card-header"><strong>SSH 连接与公钥同步</strong></div>
+          <div class="card-body detail-grid">
+            <div><span class="text-muted">SSH 用户与端口:</span> <span class="font-mono">${escapeHTML(device.ssh_user || 'root')}:${escapeHTML(device.ssh_port || 22)}</span></div>
+            <div><span class="text-muted">同步状态:</span> <span class="status-badge ${isSynced ? 'status-synced' : 'status-pending'}">${isSynced ? 'SYNCED' : 'PENDING'}</span></div>
+            <div style="grid-column: 1 / -1;">
+              <span class="text-muted">快捷 SSH 命令:</span>
+              <div class="code-box mt-1" style="display:flex; justify-content:space-between; align-items:center;">
+                <code class="font-mono">${escapeHTML(sshCmd)}</code>
+                <button class="btn btn-copy" onclick="copyToClipboard('${escapeHTML(sshCmd)}', 'SSH 命令已复制')">复制</button>
+              </div>
+            </div>
+          </div>
+          <div class="card-footer mt-3" style="display:flex; justify-content:flex-end;">
+            <button class="btn btn-primary btn-sm btn-detail-sync" onclick="handleDetailSync('${escapeHTML(device.id)}', '${escapeHTML(device.hostname || '')}')">立即同步公钥</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><strong>设备共享与访问授权</strong></div>
+          <div class="card-body">
+            ${shared.length === 0 ? '<p class="text-muted font-sm">当前设备未向其他用户共享授权。</p>' : `
+              <div class="shared-users-list">
+                ${shared.map(u => `
+                  <div class="shared-user-row" style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border-color);">
+                    <span>${escapeHTML(u.username || u.user_id)}</span>
+                    <span class="badge badge-secondary font-sm">${escapeHTML(u.permission || 'view')}</span>
+                  </div>
+                `).join('')}
+              </div>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (section === 'network') {
+    const addresses = device.addresses || [];
+    const ipv4List = addresses.filter(a => !a.includes(':'));
+    const ipv6List = addresses.filter(a => a.includes(':'));
+
+    container.innerHTML = `
+      <div class="detail-section-network">
+        <div class="card mb-3">
+          <div class="card-header"><strong>网络地址与接口</strong></div>
+          <div class="card-body detail-grid">
+            <div style="grid-column: 1 / -1;">
+              <span class="text-muted">IPv4 地址:</span>
+              <div class="ip-display-box mt-1" style="display:flex; flex-wrap:wrap; gap:6px;">
+                ${ipv4List.length ? ipv4List.map(ip => `<span class="ip-chip btn-copy-ip" data-ip="${escapeHTML(ip)}" onclick="copyToClipboard('${escapeHTML(ip)}', '已复制 IPv4')">${escapeHTML(ip)}</span>`).join('') : '<span class="text-muted">无 IPv4 地址</span>'}
+              </div>
+            </div>
+            <div style="grid-column: 1 / -1;">
+              <span class="text-muted">IPv6 地址:</span>
+              <div class="ip-display-box mt-1" style="display:flex; flex-wrap:wrap; gap:6px;">
+                ${ipv6List.length ? ipv6List.map(ip => `<span class="ip-chip ip-v6-chip btn-copy-ip" data-ip="${escapeHTML(ip)}" onclick="copyToClipboard('${escapeHTML(ip)}', '已复制 IPv6')">${escapeHTML(ip)}</span>`).join('') : '<span class="text-muted">无 IPv6 地址</span>'}
+              </div>
+            </div>
+            <div><span class="text-muted">物理 MAC:</span> <span class="font-mono">${escapeHTML(device.mac || '未上报')}</span></div>
+            ${device.ddns_domain ? `<div><span class="text-muted">DDNS 域名:</span> <span class="font-mono text-indigo">${escapeHTML(device.ddns_domain)}</span></div>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (section === 'commands') {
+    const devCommands = (state.recentCommands || []).filter(c => c.device_id === device.id);
+
+    container.innerHTML = `
+      <div class="detail-section-commands">
+        <div class="card">
+          <div class="card-header"><strong>该设备的操作记录 (${devCommands.length} 条)</strong></div>
+          <div class="card-body">
+            ${devCommands.length === 0 ? '<p class="text-muted">暂无该设备的操作记录。</p>' : `
+              <table class="data-table" style="width:100%;">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>操作类型</th>
+                    <th>状态</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${devCommands.map(c => `
+                    <tr>
+                      <td data-label="时间">${escapeHTML(new Date(c.created_at).toLocaleString())}</td>
+                      <td data-label="操作类型">${escapeHTML(c.kind)}</td>
+                      <td data-label="状态"><span class="status-badge">${escapeHTML(mapCommandStatus(c.status))}</span></td>
+                      <td data-label="结果">${escapeHTML(c.error_message || (c.status === 'legacy_untracked' ? '旧客户端未关联' : '-'))}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (section === 'settings') {
+    container.innerHTML = `
+      <div class="detail-section-settings">
+        <div class="card mb-3">
+          <div class="card-header"><strong>设备基本设置</strong></div>
+          <div class="card-body detail-grid">
+            <div><span class="text-muted">当前备注名:</span> <strong>${escapeHTML(device.alias || '未设置')}</strong></div>
+            <div><span class="text-muted">设备所有权:</span> <span class="font-mono text-indigo">${escapeHTML(device.owner_user_id || '系统默认')}</span></div>
+          </div>
+        </div>
+        <div class="card danger-zone" style="border: 1px solid var(--rose); background: rgba(244, 63, 94, 0.05);">
+          <div class="card-header" style="color: var(--rose);"><strong>危险区域与电源管理</strong></div>
+          <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-weight:600;">远程关闭设备</div>
+                <div class="text-muted font-sm">通过 Agent 发送系统关机信号，关机后将断开连接。</div>
+              </div>
+              <button class="btn btn-warning btn-detail-shutdown" onclick="handleDetailShutdown('${escapeHTML(device.id)}', '${escapeHTML(device.hostname || '')}')">远程关机</button>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); padding-top:12px;">
+              <div>
+                <div style="font-weight:600; color:var(--rose);">移除此设备</div>
+                <div class="text-muted font-sm">从控制平面注销该受管节点，注销后设备凭据将失效。</div>
+              </div>
+              <button class="btn btn-danger btn-detail-remove" onclick="handleDetailRemove('${escapeHTML(device.id)}', '${escapeHTML(device.hostname || '')}')">移除此设备</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  } else {
+    // Overview (default)
+    const osInfo = getOSInfo(device.os);
+    const ips = (device.addresses || []).join(', ') || '未上报';
+    const reasons = (device.health && device.health.reasons) || [];
+    const reasonsSummary = reasons.length > 0 ? reasons.map(r => r.summary).join('; ') : '正常';
+
+    container.innerHTML = `
+      <div class="detail-section-overview">
+        <div class="card mb-3">
+          <div class="card-header"><strong>设备概览</strong></div>
+          <div class="card-body detail-grid">
+            <div><span class="text-muted">主机名:</span> <span class="font-mono">${escapeHTML(device.hostname || '-')}</span></div>
+            <div><span class="text-muted">设备 ID:</span> <span class="font-mono">${escapeHTML(device.id)}</span></div>
+            <div><span class="text-muted">物理 MAC:</span> <span class="font-mono">${escapeHTML(device.mac || '未上报')}</span></div>
+            <div><span class="text-muted">操作系统:</span> <span>${escapeHTML(osInfo.name)} (${escapeHTML(device.arch || '-')})</span></div>
+            <div><span class="text-muted">IP 地址:</span> <span>${escapeHTML(ips)}</span></div>
+            <div><span class="text-muted">SSH 用户:</span> <span class="font-mono">${escapeHTML(device.ssh_user || 'root')}:${escapeHTML(device.ssh_port || 22)}</span></div>
+            <div><span class="text-muted">Agent 版本:</span> <span class="font-mono">${escapeHTML(device.agent_version || '待升级')}</span></div>
+            <div><span class="text-muted">健康状态:</span> <span>${escapeHTML(reasonsSummary)}</span></div>
+          </div>
+        </div>
+        <div class="detail-actions mt-3" style="display:flex; gap:8px; flex-wrap:wrap;">
+          <a href="#/devices" class="btn btn-secondary">← 返回设备列表</a>
+          <a href="#/devices/${encodeURIComponent(device.id)}/health" class="btn btn-primary">查看健康诊断</a>
+          <a href="#/devices/${encodeURIComponent(device.id)}/ssh" class="btn btn-secondary">SSH 与访问</a>
+          <a href="#/devices/${encodeURIComponent(device.id)}/network" class="btn btn-secondary">网络详情</a>
+          <a href="#/devices/${encodeURIComponent(device.id)}/commands" class="btn btn-secondary">操作记录</a>
+          <a href="#/devices/${encodeURIComponent(device.id)}/settings" class="btn btn-secondary">设备设置</a>
+        </div>
+      </div>
+    `;
+  }
 }

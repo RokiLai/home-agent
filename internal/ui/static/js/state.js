@@ -26,5 +26,9 @@ export const state = {
   latestGitHubData: null,
   currentRenameDeviceId: '',
   currentShareDeviceId: '',
-  currentTransferDeviceId: ''
+  currentTransferDeviceId: '',
+  recentCommands: [],
+  currentDetailDeviceId: '',
+  currentDetailSection: 'overview',
+  currentSettingsSection: 'all'
 };
