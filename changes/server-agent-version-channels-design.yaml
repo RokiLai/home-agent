@@ -1,0 +1,5 @@
+task: server-agent-version-channels-design
+description: 设计 Server 与 Agent 独立版本、GitHub Release 双通道检测、升级提示及兼容迁移方案。
+allowed_paths:
+  - changes/server-agent-version-channels-design.yaml
+  - docs/features/服务端与客户端独立版本及双通道升级设计方案.md

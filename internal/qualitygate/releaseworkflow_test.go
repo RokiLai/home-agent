@@ -25,8 +25,9 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"github.event.pull_request.merge_commit_sha",
 		"actions/checkout@v4",
 		"actions/setup-go@v5",
+		"go test -race ./...",
 		"CGO_ENABLED=0",
-		"homeagent/internal/version.Version=${VERSION}",
+		"homeagent/internal/version.${version_var}=${VERSION}",
 		"sha256sum",
 		"gh release create",
 		"--generate-notes",
@@ -63,7 +64,6 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	}
 
 	forbidden := []string{
-		"go test",
 		"quality-gate.sh",
 		"gh release delete",
 		"gh release edit",
@@ -87,9 +87,10 @@ func TestReleaseWorkflowVersionExtraction(t *testing.T) {
 
 	// 断言工作流包含版本提取与防空检查
 	requiredFragments := []string{
-		"Read release version",
-		"grep -E '^(const defaultVersion|var Version) = \"'",
-		"Failed to read release version from internal/version/version.go",
+		"Read bridge component versions",
+		"defaultServerVersion",
+		"defaultAgentVersion",
+		"Bridge release requires equal non-empty Server and Agent versions",
 	}
 	for _, frag := range requiredFragments {
 		if !strings.Contains(workflow, frag) {
@@ -119,7 +120,7 @@ func TestReleaseWorkflowVersionExtraction(t *testing.T) {
 func extractVersionFromContent(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "const defaultVersion = \"") || strings.HasPrefix(line, "var Version = \"") {
+		if strings.HasPrefix(line, "const defaultAgentVersion = \"") {
 			parts := strings.Split(line, "\"")
 			if len(parts) >= 2 {
 				return parts[1]

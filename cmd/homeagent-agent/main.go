@@ -54,7 +54,7 @@ func main() {
 	case "info":
 		err = info()
 	case "version", "-v", "--version":
-		fmt.Printf("homeagent-agent %s (%s/%s)\n", version.Get(), runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("homeagent-agent %s (%s/%s)\n", version.GetAgent(), runtime.GOOS, runtime.GOARCH)
 	case "apply-keys":
 		err = applyKeys(os.Stdin)
 	default:
@@ -1048,7 +1048,7 @@ func localDevice(sshUser string, port int) (device.Device, string, error) {
 		SSHPort:      port,
 		Addresses:    addrs,
 		MAC:          mac,
-		AgentVersion: version.Get(),
+		AgentVersion: version.GetAgent(),
 	}, filepath.Join(home, ".ssh", "id_ed25519"), nil
 }
 

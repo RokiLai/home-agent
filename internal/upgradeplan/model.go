@@ -44,6 +44,9 @@ var (
 // PlanSnapshot 记录创建 Plan 时冻结的目标与环境快照。
 type PlanSnapshot struct {
 	TargetVersion        string `json:"target_version"`
+	ReleaseID            int64  `json:"release_id,omitempty"`
+	ReleaseTag           string `json:"release_tag,omitempty"`
+	AssetID              int64  `json:"asset_id,omitempty"`
 	TargetURL            string `json:"target_url,omitempty"`
 	TargetSHA256         string `json:"target_sha256,omitempty"`
 	TargetManifestDigest string `json:"target_manifest_digest,omitempty"`

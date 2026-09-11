@@ -162,15 +162,28 @@ export async function handleUpgradeAll() {
   if (btnUpgradeAll) btnUpgradeAll.disabled = true;
   if (upgradeAllIcon) upgradeAllIcon.classList.add('spinning');
   if (upgradeAllBtnText) upgradeAllBtnText.innerText = '下发中...';
-  addLog('info', '正在向全网所有已连接设备下发自升级指令...');
+  addLog('info', '正在读取 Agent 发布通道并准备批量升级...');
 
   try {
-    const res = await apiFetch(`${state.serverHost}/api/v1/devices/upgrade-all`, {
+    const versionRes = await apiFetch(`${state.serverHost}/api/v2/system/version-status`);
+    if (!versionRes.ok) throw new Error(`版本检查 HTTP ${versionRes.status}`);
+    const versionStatus = await versionRes.json();
+    const agent = versionStatus.agent || {};
+    if (agent.status !== 'available' || !agent.snapshot_id || !agent.latest_version) {
+      throw new Error(agent.error_message || 'Agent Release 暂不可用');
+    }
+    const deviceIDs = state.devices.map(device => device.id);
+    const summaryText = `目标 ${agent.latest_version}，设备 ${deviceIDs.length} 台，离线 ${agent.device_summary?.offline || 0} 台。`;
+    if (!confirm(`确认批量升级？${summaryText}`)) return;
+    if (!confirm('再次确认：升级会重启在线 Agent，离线及不可升级设备将被跳过。')) return;
+
+    const res = await apiFetch(`${state.serverHost}/api/v2/devices/upgrade-batch`, {
       method: 'POST',
-	  headers: commandHeaders()
+	  headers: commandHeaders(),
+      body: JSON.stringify({ snapshot_id: agent.snapshot_id, device_ids: deviceIDs })
     });
 
-    if (!res.ok) {
+    if (!res.ok && res.status !== 409) {
       throw new Error(`HTTP ${res.status}`);
     }
 
@@ -184,7 +197,7 @@ export async function handleUpgradeAll() {
 
     summary.results.filter(result => result.status === 'dispatched').forEach(result => state.upgradingDevices.add(result.device_id));
     renderDevices();
-    void monitorUpgradeResults(summary.results, data.target_version || '');
+    void monitorUpgradeResults(summary.results, data.target_version || agent.latest_version);
   } catch (err) {
     console.error('Failed to trigger upgrade all:', err);
     showToast(`全网升级失败: ${err.message}`);

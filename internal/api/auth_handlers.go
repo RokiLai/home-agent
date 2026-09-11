@@ -144,7 +144,7 @@ func (s *Server) authMe(w http.ResponseWriter, r *http.Request) {
 		"role":          session.Role,
 		"permissions":   perms,
 		"public_url":    effectivePublicURL,
-		"version":       version.Get(),
+		"version":       version.GetServer(),
 		"github_repo":   "RokiLai/home-agent",
 	})
 }
@@ -164,7 +164,7 @@ func (s *Server) getConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"public_url":           effectivePublicURL,
-		"version":              version.Get(),
+		"version":              version.GetServer(),
 		"github_repo":          repo,
 		"upgrade_source":       upgradeSource,
 		"github_mirror_prefix": s.GitHubMirrorPrefix,

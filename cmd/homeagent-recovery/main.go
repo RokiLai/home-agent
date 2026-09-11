@@ -22,7 +22,7 @@ func main() {
 	flag.Parse()
 
 	if *showInfo {
-		fmt.Printf(`{"component":"homeagent-recovery","version":%q}`+"\n", version.Get())
+		fmt.Printf(`{"component":"homeagent-recovery","version":%q}`+"\n", version.GetServer())
 		return
 	}
 

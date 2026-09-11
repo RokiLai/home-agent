@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,12 +30,37 @@ type Config struct {
 
 // Release 表示 GitHub Release 元数据。
 type Release struct {
+	ID          int64     `json:"id"`
 	TagName     string    `json:"tag_name"`
+	Version     string    `json:"-"`
 	Name        string    `json:"name"`
 	Body        string    `json:"body"`
+	Draft       bool      `json:"draft"`
+	Prerelease  bool      `json:"prerelease"`
+	Commitish   string    `json:"target_commitish"`
 	PublishedAt time.Time `json:"published_at"`
 	HTMLURL     string    `json:"html_url"`
+	Assets      []Asset   `json:"assets"`
 }
+
+// Asset 表示 GitHub Release 中冻结的资产身份。
+type Asset struct {
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+// Component 标识独立 Release 通道。
+type Component string
+
+const (
+	ComponentServer Component = "server"
+	ComponentAgent  Component = "agent"
+)
+
+var strictVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 // Client 封装 GitHub Release 交互。
 type Client struct {
@@ -43,9 +71,15 @@ type Client struct {
 	cacheTTL        time.Duration
 	httpClient      *http.Client
 
-	mu          sync.RWMutex
-	cachedRel   *Release
-	cachedAt    time.Time
+	mu             sync.RWMutex
+	cachedRel      *Release
+	cachedAt       time.Time
+	componentCache map[Component]cachedComponentRelease
+}
+
+type cachedComponentRelease struct {
+	release Release
+	at      time.Time
 }
 
 // NewClient 创建新的 GitHub Release 客户端。
@@ -78,7 +112,134 @@ func NewClient(cfg Config) *Client {
 		mirrorPrefix:    cfg.MirrorPrefix,
 		cacheTTL:        ttl,
 		httpClient:      httpClient,
+		componentCache:  make(map[Component]cachedComponentRelease),
 	}
+}
+
+// GetLatestComponentRelease 扫描 Releases 列表并返回指定组件的最高稳定 SemVer。
+func (c *Client) GetLatestComponentRelease(ctx context.Context, component Component, forceRefresh bool) (*Release, error) {
+	if component != ComponentServer && component != ComponentAgent {
+		return nil, fmt.Errorf("unsupported release component %q", component)
+	}
+	if !forceRefresh {
+		c.mu.RLock()
+		cached, ok := c.componentCache[component]
+		c.mu.RUnlock()
+		if ok && time.Since(cached.at) < c.cacheTTL {
+			rel := cached.release
+			return &rel, nil
+		}
+	}
+
+	prefix := string(component) + "-"
+	var best *Release
+	for page := 1; page <= 10; page++ {
+		endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=100&page=%d", c.apiBase, c.repo, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create releases request: %w", err)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		req.Header.Set("User-Agent", "HomeAgent-Server")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list github releases: %w", err)
+		}
+		var releases []Release
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&releases)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("github api returned status %d for releases list", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode releases list: %w", decodeErr)
+		}
+		for i := range releases {
+			rel := releases[i]
+			if rel.Draft || rel.Prerelease || !strings.HasPrefix(rel.TagName, prefix) {
+				continue
+			}
+			ver := strings.TrimPrefix(rel.TagName, prefix)
+			if !strictVersionPattern.MatchString(ver) {
+				continue
+			}
+			rel.Version = ver
+			if best == nil || CompareVersions(best.Version, rel.Version) < 0 {
+				candidate := rel
+				best = &candidate
+			}
+		}
+		if !linkHasNext(resp.Header.Get("Link")) {
+			if best == nil {
+				return nil, fmt.Errorf("no valid %s release found", component)
+			}
+			c.mu.Lock()
+			c.componentCache[component] = cachedComponentRelease{release: *best, at: time.Now()}
+			c.mu.Unlock()
+			result := *best
+			return &result, nil
+		}
+	}
+	return nil, errors.New("release pagination incomplete after 10 pages")
+}
+
+func linkHasNext(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		sections := strings.Split(strings.TrimSpace(part), ";")
+		if len(sections) < 2 || !strings.Contains(strings.Join(sections[1:], ";"), `rel="next"`) {
+			continue
+		}
+		raw := strings.Trim(strings.TrimSpace(sections[0]), "<>")
+		if _, err := url.ParseRequestURI(raw); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// RequiredAssetNames returns the complete binary and checksum matrix for a channel.
+func RequiredAssetNames(component Component) []string {
+	var binaries []string
+	if component == ComponentServer {
+		name := fmt.Sprintf("homeagent-server-%s-%s", runtime.GOOS, runtime.GOARCH)
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		binaries = []string{name}
+	} else if component == ComponentAgent {
+		binaries = []string{
+			"homeagent-agent-linux-amd64", "homeagent-agent-linux-arm64", "homeagent-agent-linux-arm",
+			"homeagent-agent-linux-mips", "homeagent-agent-linux-mipsle", "homeagent-agent-darwin-amd64",
+			"homeagent-agent-darwin-arm64", "homeagent-agent-windows-amd64.exe", "homeagent-agent-windows-arm64.exe",
+		}
+	}
+	result := make([]string, 0, len(binaries)*2)
+	for _, name := range binaries {
+		result = append(result, name, name+".sha256")
+	}
+	return result
+}
+
+// ValidateReleaseAssets rejects a selected release unless its required manifest is complete.
+func ValidateReleaseAssets(component Component, release *Release) error {
+	if release == nil {
+		return errors.New("release is nil")
+	}
+	assets := make(map[string]Asset, len(release.Assets))
+	for _, asset := range release.Assets {
+		if _, duplicate := assets[asset.Name]; duplicate {
+			return fmt.Errorf("duplicate release asset %q", asset.Name)
+		}
+		assets[asset.Name] = asset
+	}
+	for _, name := range RequiredAssetNames(component) {
+		asset, ok := assets[name]
+		if !ok || asset.ID <= 0 || asset.Size <= 0 || asset.BrowserDownloadURL == "" {
+			return fmt.Errorf("required release asset %q is missing or incomplete", name)
+		}
+	}
+	return nil
 }
 
 // Repo 返回配置的仓库名称。
@@ -129,7 +290,7 @@ func (c *Client) FetchAssetSHA256(ctx context.Context, tag, binaryName string) (
 		return "", fmt.Errorf("read sha256 body: %w", err)
 	}
 
-	return parseSHA256FromText(string(body))
+	return parseSHA256FromText(string(body), binaryName)
 }
 
 // GetLatestRelease 获取最新 Release 元数据（支持内存 TTL 缓存）。
@@ -235,22 +396,23 @@ func splitVersion(v string) []int {
 	return res
 }
 
-func parseSHA256FromText(text string) (string, error) {
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			candidate := strings.ToLower(fields[0])
-			if len(candidate) == 64 && isHex(candidate) {
-				return candidate, nil
-			}
-		}
+func parseSHA256FromText(text, expectedName string) (string, error) {
+	if strings.ContainsAny(expectedName, "/\\\r\n\x00") {
+		return "", errors.New("invalid expected asset name")
 	}
-	return "", errors.New("no valid 64-hex sha256 found in content")
+	line := strings.TrimSuffix(text, "\n")
+	if strings.Contains(line, "\n") || strings.HasSuffix(line, "\r") || (len(line) != 66+len(expectedName) && len(line) != 65+len(expectedName)) {
+		return "", errors.New("invalid sha256 sidecar format")
+	}
+	separatorLength := 2
+	if len(line) == 65+len(expectedName) {
+		separatorLength = 1
+	}
+	candidate := strings.ToLower(line[:64])
+	if !isHex(candidate) || line[64:64+separatorLength] != strings.Repeat(" ", separatorLength) || line[64+separatorLength:] != expectedName {
+		return "", errors.New("sha256 sidecar does not match asset name")
+	}
+	return candidate, nil
 }
 
 func isHex(s string) bool {

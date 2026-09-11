@@ -676,7 +676,7 @@ func (d *Daemon) sendAckWithFingerprintResult(ctx context.Context, module, statu
 		"applied_hash":    hash,
 		"ssh_fingerprint": fingerprint,
 		"error_message":   errMsg,
-		"agent_version":   version.Get(),
+		"agent_version":   version.GetAgent(),
 	}
 	if result != nil {
 		bodyMap["result"] = result

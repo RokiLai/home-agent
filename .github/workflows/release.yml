@@ -26,16 +26,20 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Read release version
+      - name: Read bridge component versions
         id: version
         shell: bash
         run: |
-          version=$(grep -E '^(const defaultVersion|var Version) = "' internal/version/version.go | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
-          if [[ -z "$version" ]]; then
-            echo "Failed to read release version from internal/version/version.go" >&2
+          server_version=$(sed -nE 's/^const defaultServerVersion = "([^"]+)"/\1/p' internal/version/version.go)
+          agent_version=$(sed -nE 's/^const defaultAgentVersion = "([^"]+)"/\1/p' internal/version/version.go)
+          if [[ -z "$server_version" || -z "$agent_version" || "$server_version" != "$agent_version" ]]; then
+            echo "Bridge release requires equal non-empty Server and Agent versions" >&2
             exit 1
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${server_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Run full regression tests
+        run: go test -race ./...
 
       - name: Build release assets
         shell: bash
@@ -45,9 +49,13 @@ jobs:
           mkdir -p dist
           while read -r component goos goarch output; do
             package="./cmd/homeagent-${component}"
+            version_var="ServerVersion"
+            if [[ "$component" == "agent" ]]; then
+              version_var="AgentVersion"
+            fi
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
               go build -trimpath \
-              -ldflags "-s -w -X homeagent/internal/version.Version=${VERSION}" \
+              -ldflags "-s -w -X homeagent/internal/version.${version_var}=${VERSION}" \
               -o "dist/${output}" "$package"
             (
               cd dist
