@@ -2129,6 +2129,8 @@ func TestUpgradePlan_OrchestrationAndIdempotency(t *testing.T) {
 	}
 	cmdSvc := command.NewService(cmdRepo, nil)
 	b := broker.New()
+	_, unsubscribe := b.Subscribe("dev-plan-1")
+	defer unsubscribe()
 
 	d := device.Device{
 		ID:        "dev-plan-1",
@@ -2218,6 +2220,76 @@ func TestUpgradePlan_OrchestrationAndIdempotency(t *testing.T) {
 	}
 	if singlePlan.PlanID != planID {
 		t.Fatalf("expected plan_id %s, got %s", planID, singlePlan.PlanID)
+	}
+}
+
+func TestUpgradePlan_DeliveryFailureTerminatesPlanAndAllowsRetry(t *testing.T) {
+	tempDir := t.TempDir()
+	r, err := registry.Open(filepath.Join(tempDir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdRepo, err := commandfile.Open(filepath.Join(tempDir, "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdSvc := command.NewService(cmdRepo, nil)
+	b := broker.New()
+
+	d := device.Device{
+		ID:        "dev-plan-delivery-failure",
+		Hostname:  "openwrt-router",
+		OS:        "linux",
+		Arch:      "arm64",
+		SSHUser:   "root",
+		SSHPort:   22,
+		PublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleValidKey",
+	}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		Registry: r,
+		Commands: cmdSvc,
+		Broker:   b,
+		Token:    "secret",
+	}
+	handler := s.Handler()
+	upgradeBody := `{"version":"v0.7.0","url":"https://example.com/bin","sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}`
+
+	req := httptest.NewRequest("POST", "/api/v1/devices/dev-plan-delivery-failure/upgrade", strings.NewReader(upgradeBody))
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Idempotency-Key", "delivery-failure-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected first request 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	plans, err := s.UpgradePlans.ListPlans(upgradeplan.Filter{DeviceID: d.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 {
+		t.Fatalf("expected one plan, got %+v", plans)
+	}
+	if plans[0].Stage != upgradeplan.StageFailed {
+		t.Fatalf("expected delivery failure to terminate plan as failed, got %+v", plans[0])
+	}
+	if plans[0].FailureReason != "delivery_unavailable" {
+		t.Fatalf("expected delivery_unavailable failure reason, got %q", plans[0].FailureReason)
+	}
+
+	_, unsubscribe := b.Subscribe(d.ID)
+	defer unsubscribe()
+	retryReq := httptest.NewRequest("POST", "/api/v1/devices/dev-plan-delivery-failure/upgrade", strings.NewReader(upgradeBody))
+	retryReq.Header.Set("Authorization", "Bearer secret")
+	retryReq.Header.Set("Idempotency-Key", "delivery-failure-2")
+	retryW := httptest.NewRecorder()
+	handler.ServeHTTP(retryW, retryReq)
+	if retryW.Code != http.StatusOK {
+		t.Fatalf("expected retry after terminal plan to succeed, got %d: %s", retryW.Code, retryW.Body.String())
 	}
 }
 
