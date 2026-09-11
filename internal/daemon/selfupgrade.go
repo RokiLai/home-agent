@@ -30,6 +30,7 @@ type UpgradeOptions struct {
 	Force           bool
 	ExecutablePath  string
 	HTTPClient      *http.Client
+	DownloadTimeout time.Duration
 	SkipSmoke       bool
 	SmokeSubcommand string
 	RestartCallback func() error
@@ -139,11 +140,17 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 60 * time.Second}
+		httpClient = &http.Client{}
 	}
+	downloadTimeout := opts.DownloadTimeout
+	if downloadTimeout <= 0 {
+		downloadTimeout = 120 * time.Second
+	}
+	downloadCtx, cancelDownload := context.WithTimeout(ctx, downloadTimeout)
+	defer cancelDownload()
 
 	log.Info("downloading_agent_binary", "command_id", opts.CommandID, "url", url, "dest", tmpPath)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(downloadCtx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create download request: %w", err)
 	}

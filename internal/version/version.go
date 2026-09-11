@@ -3,7 +3,7 @@ package version
 
 import "strings"
 
-const defaultVersion = "v0.6.12"
+const defaultVersion = "v0.6.13"
 
 // Version 是 HomeAgent 组件的当前版本号。
 // 可在编译时通过以下方式覆盖：

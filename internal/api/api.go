@@ -1180,6 +1180,9 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 			listeners = s.Broker.Publish(deviceID, broker.Event{Type: "upgrade", Data: string(dataBytes), ID: string(cmd.ID)})
 			if s.Commands != nil {
 				cmd, _ = s.finishDispatch(cmd, listeners)
+				if plan != nil && cmd.Status == command.StatusFailed {
+					_, _ = s.UpgradePlans.TransitionStage(plan.PlanID, plan.Revision, upgradeplan.StageFailed, cmd.ErrorCode)
+				}
 			}
 		}
 	}

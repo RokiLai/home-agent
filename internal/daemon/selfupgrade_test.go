@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -69,6 +70,55 @@ func TestSelfUpgrade_SHAMismatch(t *testing.T) {
 	}
 	if string(data) != "#!/bin/sh\necho original\n" {
 		t.Fatalf("original file was modified: %s", string(data))
+	}
+}
+
+func TestSelfUpgrade_DownloadBodyStallTimesOutAndCleansUp(t *testing.T) {
+	tempDir := t.TempDir()
+	originalExe := filepath.Join(tempDir, "agent")
+	original := []byte("#!/bin/sh\necho original\n")
+	if err := os.WriteFile(originalExe, original, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial download"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	client := &http.Client{Timeout: 0}
+	started := time.Now()
+	_, err := PerformSelfUpgrade(context.Background(), UpgradeOptions{
+		TargetVersion:   "v2.0.0",
+		URL:             ts.URL,
+		ExecutablePath:  originalExe,
+		HTTPClient:      client,
+		DownloadTimeout: 50 * time.Millisecond,
+		SkipSmoke:       true,
+		Force:           true,
+	})
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected download deadline exceeded, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled download exceeded bounded timeout: %v", elapsed)
+	}
+
+	data, readErr := os.ReadFile(originalExe)
+	if readErr != nil || string(data) != string(original) {
+		t.Fatalf("original binary changed after timeout: readErr=%v content=%q", readErr, data)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(tempDir, ".homeagent-agent-upgrade-*.tmp"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected timed-out download temp file cleanup, found %v", matches)
 	}
 }
 
