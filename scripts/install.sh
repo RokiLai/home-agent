@@ -128,7 +128,8 @@ EOF
   fi
 fi
 
-if [ -d "$install_dir" ] && [ -w "$install_dir" ]; then
+if { [ -d "$install_dir" ] && [ -w "$install_dir" ]; } || { [ ! -e "$install_dir" ] && [ -w "$(dirname "$install_dir")" ]; }; then
+  mkdir -p "$install_dir"
   cp "$tmp_file" "$install_dir/homeagent-agent"
   chmod 755 "$install_dir/homeagent-agent"
 else

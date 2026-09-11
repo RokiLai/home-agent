@@ -25,7 +25,7 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"github.event.pull_request.merge_commit_sha",
 		"actions/checkout@v4",
 		"actions/setup-go@v5",
-		"go test -race ./...",
+		"go test -race -p 1 ./...",
 		"CGO_ENABLED=0",
 		"homeagent/internal/version.${version_var}=${VERSION}",
 		"sha256sum",

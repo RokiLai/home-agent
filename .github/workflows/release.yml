@@ -39,7 +39,7 @@ jobs:
           echo "version=${server_version}" >> "$GITHUB_OUTPUT"
 
       - name: Run full regression tests
-        run: go test -race ./...
+        run: go test -race -p 1 ./...
 
       - name: Build release assets
         shell: bash
