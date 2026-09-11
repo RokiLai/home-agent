@@ -74,6 +74,30 @@ func TestFrontendSyntaxAndScopeIntegrity(t *testing.T) {
 	}
 }
 
+func TestConsoleInformationArchitecturePhase1(t *testing.T) {
+	cmd := exec.Command("node", "--test", "testdata/console-ia-phase1.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("console IA phase 1 contract tests failed: %v\n%s", err, output)
+	}
+}
+
+func TestConsoleInformationArchitecturePhase2(t *testing.T) {
+	cmd := exec.Command("node", "--test", "testdata/console-ia-phase2.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("console IA phase 2 contract tests failed: %v\n%s", err, output)
+	}
+}
+
+func TestConsoleInformationArchitecturePhase3(t *testing.T) {
+	cmd := exec.Command("node", "--test", "testdata/console-ia-phase3.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("console IA phase 3 contract tests failed: %v\n%s", err, output)
+	}
+}
+
 func TestBrowserLayoutAndAccessibility(t *testing.T) {
 	var authMu sync.Mutex
 	isLoggedIn := false

@@ -1,0 +1,21 @@
+task: console-ia-phase3
+description: 控制台信息架构与核心任务流第三期实施：收敛侧边栏为权威 4 项一级导航、系统设置支持多分区及旧路由（#/users、#/github）无缝重定向、服务端版本升级至 v0.6.17 及全套契约测试。
+allowed_paths:
+  - changes/console-ia-phase3.yaml
+  - docs/ui/控制台信息架构与核心任务流设计方案.md
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router.js
+  - internal/ui/static/js/app.js
+  - internal/ui/static/js/state.js
+  - internal/ui/static/js/settings.js
+  - internal/ui/static/js/commands.js
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/testdata/console-ia-phase1.test.mjs
+  - internal/ui/testdata/console-ia-phase2.test.mjs
+  - internal/ui/testdata/console-ia-phase3.test.mjs
+  - internal/ui/embed_test.go
+  - internal/qualitygate/releaseworkflow_test.go

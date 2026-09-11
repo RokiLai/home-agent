@@ -3,6 +3,55 @@ import { showToast, addLog } from './utils.js';
 import { updateInstallCommand } from './onboarding.js';
 import { apiFetch } from './api.js';
 
+export function switchSettingsSection(sectionName) {
+  const validSections = ['general', 'version', 'network', 'users', 'github', 'about'];
+  const isAll = !sectionName || sectionName === 'all';
+  const section = isAll ? 'all' : (validSections.includes(sectionName) ? sectionName : 'general');
+  state.currentSettingsSection = section;
+
+  // Toggle section visibility
+  const sections = document.querySelectorAll('.settings-section');
+  sections.forEach(sec => {
+    if (isAll) {
+      sec.classList.add('active');
+    } else {
+      const secSection = (sec.dataset && sec.dataset.section) || (sec.id ? sec.id.replace('settingsSec', '').toLowerCase() : '');
+      if (secSection === section) {
+        sec.classList.add('active');
+      } else {
+        sec.classList.remove('active');
+      }
+    }
+  });
+
+  // Toggle tabs
+  const tabs = document.querySelectorAll('.settings-tab');
+  tabs.forEach(tab => {
+    const tabSection = (tab.dataset && tab.dataset.section) || '';
+    if (isAll) {
+      if (tabSection === 'all') {
+        tab.classList.add('active');
+      } else {
+        tab.classList.remove('active');
+      }
+    } else {
+      if (tabSection === section) {
+        tab.classList.add('active');
+      } else {
+        tab.classList.remove('active');
+      }
+    }
+  });
+
+  // On demand data loading
+  if (section === 'version' || isAll) {
+    loadVersionStatus();
+  }
+  if (section === 'network' || isAll) {
+    loadServerNetworkSettings();
+  }
+}
+
 export function initSettingsForm() {
   const settingsServerUrlInput = document.getElementById('settingsServerUrlInput');
   if (settingsServerUrlInput) {
@@ -15,9 +64,9 @@ export function initSettingsForm() {
   loadVersionStatus();
 
   window.addEventListener('hashchange', () => {
-    if (window.location.hash === '#/settings') {
-      loadServerNetworkSettings();
-      loadVersionStatus();
+    if (window.location.hash.startsWith('#/settings')) {
+      const parts = window.location.hash.replace(/^#\/?/, '').split('/');
+      switchSettingsSection(parts[1] || 'all');
     }
   });
 }

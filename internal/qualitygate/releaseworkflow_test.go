@@ -27,11 +27,12 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"actions/setup-go@v5",
 		"go test -race -p 1 ./...",
 		"CGO_ENABLED=0",
-		"homeagent/internal/version.${version_var}=${VERSION}",
+		"homeagent/internal/version.${version_var}=${version}",
 		"sha256sum",
 		"gh release create",
 		"--generate-notes",
-		"dist/*",
+		"dist/homeagent-server-*",
+		"dist/homeagent-agent-*",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(workflow, fragment) {
@@ -87,10 +88,10 @@ func TestReleaseWorkflowVersionExtraction(t *testing.T) {
 
 	// 断言工作流包含版本提取与防空检查
 	requiredFragments := []string{
-		"Read bridge component versions",
+		"Read component versions",
 		"defaultServerVersion",
 		"defaultAgentVersion",
-		"Bridge release requires equal non-empty Server and Agent versions",
+		"Server and Agent versions must be non-empty",
 	}
 	for _, frag := range requiredFragments {
 		if !strings.Contains(workflow, frag) {
