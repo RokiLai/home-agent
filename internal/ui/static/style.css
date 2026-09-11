@@ -1939,6 +1939,7 @@ body.sidebar-open {
   }
 
   .filter-pill {
+    min-width: 44px;
     min-height: 44px;
     display: inline-flex;
     align-items: center;
