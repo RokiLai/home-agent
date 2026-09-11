@@ -72,7 +72,7 @@ func PerformSelfUpgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResul
 	totalStart := time.Now()
 	var timing StageTiming
 
-	currentVer := version.Get()
+	currentVer := version.GetAgent()
 	targetVer := strings.TrimSpace(opts.TargetVersion)
 	url := strings.TrimSpace(opts.URL)
 	expectedSHA := strings.ToLower(strings.TrimSpace(opts.SHA256))

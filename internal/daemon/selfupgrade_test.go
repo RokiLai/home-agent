@@ -20,7 +20,7 @@ import (
 
 func TestSelfUpgrade_AlreadyUpToDate(t *testing.T) {
 	opts := UpgradeOptions{
-		TargetVersion: version.Get(),
+		TargetVersion: version.GetAgent(),
 		Force:         false,
 		URL:           "http://example.com/binary",
 	}
@@ -31,8 +31,8 @@ func TestSelfUpgrade_AlreadyUpToDate(t *testing.T) {
 	if result.Updated {
 		t.Fatalf("expected updated=false, got true")
 	}
-	if result.TargetVersion != version.Get() {
-		t.Fatalf("expected target version %s, got %s", version.Get(), result.TargetVersion)
+	if result.TargetVersion != version.GetAgent() {
+		t.Fatalf("expected target version %s, got %s", version.GetAgent(), result.TargetVersion)
 	}
 }
 

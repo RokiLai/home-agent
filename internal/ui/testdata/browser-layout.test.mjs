@@ -737,6 +737,57 @@ test('6. Device card header layout and health detail click hit across viewports 
   await waitFor('document.getElementById("deviceHealthModal").classList.contains("hidden")');
 });
 
+test('7. Version panel keeps component boundaries and mobile overflow contract', async () => {
+  await cdp.send('Page.navigate', { url: `${serverUrl}/` }, targetSessionId);
+  await waitFor('document.readyState === "complete"');
+  await waitFor('document.getElementById("loginOverlay")');
+  const needsLogin = await evalJS('!document.getElementById("loginOverlay").classList.contains("hidden")');
+  if (needsLogin) {
+    await evalJS(`
+      (() => {
+        document.getElementById('loginUsername').value = 'admin';
+        document.getElementById('loginPassword').value = 'admin123';
+        document.getElementById('loginSubmitBtn').click();
+      })()
+    `);
+    await waitFor('document.getElementById("loginOverlay").classList.contains("hidden")');
+  }
+  await evalJS(`window.location.hash = '#/settings';`);
+  await waitFor('document.querySelector("#pageSettings.active .version-status-panel")');
+
+  for (const viewport of [{ width: 1280, height: 800, mobile: false }, { width: 360, height: 640, mobile: true }]) {
+    await setViewport(viewport.width, viewport.height, viewport.mobile);
+    const geometry = await evalJS(`
+      (() => {
+        const container = document.querySelector('#pageSettings > .settings-container');
+        const panels = [...container.children].filter(node => node.classList.contains('content-panel'));
+        const panel = document.querySelector('.version-status-panel');
+        const form = panel.querySelector('.version-status-form');
+        const channels = panel.querySelectorAll('.version-channel');
+        return {
+          panelIndex: panels.indexOf(panel),
+          channelCount: channels.length,
+          formWidth: form.getBoundingClientRect().width,
+          panelScrollWidth: panel.scrollWidth,
+          panelClientWidth: panel.clientWidth,
+          pageScrollWidth: document.documentElement.scrollWidth,
+          pageClientWidth: document.documentElement.clientWidth
+        };
+      })()
+    `);
+    assert.equal(geometry.panelIndex, 1, 'Version panel must be the second settings content panel');
+    assert.equal(geometry.channelCount, 2, 'Server and Agent must render as two independent regions');
+    assert.ok(geometry.formWidth <= 600.5, `Version form must preserve 600px alignment at ${viewport.width}px`);
+    assert.ok(geometry.panelScrollWidth <= geometry.panelClientWidth + 1, `Version panel must not overflow at ${viewport.width}px`);
+    assert.ok(geometry.pageScrollWidth <= geometry.pageClientWidth + 1, `Settings page must not overflow at ${viewport.width}px`);
+  }
+
+  await evalJS(`document.getElementById('versionRefreshBtn').click();`);
+  await waitFor('document.getElementById("versionRefreshBtn").textContent === "检查更新"');
+  const labels = await evalJS(`({ server: document.getElementById('serverVersionState').textContent, agent: document.getElementById('agentVersionState').textContent })`);
+  assert.ok(labels.server.length > 0 && labels.agent.length > 0, 'Both channel states must remain visible after refresh');
+});
+
 test('7. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
   assert.equal(runtimeErrors.length, 0, `Runtime errors detected during tests: ${runtimeErrors.join('; ')}`);
 });

@@ -295,6 +295,7 @@
                 <span class="panel-count text-muted">向全网受管节点下发最新配置同步或自升级指令</span>
               </div>
               <div class="batch-actions-group dashboard-actions-group">
+                <span id="agentBatchVersionSummary" class="text-muted">Agent 版本尚未检查</span>
                 <button id="btnSyncAll" class="btn btn-primary" title="向全网所有设备触发一次配置下发与公钥同步">
                   <svg id="syncAllIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
@@ -543,6 +544,36 @@
                   <button id="settingsSaveBtn" class="btn btn-primary">保存配置</button>
                   <button id="settingsClearBtn" class="btn btn-secondary">重置地址</button>
                 </div>
+              </div>
+            </div>
+
+            <div class="content-panel version-status-panel" style="margin-top: 20px;">
+              <div class="panel-header">
+                <div class="panel-title-group">
+                  <h3 class="panel-title">组件版本与升级</h3>
+                  <p class="panel-desc">服务端集中检查 GitHub 的 Server 与 Agent 独立发布通道</p>
+                </div>
+                <button id="versionRefreshBtn" class="btn btn-secondary">检查更新</button>
+              </div>
+              <div class="settings-form version-status-form" style="max-width: 600px; margin-top: 10px;">
+                <section class="version-channel" aria-labelledby="serverVersionHeading">
+                  <h4 id="serverVersionHeading">Server 更新</h4>
+                  <div class="version-detail"><span>当前版本</span><strong id="serverCurrentVersion">未知</strong></div>
+                  <div class="version-detail"><span>最新版本</span><strong id="serverLatestVersion">未知</strong></div>
+                  <div class="version-detail"><span>状态</span><span id="serverVersionState">尚未检查</span></div>
+                  <div class="version-detail"><span>检查时间</span><span id="serverVersionCheckedAt">-</span></div>
+                  <div class="version-actions">
+                    <a id="serverReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener" hidden>查看 Release</a>
+                    <button id="serverUpgradeBtn" class="btn btn-primary" disabled>升级服务端</button>
+                  </div>
+                </section>
+                <section class="version-channel" aria-labelledby="agentVersionHeading">
+                  <h4 id="agentVersionHeading">Agent 更新</h4>
+                  <div class="version-detail"><span>最新版本</span><strong id="agentLatestVersion">未知</strong></div>
+                  <div class="version-detail"><span>状态</span><span id="agentVersionState">尚未检查</span></div>
+                  <div class="version-detail"><span>检查时间</span><span id="agentVersionCheckedAt">-</span></div>
+                  <p id="agentUpdateSummary" class="text-muted">可升级 0，离线 0，制品不可用 0</p>
+                </section>
               </div>
             </div>
 

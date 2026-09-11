@@ -54,3 +54,39 @@ test('upgrade-all reports dispatch outcomes and waits for command plus facts con
   ]);
   assert.equal(state.upgradingDevices.size, 0);
 });
+
+test('upgrade-all uses frozen Agent snapshot and never sends caller-controlled artifacts', async () => {
+  const button = { disabled: false };
+  const icon = { classList: { add() {}, remove() {} } };
+  const buttonText = { innerText: '' };
+  const container = { innerHTML: '' };
+  globalThis.window = { location: { origin: 'http://homeagent.test' } };
+  globalThis.localStorage = { getItem() { return null; } };
+  globalThis.document = {
+    getElementById(id) {
+      return { btnUpgradeAll: button, upgradeAllIcon: icon, upgradeAllBtnText: buttonText, deviceContainer: container, deviceSearchInput: { value: '' } }[id] || null;
+    },
+    querySelectorAll() { return []; },
+    createElement() { return { className: '', textContent: '', remove() {} }; },
+    body: { appendChild() {} }
+  };
+  globalThis.confirm = () => true;
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith('/api/v2/system/version-status')) {
+      return { ok: true, status: 200, json: async () => ({ agent: { status: 'available', snapshot_id: 'agent:12:1', latest_version: 'v0.7.0', device_summary: { offline: 0 } } }) };
+    }
+    return { ok: true, status: 202, json: async () => ({ target_version: 'v0.7.0', dispatched_count: 0, skipped_count: 1, failed_count: 0, device_results: [{ device_id: 'dev-1', status: 'skipped', reason: 'device_offline' }] }) };
+  };
+
+  const { handleUpgradeAll } = await import('../static/js/devices/actions.js');
+  const { state } = await import('../static/js/state.js');
+  state.devices = [{ id: 'dev-1', hostname: 'router', agent_version: 'v0.6.14', os: 'linux', arch: 'arm64', addresses: [], connected: false }];
+  await handleUpgradeAll();
+
+  assert.equal(requests[1].url.endsWith('/api/v2/devices/upgrade-batch'), true);
+  const payload = JSON.parse(requests[1].options.body);
+  assert.deepEqual(payload, { snapshot_id: 'agent:12:1', device_ids: ['dev-1'] });
+  assert.equal('target_version' in payload || 'url' in payload || 'sha256' in payload, false);
+});

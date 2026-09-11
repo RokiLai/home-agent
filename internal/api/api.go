@@ -47,6 +47,7 @@ import (
 	"homeagent/internal/ui"
 	"homeagent/internal/upgradeplan"
 	"homeagent/internal/version"
+	"homeagent/internal/versionstatus"
 	"homeagent/internal/wol"
 )
 
@@ -90,10 +91,14 @@ type Server struct {
 	GitHubRepo               string
 	GitHubMirrorPrefix       string
 	GitHubReleaseClient      *githubrelease.Client
+	VersionStatus            *versionstatus.Service
+	ServerUpgradeOperations  *serverupgrade.OperationManager
+	ServerUpgradeRunner      func(context.Context, string) error
 	ServerNetworkCoordinator *servernetwork.Coordinator
 
-	version       int64
-	wakeRateLimit sync.Map
+	version            int64
+	wakeRateLimit      sync.Map
+	versionRefreshRate sync.Map
 }
 
 // Handler 构建并返回包含所有 REST API、SSE 控制流及 Web UI 的 HTTP 请求多路复用路由处理器。
@@ -229,6 +234,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/devices/{id}/upgrade", requirePerm(auth.PermDevicesUpgrade, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.upgradeDevice)))
 	mux.Handle("POST /api/v1/devices/upgrade-all", requirePerm(auth.PermDevicesUpgrade, nil)(http.HandlerFunc(s.upgradeAll)))
 	mux.Handle("POST /api/v1/devices/all/upgrade", requirePerm(auth.PermDevicesUpgrade, nil)(http.HandlerFunc(s.upgradeAll)))
+	mux.Handle("POST /api/v2/devices/upgrade-batch", requirePerm(auth.PermDevicesUpgrade, nil)(http.HandlerFunc(s.upgradeAll)))
 	mux.Handle("POST /api/v1/sync", requirePerm(auth.PermDevicesSync, nil)(http.HandlerFunc(s.syncAll)))
 	mux.Handle("GET /api/v1/commands", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.listCommands)))
 	mux.Handle("GET /api/v1/commands/{id}", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.getCommand)))
@@ -238,7 +244,10 @@ func (s *Server) Handler() http.Handler {
 
 	// System / Server Info & Self-Upgrade routes
 	mux.Handle("GET /api/v1/system/version-check", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.systemVersionCheck)))
+	mux.Handle("GET /api/v2/system/version-status", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.systemVersionStatus)))
 	mux.Handle("POST /api/v1/system/upgrade", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.systemUpgrade)))
+	mux.Handle("POST /api/v2/system/server-upgrades", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.createServerUpgradeOperation)))
+	mux.Handle("GET /api/v2/system/server-upgrades/{id}", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.getServerUpgradeOperation)))
 
 	// Health & Alerting Management routes
 	mux.Handle("GET /api/v1/health/summary", requirePerm(auth.PermHealthRead, nil)(http.HandlerFunc(s.handleHealthSummary)))
@@ -965,12 +974,16 @@ type UpgradeRequest struct {
 	SHA256        string `json:"sha256,omitempty"`
 	Force         bool   `json:"force,omitempty"`
 	Source        string `json:"source,omitempty"`
+	SnapshotID    string `json:"-"`
 }
 
 // UpgradePayload 表示通过 SSE 下发给 Agent 的 upgrade 事件载荷。
 type UpgradePayload struct {
 	Version       string `json:"version,omitempty"`
 	TargetVersion string `json:"target_version,omitempty"`
+	ReleaseID     int64  `json:"release_id,omitempty"`
+	ReleaseTag    string `json:"release_tag,omitempty"`
+	AssetID       int64  `json:"asset_id,omitempty"`
 	URL           string `json:"url"`
 	SHA256        string `json:"sha256,omitempty"`
 	Force         bool   `json:"force,omitempty"`
@@ -978,13 +991,28 @@ type UpgradePayload struct {
 
 // ResolveUpgradePayload 根据目标设备的操作系统和 CPU 架构解析并填充可执行文件下载 URL、目标版本号与 SHA256 校验和。
 func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *http.Request) (UpgradePayload, error) {
+	var frozen versionstatus.Snapshot
+	if req.SnapshotID != "" && s.VersionStatus != nil {
+		frozen = s.VersionStatus.Snapshot(githubrelease.ComponentAgent)
+		if frozen.Status != versionstatus.StatusAvailable || frozen.SnapshotID != req.SnapshotID {
+			return UpgradePayload{}, fmt.Errorf("agent release snapshot expired or unknown")
+		}
+	}
 
 	targetVer := strings.TrimSpace(req.TargetVersion)
 	if targetVer == "" {
 		targetVer = strings.TrimSpace(req.Version)
 	}
 	if targetVer == "" {
-		targetVer = version.Get()
+		if s.VersionStatus != nil {
+			frozen = s.VersionStatus.Snapshot(githubrelease.ComponentAgent)
+			if frozen.Status != versionstatus.StatusAvailable || frozen.LatestVersion == "" {
+				return UpgradePayload{}, fmt.Errorf("agent release snapshot is not available")
+			}
+			targetVer = frozen.LatestVersion
+		} else {
+			targetVer = version.GetAgent()
+		}
 	}
 
 	source := strings.ToLower(strings.TrimSpace(req.Source))
@@ -1011,6 +1039,17 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 		binaryName := fmt.Sprintf("homeagent-agent-%s-%s", osName, archName)
 		if osName == "windows" {
 			binaryName = fmt.Sprintf("homeagent-agent-windows-%s.exe", archName)
+		}
+		if frozen.LatestVersion != "" {
+			for _, asset := range frozen.Assets {
+				if asset.Name == binaryName {
+					frozen.Assets = []githubrelease.Asset{asset}
+					break
+				}
+			}
+			if len(frozen.Assets) != 1 || frozen.Assets[0].Name != binaryName {
+				return UpgradePayload{}, fmt.Errorf("agent asset %s is unavailable in frozen release", binaryName)
+			}
 		}
 
 		// 1. Try local candidate files if source is "local" or "auto"
@@ -1060,8 +1099,9 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 					MirrorPrefix: s.GitHubMirrorPrefix,
 				})
 			}
+			releaseTag := "agent-" + targetVer
 			if url == "" {
-				url = ghClient.BuildAssetDownloadURL(targetVer, binaryName)
+				url = ghClient.BuildAssetDownloadURL(releaseTag, binaryName)
 			}
 			if sha == "" {
 				ctx := context.Background()
@@ -1069,7 +1109,7 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 					ctx = r.Context()
 				}
 				var err error
-				sha, err = ghClient.FetchAssetSHA256(ctx, targetVer, binaryName)
+				sha, err = ghClient.FetchAssetSHA256(ctx, releaseTag, binaryName)
 				if err != nil {
 					return UpgradePayload{}, fmt.Errorf("failed to fetch sha256 for %s (%s) from github: %w", binaryName, targetVer, err)
 				}
@@ -1084,6 +1124,14 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 	return UpgradePayload{
 		TargetVersion: targetVer,
 		Version:       targetVer,
+		ReleaseID:     frozen.ReleaseID,
+		ReleaseTag:    frozen.Tag,
+		AssetID: func() int64 {
+			if len(frozen.Assets) == 1 {
+				return frozen.Assets[0].ID
+			}
+			return 0
+		}(),
 		URL:           url,
 		SHA256:        sha,
 		Force:         req.Force,
@@ -1146,6 +1194,9 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 			BridgeVersion:  bridgeVerPtr,
 			Snapshot: upgradeplan.PlanSnapshot{
 				TargetVersion:       payload.TargetVersion,
+				ReleaseID:           payload.ReleaseID,
+				ReleaseTag:          payload.ReleaseTag,
+				AssetID:             payload.AssetID,
 				TargetURL:           payload.URL,
 				TargetSHA256:        payload.SHA256,
 				InitialSecurityMode: d.UpgradeSecurityMode,
@@ -1256,7 +1307,32 @@ func (s *Server) getUpgradePlan(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 	var req UpgradeRequest
-	if r.Body != nil && r.ContentLength > 0 {
+	isV2 := r.URL.Path == "/api/v2/devices/upgrade-batch"
+	requestedDeviceIDs := []string(nil)
+	if isV2 {
+		var request struct {
+			SnapshotID string   `json:"snapshot_id"`
+			DeviceIDs  []string `json:"device_ids"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil || request.SnapshotID == "" || len(request.DeviceIDs) == 0 {
+			http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+			return
+		}
+		if s.VersionStatus == nil {
+			http.Error(w, `{"error":"agent_release_not_available"}`, http.StatusConflict)
+			return
+		}
+		snapshot := s.VersionStatus.Snapshot(githubrelease.ComponentAgent)
+		if snapshot.Status != versionstatus.StatusAvailable || snapshot.SnapshotID != request.SnapshotID {
+			http.Error(w, `{"error":"snapshot_expired_or_unknown"}`, http.StatusConflict)
+			return
+		}
+		req.TargetVersion = snapshot.LatestVersion
+		req.SnapshotID = request.SnapshotID
+		requestedDeviceIDs = request.DeviceIDs
+	} else if r.Body != nil && r.ContentLength > 0 {
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		_ = dec.Decode(&req)
 	}
@@ -1268,22 +1344,47 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 		userID = actor.UserID
 	}
 	devices := s.Registry.FilterDevicesForUser(userID, isOwner)
+	if isV2 {
+		visible := make(map[string]device.Device, len(devices))
+		for _, d := range devices {
+			visible[d.ID] = d
+		}
+		selected := make([]device.Device, 0, len(requestedDeviceIDs))
+		seen := make(map[string]bool, len(requestedDeviceIDs))
+		for _, id := range requestedDeviceIDs {
+			if seen[id] {
+				http.Error(w, `{"error":"duplicate_device_id"}`, http.StatusBadRequest)
+				return
+			}
+			seen[id] = true
+			d, ok := visible[id]
+			if !ok {
+				http.Error(w, `{"error":"device_not_found_or_forbidden"}`, http.StatusBadRequest)
+				return
+			}
+			selected = append(selected, d)
+		}
+		devices = selected
+	}
 	targetVer := strings.TrimSpace(req.TargetVersion)
 	if targetVer == "" {
 		targetVer = strings.TrimSpace(req.Version)
 	}
 	if targetVer == "" {
-		targetVer = version.Get()
+		targetVer = version.GetAgent()
 	}
 
 	var triggered []string
 	commands := make([]command.Command, 0)
 	type deviceResult struct {
-		DeviceID  string `json:"device_id"`
-		Status    string `json:"status"`
-		Reason    string `json:"reason,omitempty"`
-		Message   string `json:"message,omitempty"`
-		CommandID string `json:"command_id,omitempty"`
+		DeviceID   string `json:"device_id"`
+		Status     string `json:"status"`
+		Result     string `json:"result,omitempty"`
+		Reason     string `json:"reason,omitempty"`
+		ReasonCode string `json:"reason_code,omitempty"`
+		Message    string `json:"message,omitempty"`
+		CommandID  string `json:"command_id,omitempty"`
+		PlanID     string `json:"plan_id,omitempty"`
 	}
 	deviceResults := make([]deviceResult, 0, len(devices))
 	skippedCount := 0
@@ -1291,27 +1392,50 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 	for _, d := range devices {
 		if s.Broker == nil {
 			failedCount++
-			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Reason: "broker_unavailable"})
+			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "broker_unavailable", ReasonCode: "broker_unavailable"})
+			continue
+		}
+		if isV2 && (s.Commands == nil || s.UpgradePlans == nil) {
+			failedCount++
+			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "upgrade_service_unavailable", ReasonCode: "upgrade_service_unavailable"})
 			continue
 		}
 		if !s.Broker.IsConnected(d.ID) {
 			skippedCount++
-			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "skipped", Reason: "device_offline"})
+			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "skipped", Result: "skipped", Reason: "device_offline", ReasonCode: "device_offline"})
 			continue
 		}
 		payload, err := s.ResolveUpgradePayload(d, req, r)
 		if err != nil {
 			failedCount++
-			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Reason: "artifact_unavailable", Message: err.Error()})
+			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "artifact_unavailable", ReasonCode: "artifact_unavailable", Message: err.Error()})
 			continue
+		}
+		planID := ""
+		if isV2 && s.UpgradePlans != nil {
+			plan, _, planErr := s.UpgradePlans.CreatePlan(upgradeplan.CreatePlanRequest{
+				DeviceID: d.ID, TargetVersion: payload.TargetVersion,
+				Snapshot: upgradeplan.PlanSnapshot{TargetVersion: payload.TargetVersion, ReleaseID: payload.ReleaseID, ReleaseTag: payload.ReleaseTag, AssetID: payload.AssetID, TargetURL: payload.URL, TargetSHA256: payload.SHA256},
+			})
+			if planErr != nil {
+				failedCount++
+				deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "upgrade_in_progress", ReasonCode: "upgrade_in_progress", Message: planErr.Error()})
+				continue
+			}
+			planID = plan.PlanID
 		}
 		dataBytes, _ := json.Marshal(payload)
 		var cmd command.Command
 		if s.Commands != nil {
 			cmd, dataBytes, err = s.prepareCommand(r, command.KindUpgrade, d.ID, payload, s.commandTimeout(command.KindUpgrade, 10*time.Minute))
 			if err != nil {
+				if planID != "" {
+					if plan, getErr := s.UpgradePlans.GetPlan(planID); getErr == nil {
+						_, _ = s.UpgradePlans.TransitionStage(planID, plan.Revision, upgradeplan.StageFailed, "command_rejected")
+					}
+				}
 				failedCount++
-				deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Reason: "command_rejected", Message: err.Error()})
+				deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "command_rejected", ReasonCode: "command_rejected", Message: err.Error(), PlanID: planID})
 				continue
 			}
 			commands = append(commands, cmd)
@@ -1325,12 +1449,17 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if count == 0 {
+			if planID != "" {
+				if plan, getErr := s.UpgradePlans.GetPlan(planID); getErr == nil {
+					_, _ = s.UpgradePlans.TransitionStage(planID, plan.Revision, upgradeplan.StageFailed, "no_active_listener")
+				}
+			}
 			failedCount++
-			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Reason: "no_active_listener"})
+			deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "failed", Result: "failed", Reason: "no_active_listener", ReasonCode: "no_active_listener", PlanID: planID})
 			continue
 		}
 		triggered = append(triggered, d.ID)
-		deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "dispatched", CommandID: string(cmd.ID)})
+		deviceResults = append(deviceResults, deviceResult{DeviceID: d.ID, Status: "dispatched", Result: "dispatched", CommandID: string(cmd.ID), PlanID: planID})
 	}
 
 	if triggered == nil {
@@ -1344,7 +1473,20 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	overallStatus := "all_dispatched"
+	if len(triggered) == 0 {
+		overallStatus = "none_dispatched"
+	} else if skippedCount > 0 || failedCount > 0 {
+		overallStatus = "partial"
+	}
+	statusCode := http.StatusOK
+	if isV2 {
+		statusCode = http.StatusAccepted
+		if len(triggered) == 0 {
+			statusCode = http.StatusConflict
+		}
+	}
+	writeJSON(w, statusCode, map[string]any{
 		"target_version":   targetVer,
 		"triggered":        triggered,
 		"total":            len(triggered),
@@ -1352,6 +1494,7 @@ func (s *Server) upgradeAll(w http.ResponseWriter, r *http.Request) {
 		"skipped_count":    skippedCount,
 		"failed_count":     failedCount,
 		"device_results":   deviceResults,
+		"overall_status":   overallStatus,
 		"status":           "ok",
 		"commands":         commands,
 	})
@@ -2787,8 +2930,8 @@ func (s *Server) systemVersionCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	forceRefresh := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("force") == "true"
-	rel, err := ghClient.GetLatestRelease(r.Context(), forceRefresh)
-	currentVer := version.Get()
+	rel, err := ghClient.GetLatestComponentRelease(r.Context(), githubrelease.ComponentServer, forceRefresh)
+	currentVer := version.GetServer()
 
 	if err != nil {
 		if s.Log != nil {
@@ -2799,19 +2942,199 @@ func (s *Server) systemVersionCheck(w http.ResponseWriter, r *http.Request) {
 			"latest_version":  currentVer,
 			"has_update":      false,
 			"error":           err.Error(),
+			"deprecated":      true,
+			"replacement":     "/api/v2/system/version-status",
 		})
 		return
 	}
 
-	hasUpdate := githubrelease.CompareVersions(currentVer, rel.TagName) < 0
+	hasUpdate := githubrelease.CompareVersions(currentVer, rel.Version) < 0
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current_version": currentVer,
-		"latest_version":  rel.TagName,
+		"latest_version":  rel.Version,
 		"has_update":      hasUpdate,
 		"release_url":     rel.HTMLURL,
 		"release_notes":   rel.Body,
 		"published_at":    rel.PublishedAt.Format(time.RFC3339),
+		"deprecated":      true,
+		"replacement":     "/api/v2/system/version-status",
 	})
+}
+
+func (s *Server) systemVersionStatus(w http.ResponseWriter, r *http.Request) {
+	if s.VersionStatus == nil {
+		http.Error(w, `{"error":"version_status_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	force := r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("force") == "true"
+	component := r.URL.Query().Get("component")
+	if component != "" && component != string(githubrelease.ComponentServer) && component != string(githubrelease.ComponentAgent) {
+		http.Error(w, `{"error":"invalid_component"}`, http.StatusBadRequest)
+		return
+	}
+	if force {
+		actor := auth.GetActorFromContext(r.Context())
+		if actor != nil && actor.Role != auth.RoleOwner {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+		key := "legacy-owner"
+		if actor != nil {
+			key = actor.UserID
+		}
+		now := time.Now()
+		if previous, ok := s.versionRefreshRate.Load(key); ok && now.Sub(previous.(time.Time)) < time.Minute {
+			http.Error(w, `{"error":"refresh_rate_limited"}`, http.StatusTooManyRequests)
+			return
+		}
+		s.versionRefreshRate.Store(key, now)
+	}
+	refresh := func(target githubrelease.Component) {
+		if component == "" || component == string(target) {
+			_, _ = s.VersionStatus.Refresh(r.Context(), target, force)
+		}
+	}
+	refresh(githubrelease.ComponentServer)
+	refresh(githubrelease.ComponentAgent)
+	agentSnapshot := s.VersionStatus.Snapshot(githubrelease.ComponentAgent)
+	serverSnapshot := s.VersionStatus.Snapshot(githubrelease.ComponentServer)
+	serverResponse := struct {
+		versionstatus.Snapshot
+		UpgradeSupported bool `json:"upgrade_supported"`
+	}{Snapshot: serverSnapshot, UpgradeSupported: s.ServerUpgradeOperations != nil && s.ServerUpgradeRunner != nil}
+	agentResponse := struct {
+		versionstatus.Snapshot
+		DeviceSummary map[string]int `json:"device_summary"`
+	}{Snapshot: agentSnapshot, DeviceSummary: s.agentDeviceSummary(agentSnapshot)}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"server": serverResponse,
+		"agent":  agentResponse,
+	})
+}
+
+func serverUpgradeOwnerID(r *http.Request) (string, bool) {
+	actor := auth.GetActorFromContext(r.Context())
+	if actor == nil {
+		return "legacy-owner", true
+	}
+	return actor.UserID, actor.Role == auth.RoleOwner
+}
+
+func (s *Server) createServerUpgradeOperation(w http.ResponseWriter, r *http.Request) {
+	ownerID, owner := serverUpgradeOwnerID(r)
+	if !owner {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if s.VersionStatus == nil || s.ServerUpgradeOperations == nil || s.ServerUpgradeRunner == nil {
+		http.Error(w, `{"error":"server_upgrade_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	snapshot := s.VersionStatus.Snapshot(githubrelease.ComponentServer)
+	if snapshot.Status != versionstatus.StatusAvailable || snapshot.UpdateState != versionstatus.UpdateAvailable || snapshot.LatestVersion == "" {
+		http.Error(w, `{"error":"server_release_not_available"}`, http.StatusConflict)
+		return
+	}
+	var request struct {
+		TargetVersion string `json:"target_version,omitempty"`
+	}
+	if r.Body != nil && r.ContentLength > 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil {
+			http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	if request.TargetVersion != "" && request.TargetVersion != snapshot.LatestVersion {
+		http.Error(w, `{"error":"target_not_in_snapshot"}`, http.StatusConflict)
+		return
+	}
+	operation, reused, err := s.ServerUpgradeOperations.Start(ownerID, snapshot.LatestVersion)
+	if errors.Is(err, serverupgrade.ErrOperationInProgress) {
+		http.Error(w, `{"error":"upgrade_in_progress"}`, http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, `{"error":"operation_persistence_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, operation)
+	if reused {
+		return
+	}
+	go func() {
+		if runErr := s.ServerUpgradeOperations.Run(context.Background(), operation.ID, s.ServerUpgradeRunner); runErr != nil && s.Log != nil {
+			s.Log.Error("server_upgrade_operation_failed", "operation_id", operation.ID, "error", runErr)
+		}
+	}()
+}
+
+func (s *Server) getServerUpgradeOperation(w http.ResponseWriter, r *http.Request) {
+	ownerID, owner := serverUpgradeOwnerID(r)
+	if !owner {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	if s.ServerUpgradeOperations == nil {
+		http.Error(w, `{"error":"server_upgrade_unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	operation, err := s.ServerUpgradeOperations.Get(r.PathValue("id"))
+	if errors.Is(err, serverupgrade.ErrOperationNotFound) {
+		http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, `{"error":"operation_read_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if operation.OwnerID != ownerID {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+	writeJSON(w, http.StatusOK, operation)
+}
+
+func (s *Server) agentDeviceSummary(snapshot versionstatus.Snapshot) map[string]int {
+	summary := map[string]int{
+		"current": 0, "update_available": 0, "offline": 0, "artifact_unavailable": 0, "upgrade_in_progress": 0, "unknown": 0,
+	}
+	if s.Registry == nil {
+		return summary
+	}
+	assets := make(map[string]bool, len(snapshot.Assets))
+	for _, asset := range snapshot.Assets {
+		assets[asset.Name] = true
+	}
+	for _, d := range s.Registry.List() {
+		if s.UpgradePlans != nil {
+			if _, err := s.UpgradePlans.GetActivePlanByDevice(d.ID); err == nil {
+				summary["upgrade_in_progress"]++
+				continue
+			}
+		}
+		if s.Broker == nil || !s.Broker.IsConnected(d.ID) {
+			summary["offline"]++
+			continue
+		}
+		if snapshot.Status != versionstatus.StatusAvailable || snapshot.LatestVersion == "" || strings.TrimSpace(d.AgentVersion) == "" {
+			summary["unknown"]++
+			continue
+		}
+		assetName := fmt.Sprintf("homeagent-agent-%s-%s", strings.ToLower(d.OS), strings.ToLower(d.Arch))
+		if strings.EqualFold(d.OS, "windows") {
+			assetName += ".exe"
+		}
+		if !assets[assetName] || !assets[assetName+".sha256"] {
+			summary["artifact_unavailable"]++
+			continue
+		}
+		if githubrelease.CompareVersions(d.AgentVersion, snapshot.LatestVersion) < 0 {
+			summary["update_available"]++
+		} else {
+			summary["current"]++
+		}
+	}
+	return summary
 }
 
 type systemUpgradeReq struct {

@@ -47,6 +47,7 @@ import (
 	"homeagent/internal/store/filestore"
 	"homeagent/internal/store/mysqlstore"
 	"homeagent/internal/version"
+	"homeagent/internal/versionstatus"
 	"homeagent/internal/wol"
 )
 
@@ -71,7 +72,7 @@ func main() {
 		usage()
 	}
 	if os.Args[1] == "version" || os.Args[1] == "-v" || os.Args[1] == "--version" {
-		fmt.Printf("homeagent-server %s (%s/%s)\n", version.Get(), runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("homeagent-server %s (%s/%s)\n", version.GetServer(), runtime.GOOS, runtime.GOARCH)
 		return
 	}
 	if os.Args[1] == "self-upgrade" {
@@ -435,6 +436,19 @@ func serve(c config) error {
 	if err != nil {
 		logger.Warn("failed_to_initialize_github_sync_service", "error", err)
 	}
+	releaseClient := githubrelease.NewClient(githubrelease.Config{
+		Repo:         c.githubRepo,
+		MirrorPrefix: c.githubMirrorPrefix,
+	})
+	versionStatusSvc, err := versionstatus.NewService(
+		releaseClient,
+		versionstatus.FileRepository{Path: filepath.Join(c.dataDir, "version-status.json")},
+		version.GetServer(),
+		time.Now,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize version status service: %w", err)
+	}
 
 	// 初始化健康评估子系统
 	adapters := &serverHealthAdapters{
@@ -446,6 +460,7 @@ func serve(c config) error {
 		prefixState: prefixStateSvc,
 		ddnsSvc:     ddnsSvc,
 		cmdRepo:     commandRepo,
+		versionStatus: versionStatusSvc,
 	}
 
 	healthRepo, err := health.NewFileRepository(filepath.Join(c.dataDir, "health"))
@@ -505,6 +520,11 @@ func serve(c config) error {
 		alertingSvc.HandleHealthEvents(ctx, events)
 	})
 
+	serverUpgradeOperations, err := serverupgrade.NewOperationManager(filepath.Join(c.dataDir, "server-upgrades.json"), version.GetServer())
+	if err != nil {
+		return fmt.Errorf("initialize server upgrade operations: %w", err)
+	}
+
 	handler := (&api.Server{
 		Registry:           r,
 		Broker:             eventBroker,
@@ -531,11 +551,40 @@ func serve(c config) error {
 		UpgradeSource:            c.upgradeSource,
 		GitHubRepo:               c.githubRepo,
 		GitHubMirrorPrefix:       c.githubMirrorPrefix,
+		GitHubReleaseClient:      releaseClient,
+		VersionStatus:            versionStatusSvc,
+		ServerUpgradeOperations:  serverUpgradeOperations,
 		ServerNetworkCoordinator: serverNetworkCoord,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		refresh := func() {
+			for _, component := range []githubrelease.Component{githubrelease.ComponentServer, githubrelease.ComponentAgent} {
+				if _, refreshErr := versionStatusSvc.Refresh(ctx, component, true); refreshErr != nil {
+					logger.Warn("version_channel_refresh_failed", "component", component, "error", refreshErr)
+				}
+			}
+		}
+		refresh()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for _, component := range []githubrelease.Component{githubrelease.ComponentServer, githubrelease.ComponentAgent} {
+					if versionStatusSvc.Due(component) {
+						if _, refreshErr := versionStatusSvc.Refresh(ctx, component, true); refreshErr != nil {
+							logger.Warn("version_channel_retry_failed", "component", component, "error", refreshErr)
+						}
+					}
+				}
+			}
+		}
+	}()
 
 	healthSvc.StartSweep(ctx, 1*time.Minute)
 	go func() {
@@ -791,7 +840,7 @@ func ipv6Command(c config, args []string) error {
 func upgradeCommand(c config, args []string) error {
 
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
-	targetVer := fs.String("version", version.Get(), "target version")
+	targetVer := fs.String("version", version.GetServer(), "target version")
 	url := fs.String("url", "", "agent binary download URL")
 	sha := fs.String("sha256", "", "SHA256 checksum of the new binary")
 	force := fs.Bool("force", false, "force upgrade even if version matches")
@@ -982,14 +1031,14 @@ func selfUpgradeCommand(args []string) error {
 	})
 
 	if *checkOnly {
-		rel, err := ghClient.GetLatestRelease(context.Background(), true)
+		rel, err := ghClient.GetLatestComponentRelease(context.Background(), githubrelease.ComponentServer, true)
 		if err != nil {
 			return fmt.Errorf("failed to check latest release from GitHub (%s): %w", *repo, err)
 		}
-		currentVer := version.Get()
-		cmp := githubrelease.CompareVersions(currentVer, rel.TagName)
+		currentVer := version.GetServer()
+		cmp := githubrelease.CompareVersions(currentVer, rel.Version)
 		fmt.Printf("Current Version: %s\n", currentVer)
-		fmt.Printf("Latest Version:  %s\n", rel.TagName)
+		fmt.Printf("Latest Version:  %s\n", rel.Version)
 		fmt.Printf("Published At:    %s\n", rel.PublishedAt.Format(time.RFC3339))
 		fmt.Printf("Release URL:     %s\n", rel.HTMLURL)
 		if cmp < 0 {
@@ -1008,7 +1057,7 @@ func selfUpgradeCommand(args []string) error {
 		Force:         *force,
 		Client:        ghClient,
 		RestartCallback: func() error {
-			fmt.Printf("[OK] Server binary replaced successfully (%s -> %s).\n", version.Get(), *targetVer)
+			fmt.Printf("[OK] Server binary replaced successfully (%s -> %s).\n", version.GetServer(), *targetVer)
 			fmt.Printf("[...] Exiting process to allow service manager (launchd/systemd) to restart server.\n")
 			os.Exit(0)
 			return nil

@@ -30,8 +30,10 @@ import (
 	"homeagent/internal/health"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/upgradeplan"
+	"homeagent/internal/versionstatus"
 )
 
 func TestRegisterListDelete(t *testing.T) {
@@ -2495,12 +2497,12 @@ func TestUpgradeDevice_GitHubSourceAndSHA256Resolution(t *testing.T) {
 	rawHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64.sha256":
+		case "/RokiLai/home-agent/releases/download/agent-v0.7.0/homeagent-agent-linux-amd64.sha256":
 			w.WriteHeader(http.StatusOK)
 			_, _ = fmt.Fprintf(w, "%s  homeagent-agent-linux-amd64\n", rawHash)
-		case "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-darwin-arm64.sha256":
+		case "/RokiLai/home-agent/releases/download/agent-v0.7.0/homeagent-agent-darwin-arm64.sha256":
 			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, "%s\n", rawHash)
+			_, _ = fmt.Fprintf(w, "%s  homeagent-agent-darwin-arm64\n", rawHash)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -2566,7 +2568,7 @@ func TestUpgradeDevice_GitHubSourceAndSHA256Resolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expectedURL := mockGitHub.URL + "/RokiLai/home-agent/releases/download/v0.7.0/homeagent-agent-linux-amd64"
+	expectedURL := mockGitHub.URL + "/RokiLai/home-agent/releases/download/agent-v0.7.0/homeagent-agent-linux-amd64"
 	if resp["url"] != expectedURL {
 		t.Fatalf("expected URL %s, got %v", expectedURL, resp["url"])
 	}
@@ -2588,16 +2590,18 @@ func TestUpgradeDevice_GitHubSourceAndSHA256Resolution(t *testing.T) {
 
 func TestSystemVersionCheck_Endpoint(t *testing.T) {
 	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/RokiLai/home-agent/releases/latest" {
+		if r.URL.Path == "/repos/RokiLai/home-agent/releases" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, `{
-				"tag_name": "v99.0.0",
+			_, _ = fmt.Fprint(w, `[{
+				"tag_name": "server-v99.0.0",
 				"name": "Release v99.0.0",
 				"body": "Breaking update",
+				"draft": false,
+				"prerelease": false,
 				"published_at": "2026-09-01T00:00:00Z",
 				"html_url": "https://github.com/RokiLai/home-agent/releases/tag/v99.0.0"
-			}`)
+			}]`)
 			return
 		}
 		http.NotFound(w, r)
@@ -2630,6 +2634,249 @@ func TestSystemVersionCheck_Endpoint(t *testing.T) {
 	}
 	if res["has_update"] != true || res["latest_version"] != "v99.0.0" {
 		t.Fatalf("unexpected version-check response: %+v", res)
+	}
+	if res["deprecated"] != true || res["replacement"] != "/api/v2/system/version-status" {
+		t.Fatalf("v1 response must advertise v2 replacement: %+v", res)
+	}
+}
+
+func TestSystemVersionStatusV2ReturnsIndependentChannels(t *testing.T) {
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/RokiLai/home-agent/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		releases := []githubrelease.Release{
+			{ID: 11, TagName: "server-v0.6.15", HTMLURL: "https://example/server", Assets: apiTestReleaseAssets(githubrelease.ComponentServer)},
+			{ID: 12, TagName: "agent-v0.7.0", HTMLURL: "https://example/agent", Assets: apiTestReleaseAssets(githubrelease.ComponentAgent)},
+		}
+		_ = json.NewEncoder(w).Encode(releases)
+	}))
+	defer mockGitHub.Close()
+	client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: mockGitHub.URL})
+	status, err := versionstatus.NewService(client, versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "versions.json")}, "v0.6.14", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{Token: "admin-token", GitHubReleaseClient: client, VersionStatus: status, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	handler := s.Handler()
+	req := httptest.NewRequest("GET", "/api/v2/system/version-status?refresh=true", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Server versionstatus.Snapshot `json:"server"`
+		Agent  versionstatus.Snapshot `json:"agent"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Server.LatestVersion != "v0.6.15" || body.Server.UpdateState != versionstatus.UpdateAvailable {
+		t.Fatalf("unexpected server channel: %+v", body.Server)
+	}
+	if body.Agent.LatestVersion != "v0.7.0" || body.Agent.UpdateState != "" {
+		t.Fatalf("unexpected agent channel: %+v", body.Agent)
+	}
+}
+
+func TestSystemVersionStatusForceRefreshIsRateLimited(t *testing.T) {
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]githubrelease.Release{
+			{ID: 11, TagName: "server-v0.6.15", Assets: apiTestReleaseAssets(githubrelease.ComponentServer)},
+			{ID: 12, TagName: "agent-v0.7.0", Assets: apiTestReleaseAssets(githubrelease.ComponentAgent)},
+		})
+	}))
+	defer mockGitHub.Close()
+	client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: mockGitHub.URL})
+	status, _ := versionstatus.NewService(client, versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "versions.json")}, "v0.6.14", time.Now)
+	h := (&Server{Token: "admin-token", VersionStatus: status}).Handler()
+	for attempt, want := range []int{http.StatusOK, http.StatusTooManyRequests} {
+		req := httptest.NewRequest("GET", "/api/v2/system/version-status?refresh=true", nil)
+		req.Header.Set("Authorization", "Bearer admin-token")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("attempt %d status = %d, want %d: %s", attempt+1, w.Code, want, w.Body.String())
+		}
+	}
+}
+
+func apiTestReleaseAssets(component githubrelease.Component) []githubrelease.Asset {
+	assets := make([]githubrelease.Asset, 0, len(githubrelease.RequiredAssetNames(component)))
+	for i, name := range githubrelease.RequiredAssetNames(component) {
+		assets = append(assets, githubrelease.Asset{ID: int64(i + 1), Name: name, Size: 10, BrowserDownloadURL: "https://example/" + name})
+	}
+	return assets
+}
+
+func TestAgentDeviceSummaryUsesExclusivePriority(t *testing.T) {
+	reg, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []device.Device{
+		{ID: "busy", Hostname: "busy", AgentVersion: "v0.1.0", OS: "linux", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+		{ID: "offline", Hostname: "offline", AgentVersion: "v0.1.0", OS: "linux", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+		{ID: "unknown", Hostname: "unknown", OS: "linux", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+		{ID: "unsupported", Hostname: "unsupported", AgentVersion: "v0.1.0", OS: "plan9", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+		{ID: "old", Hostname: "old", AgentVersion: "v0.6.14", OS: "linux", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+		{ID: "current", Hostname: "current", AgentVersion: "v0.7.0", OS: "linux", Arch: "amd64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"},
+	} {
+		if _, err := reg.Save(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := broker.New()
+	for _, id := range []string{"busy", "unknown", "unsupported", "old", "current"} {
+		_, unsubscribe := b.Subscribe(id)
+		t.Cleanup(unsubscribe)
+	}
+	plans := upgradeplan.NewService()
+	if _, _, err := plans.CreatePlan(upgradeplan.CreatePlanRequest{DeviceID: "busy", TargetVersion: "v0.7.0"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Registry: reg, Broker: b, UpgradePlans: plans}
+	snapshot := versionstatus.Snapshot{Status: versionstatus.StatusAvailable, LatestVersion: "v0.7.0", Assets: apiTestReleaseAssets(githubrelease.ComponentAgent)}
+	got := s.agentDeviceSummary(snapshot)
+	for key, want := range map[string]int{"upgrade_in_progress": 1, "offline": 1, "unknown": 1, "artifact_unavailable": 1, "update_available": 1, "current": 1} {
+		if got[key] != want {
+			t.Fatalf("summary[%s] = %d, want %d; all=%+v", key, got[key], want, got)
+		}
+	}
+}
+
+func TestServerUpgradeOperationAPIStartsAndCanBeQueried(t *testing.T) {
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]githubrelease.Release{{ID: 11, TagName: "server-v0.6.15", Assets: apiTestReleaseAssets(githubrelease.ComponentServer)}})
+	}))
+	defer mockGitHub.Close()
+	client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: mockGitHub.URL})
+	status, err := versionstatus.NewService(client, versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "versions.json")}, "v0.6.14", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := status.Refresh(context.Background(), githubrelease.ComponentServer, true); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := serverupgrade.NewOperationManager(filepath.Join(t.TempDir(), "server-upgrades.json"), "v0.6.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		Token: "admin-token", VersionStatus: status, ServerUpgradeOperations: manager,
+		ServerUpgradeRunner: func(context.Context, string) error { return nil },
+	}
+	h := s.Handler()
+	req := httptest.NewRequest("POST", "/api/v2/system/server-upgrades", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d: %s", w.Code, w.Body.String())
+	}
+	var started serverupgrade.Operation
+	if err := json.NewDecoder(w.Body).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		get := httptest.NewRequest("GET", "/api/v2/system/server-upgrades/"+started.ID, nil)
+		get.Header.Set("Authorization", "Bearer admin-token")
+		got := httptest.NewRecorder()
+		h.ServeHTTP(got, get)
+		var operation serverupgrade.Operation
+		_ = json.NewDecoder(got.Body).Decode(&operation)
+		if operation.Status == serverupgrade.OperationRestarting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation did not converge: %s", got.Body.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAgentBatchV2RejectsCallerControlledArtifactFields(t *testing.T) {
+	s := &Server{Token: "admin-token"}
+	h := s.Handler()
+	for _, forbidden := range []string{"target_version", "url", "sha256"} {
+		body := fmt.Sprintf(`{"snapshot_id":"agent:1:1","device_ids":["dev-1"],%q:"attacker-value"}`, forbidden)
+		req := httptest.NewRequest("POST", "/api/v2/devices/upgrade-batch", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer admin-token")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("field %s status = %d, want 400: %s", forbidden, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestAgentBatchV2DispatchesFrozenReleasePerDevice(t *testing.T) {
+	rawHash := strings.Repeat("a", 64)
+	mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/RokiLai/home-agent/releases" {
+			_ = json.NewEncoder(w).Encode([]githubrelease.Release{{ID: 12, TagName: "agent-v0.7.0", Assets: apiTestReleaseAssets(githubrelease.ComponentAgent)}})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/homeagent-agent-linux-arm64.sha256") {
+			_, _ = fmt.Fprintf(w, "%s  homeagent-agent-linux-arm64\n", rawHash)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockGitHub.Close()
+	client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: mockGitHub.URL, DownloadBaseURL: mockGitHub.URL})
+	status, err := versionstatus.NewService(client, versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "versions.json")}, "v0.6.14", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := status.Refresh(context.Background(), githubrelease.ComponentAgent, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if _, err := reg.Save(device.Device{ID: "router", Hostname: "router", AgentVersion: "v0.6.14", OS: "linux", Arch: "arm64", SSHUser: "root", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"}); err != nil {
+		t.Fatal(err)
+	}
+	b := broker.New()
+	events, unsubscribe := b.Subscribe("router")
+	defer unsubscribe()
+	commandRepo, _ := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	s := &Server{Token: "admin-token", Registry: reg, Broker: b, Commands: command.NewService(commandRepo, nil), UpgradePlans: upgradeplan.NewService(), VersionStatus: status, GitHubReleaseClient: client, UpgradeSource: "github"}
+	h := s.Handler()
+	body := fmt.Sprintf(`{"snapshot_id":%q,"device_ids":["router"]}`, snapshot.SnapshotID)
+	req := httptest.NewRequest("POST", "/api/v2/devices/upgrade-batch", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		OverallStatus string `json:"overall_status"`
+		DeviceResults []struct {
+			Result string `json:"result"`
+			PlanID string `json:"plan_id"`
+		} `json:"device_results"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.OverallStatus != "all_dispatched" || len(response.DeviceResults) != 1 || response.DeviceResults[0].Result != "dispatched" || response.DeviceResults[0].PlanID == "" {
+		t.Fatalf("unexpected batch response: %+v", response)
+	}
+	select {
+	case event := <-events:
+		if !strings.Contains(event.Data, `"release_tag":"agent-v0.7.0"`) || !strings.Contains(event.Data, `"asset_id":`) {
+			t.Fatalf("event does not freeze release identity: %s", event.Data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upgrade event was not dispatched")
 	}
 }
 

@@ -7,43 +7,36 @@ import (
 )
 
 func TestDefaultVersionHasSingleSource(t *testing.T) {
-	if defaultVersion != "v0.6.13" {
-		t.Fatalf("defaultVersion = %q, want v0.6.13", defaultVersion)
+	if defaultServerVersion != "v0.6.14" || defaultAgentVersion != "v0.6.14" {
+		t.Fatalf("defaults = %q/%q, want v0.6.14/v0.6.14", defaultServerVersion, defaultAgentVersion)
 	}
-	if Version != defaultVersion {
-		t.Fatalf("Version = %q, want defaultVersion %q", Version, defaultVersion)
+	if ServerVersion != defaultServerVersion || AgentVersion != defaultAgentVersion {
+		t.Fatalf("injected versions = %q/%q, want defaults", ServerVersion, AgentVersion)
 	}
 
 	source, err := os.ReadFile("version.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(string(source), `"v0.6.13"`); count != 1 {
-		t.Fatalf("version.go contains %d default version literals, want 1", count)
+	if count := strings.Count(string(source), `"v0.6.14"`); count != 2 {
+		t.Fatalf("version.go contains %d component version literals, want 2", count)
 	}
 }
 
-func TestGet(t *testing.T) {
-	original := Version
-	t.Cleanup(func() { Version = original })
+func TestComponentVersionsAreIndependent(t *testing.T) {
+	originalServer, originalAgent := ServerVersion, AgentVersion
+	t.Cleanup(func() { ServerVersion, AgentVersion = originalServer, originalAgent })
 
-	tests := []struct {
-		name  string
-		value string
-		want  string
-	}{
-		{name: "injected", value: "v1.2.3", want: "v1.2.3"},
-		{name: "injected with whitespace", value: "  v1.2.3\t", want: "v1.2.3"},
-		{name: "empty", value: "", want: defaultVersion},
-		{name: "whitespace", value: " \t\n", want: defaultVersion},
+	ServerVersion = " v1.2.3 "
+	AgentVersion = "v9.8.7"
+	if got := GetServer(); got != "v1.2.3" {
+		t.Fatalf("GetServer() = %q", got)
 	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			Version = test.value
-			if got := Get(); got != test.want {
-				t.Fatalf("Get() = %q, want %q", got, test.want)
-			}
-		})
+	if got := GetAgent(); got != "v9.8.7" {
+		t.Fatalf("GetAgent() = %q", got)
+	}
+	ServerVersion, AgentVersion = "", " \t"
+	if GetServer() != defaultServerVersion || GetAgent() != defaultAgentVersion {
+		t.Fatal("empty injected versions must use component defaults")
 	}
 }

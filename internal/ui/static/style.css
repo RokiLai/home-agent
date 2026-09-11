@@ -2464,3 +2464,43 @@ body.sidebar-open {
 .hidden-viewer {
   display: none !important;
 }
+.version-status-form {
+  display: grid;
+  gap: 18px;
+}
+
+.version-channel {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.version-channel h4 {
+  margin: 0 0 12px;
+}
+
+.version-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  .version-detail {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .version-actions .btn {
+    width: 100%;
+  }
+}

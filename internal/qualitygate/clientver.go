@@ -292,12 +292,17 @@ var (
 	versionLiteralRegex      = regexp.MustCompile(`(?m)^\s*var\s+Version\s*=\s*"([^"]+)"\s*$`)
 	fallbackVersionRegex     = regexp.MustCompile(`(?m)^\s*return\s+"(v[^"]+)"\s*$`)
 	defaultVersionRegex      = regexp.MustCompile(`(?m)^\s*const\s+defaultVersion\s*=\s*"([^"]+)"\s*$`)
+	defaultAgentVersionRegex = regexp.MustCompile(`(?m)^\s*const\s+defaultAgentVersion\s*=\s*"([^"]+)"\s*$`)
 	versionDefaultRefRegex   = regexp.MustCompile(`(?m)^\s*var\s+Version\s*=\s*defaultVersion\s*$`)
 	fallbackDefaultRefRegex  = regexp.MustCompile(`(?m)^\s*return\s+defaultVersion\s*$`)
 	semanticVersionTextRegex = regexp.MustCompile(`v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)`)
 )
 
 func extractVersionLiteral(content string) (string, error) {
+	agentDefaults := defaultAgentVersionRegex.FindAllStringSubmatch(content, -1)
+	if len(agentDefaults) == 1 {
+		return agentDefaults[0][1], nil
+	}
 	legacyDefaults := versionLiteralRegex.FindAllStringSubmatch(content, -1)
 	legacyFallbacks := fallbackVersionRegex.FindAllStringSubmatch(content, -1)
 	singleDefaults := defaultVersionRegex.FindAllStringSubmatch(content, -1)

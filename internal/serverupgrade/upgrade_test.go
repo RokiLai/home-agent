@@ -20,7 +20,7 @@ import (
 
 func TestServerUpgrade_AlreadyUpToDate(t *testing.T) {
 	opts := Options{
-		TargetVersion: version.Get(),
+		TargetVersion: version.GetServer(),
 		Force:         false,
 	}
 	res, err := PerformServerSelfUpgrade(context.Background(), opts)
@@ -30,8 +30,44 @@ func TestServerUpgrade_AlreadyUpToDate(t *testing.T) {
 	if res.Updated {
 		t.Fatal("expected updated=false, got true")
 	}
-	if res.TargetVersion != version.Get() {
-		t.Fatalf("expected target %s, got %s", version.Get(), res.TargetVersion)
+	if res.TargetVersion != version.GetServer() {
+		t.Fatalf("expected target %s, got %s", version.GetServer(), res.TargetVersion)
+	}
+}
+
+func TestServerUpgradeResolvesOnlyServerChannel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell candidate is Unix-only")
+	}
+	tempDir := t.TempDir()
+	origExe := filepath.Join(tempDir, "homeagent-server")
+	if err := os.WriteFile(origExe, []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := []byte("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'homeagent-server v9.0.0'; fi\n")
+	sum := sha256.Sum256(candidate)
+	digest := hex.EncodeToString(sum[:])
+	serverAsset := fmt.Sprintf("homeagent-server-%s-%s", runtime.GOOS, runtime.GOARCH)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/RokiLai/home-agent/releases":
+			_, _ = fmt.Fprintf(w, `[{"id":1,"tag_name":"agent-v99.0.0","draft":false,"prerelease":false},{"id":2,"tag_name":"server-v9.0.0","draft":false,"prerelease":false}]`)
+		case "/RokiLai/home-agent/releases/download/server-v9.0.0/" + serverAsset:
+			_, _ = w.Write(candidate)
+		case "/RokiLai/home-agent/releases/download/server-v9.0.0/" + serverAsset + ".sha256":
+			_, _ = fmt.Fprintf(w, "%s  %s\n", digest, serverAsset)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: ts.URL, DownloadBaseURL: ts.URL})
+	result, err := PerformServerSelfUpgrade(context.Background(), Options{ExecutablePath: origExe, Client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetVersion != "v9.0.0" {
+		t.Fatalf("target = %s, want server channel v9.0.0", result.TargetVersion)
 	}
 }
 

@@ -11,12 +11,125 @@ export function initSettingsForm() {
 
   initServerNetworkEvents();
   loadServerNetworkSettings();
+  initVersionStatusEvents();
+  loadVersionStatus();
 
   window.addEventListener('hashchange', () => {
     if (window.location.hash === '#/settings') {
       loadServerNetworkSettings();
+      loadVersionStatus();
     }
   });
+}
+
+function versionStateText(channel) {
+  if (!channel || channel.status === 'unknown') return '尚无可信结果';
+  if (channel.status === 'checking') return '检查中';
+  if (channel.status === 'stale') return `结果已过期${channel.error_message ? `：${channel.error_message}` : ''}`;
+  if (channel.status === 'error') return `检查失败${channel.error_message ? `：${channel.error_message}` : ''}`;
+  if (channel.update_state === 'update_available') return '发现新版本';
+  if (channel.update_state === 'current') return '已是最新';
+  return 'Release 可用';
+}
+
+function checkedAtText(value) {
+  return value ? new Date(value).toLocaleString() : '-';
+}
+
+export function renderVersionStatus(data) {
+  const server = data?.server || {};
+  const agent = data?.agent || {};
+  const setText = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  setText('serverCurrentVersion', server.current_version || '未知');
+  setText('serverLatestVersion', server.latest_version || '未知');
+  setText('serverVersionState', versionStateText(server));
+  setText('serverVersionCheckedAt', checkedAtText(server.checked_at));
+  setText('agentLatestVersion', agent.latest_version || '未知');
+  setText('agentVersionState', versionStateText(agent));
+  setText('agentVersionCheckedAt', checkedAtText(agent.checked_at));
+  const summary = agent.device_summary || {};
+  setText('agentUpdateSummary', `可升级 ${summary.update_available || 0}，离线 ${summary.offline || 0}，制品不可用 ${summary.artifact_unavailable || 0}`);
+  setText('agentBatchVersionSummary', agent.latest_version ? `Agent ${agent.latest_version} · 可升级 ${summary.update_available || 0}` : 'Agent 版本不可用');
+
+  const upgradeBtn = document.getElementById('serverUpgradeBtn');
+  if (upgradeBtn) {
+    upgradeBtn.disabled = server.update_state !== 'update_available' || server.status !== 'available' || server.upgrade_supported !== true;
+    upgradeBtn.title = server.upgrade_supported === true ? '' : '尚未安装独立恢复监督器，服务端自升级保持禁用';
+  }
+  const releaseLink = document.getElementById('serverReleaseLink');
+  if (releaseLink) {
+    releaseLink.hidden = !server.release_url;
+    releaseLink.href = server.release_url || '#';
+  }
+}
+
+export async function loadVersionStatus(force = false) {
+  const refreshBtn = document.getElementById('versionRefreshBtn');
+  if (!refreshBtn) return;
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = '检查中...';
+  try {
+    const suffix = force ? '?refresh=true' : '';
+    const res = await apiFetch(`${state.serverHost}/api/v2/system/version-status${suffix}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderVersionStatus(await res.json());
+  } catch (err) {
+    renderVersionStatus({ server: { status: 'error', error_message: err.message }, agent: { status: 'error', error_message: err.message } });
+  } finally {
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '检查更新';
+  }
+}
+
+export async function monitorServerUpgradeOperation(operationId, options = {}) {
+  const fetchOperation = options.fetchOperation || (async () => {
+    const res = await apiFetch(`${state.serverHost}/api/v2/system/server-upgrades/${encodeURIComponent(operationId)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  });
+  const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const timeoutMs = options.timeoutMs || 90000;
+  const startedAt = Date.now();
+  let lastError;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const operation = await fetchOperation();
+      if (['succeeded', 'failed', 'rolled_back'].includes(operation.status)) return operation;
+    } catch (err) {
+      lastError = err;
+    }
+    await sleep(1000);
+  }
+  throw lastError || new Error('服务端升级状态查询超时');
+}
+
+function initVersionStatusEvents() {
+  const refreshBtn = document.getElementById('versionRefreshBtn');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => loadVersionStatus(true));
+  const upgradeBtn = document.getElementById('serverUpgradeBtn');
+  if (upgradeBtn) {
+    upgradeBtn.addEventListener('click', async () => {
+      if (!window.confirm('确认下载并替换 Server 二进制？服务将重启。')) return;
+      if (!window.confirm('再次确认：重启期间控制台会暂时断开。')) return;
+      upgradeBtn.disabled = true;
+      try {
+        const res = await apiFetch(`${state.serverHost}/api/v2/system/server-upgrades`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
+        const started = await res.json();
+        showToast('服务端升级已启动，正在等待重启验证');
+        const result = await monitorServerUpgradeOperation(started.operation_id);
+        if (result.status !== 'succeeded') throw new Error(result.error_message || result.status);
+        showToast(`服务端已升级至 ${result.target_version}`);
+        await loadVersionStatus(true);
+      } catch (err) {
+        showToast(`服务端升级失败：${err.message}`, 'error');
+        upgradeBtn.disabled = false;
+      }
+    });
+  }
 }
 
 function initServerNetworkEvents() {

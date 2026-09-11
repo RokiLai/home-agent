@@ -8,11 +8,13 @@ import (
 	"homeagent/internal/command"
 	"homeagent/internal/ddns"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/githubrelease"
 	"homeagent/internal/health"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/version"
+	"homeagent/internal/versionstatus"
 )
 
 type serverHealthAdapters struct {
@@ -24,6 +26,7 @@ type serverHealthAdapters struct {
 	prefixState *prefixstate.Service
 	ddnsSvc     *ddns.Service
 	cmdRepo     command.Repository
+	versionStatus *versionstatus.Service
 }
 
 func (a *serverHealthAdapters) GetDeviceFacts(ctx context.Context, deviceID string) (*health.DeviceFactSummary, error) {
@@ -152,7 +155,14 @@ func (a *serverHealthAdapters) GetLatestCommand(ctx context.Context, deviceID st
 }
 
 func (a *serverHealthAdapters) GetVersionPolicy(ctx context.Context) (string, string, error) {
-	return version.Get(), "v0.4.0", nil
+	if a.versionStatus == nil {
+		return version.GetServer(), "", nil
+	}
+	snapshot := a.versionStatus.Snapshot(githubrelease.ComponentAgent)
+	if snapshot.Status != versionstatus.StatusAvailable && snapshot.Status != versionstatus.StatusStale {
+		return version.GetServer(), "", nil
+	}
+	return version.GetServer(), snapshot.LatestVersion, nil
 }
 
 type serverNameResolver struct {
@@ -175,4 +185,3 @@ func (r *serverNameResolver) GetDeviceName(ctx context.Context, deviceID string)
 	}
 	return deviceID
 }
-

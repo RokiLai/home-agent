@@ -45,7 +45,7 @@ type Result struct {
 
 // PerformServerSelfUpgrade 执行服务端就地自升级。
 func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error) {
-	currentVer := version.Get()
+	currentVer := version.GetServer()
 
 	ghClient := opts.Client
 	if ghClient == nil {
@@ -57,12 +57,22 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 	}
 
 	targetVer := strings.TrimSpace(opts.TargetVersion)
+	releaseTag := ""
 	if targetVer == "" {
-		rel, err := ghClient.GetLatestRelease(ctx, true)
+		rel, err := ghClient.GetLatestComponentRelease(ctx, githubrelease.ComponentServer, true)
 		if err != nil {
-			return Result{}, fmt.Errorf("query latest release: %w", err)
+			return Result{}, fmt.Errorf("query latest server release: %w", err)
 		}
-		targetVer = rel.TagName
+		targetVer, releaseTag = rel.Version, rel.TagName
+	} else {
+		if strings.HasPrefix(targetVer, "server-v") {
+			releaseTag = targetVer
+			targetVer = strings.TrimPrefix(targetVer, "server-")
+		} else if strings.HasPrefix(targetVer, "v") {
+			releaseTag = "server-" + targetVer
+		} else {
+			return Result{}, fmt.Errorf("target version must use vMAJOR.MINOR.PATCH")
+		}
 	}
 
 	if !opts.Force && currentVer == targetVer {
@@ -99,11 +109,11 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 	expectedSHA := strings.ToLower(strings.TrimSpace(opts.SHA256))
 
 	if downloadURL == "" {
-		downloadURL = ghClient.BuildAssetDownloadURL(targetVer, binaryName)
+		downloadURL = ghClient.BuildAssetDownloadURL(releaseTag, binaryName)
 	}
 	if expectedSHA == "" {
 		var err error
-		expectedSHA, err = ghClient.FetchAssetSHA256(ctx, targetVer, binaryName)
+		expectedSHA, err = ghClient.FetchAssetSHA256(ctx, releaseTag, binaryName)
 		if err != nil {
 			return Result{}, fmt.Errorf("resolve sha256 for %s: %w", binaryName, err)
 		}
@@ -188,8 +198,8 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 	bakPath := exePath + ".bak"
 	_ = os.Remove(bakPath)
 	if err := copyFile(exePath, bakPath); err != nil {
-		// 备份失败不阻断，继续尝试原子替换
 		_ = os.Remove(bakPath)
+		return Result{}, fmt.Errorf("create recoverable server backup: %w", err)
 	}
 
 	// 7. 原子替换自身可执行文件

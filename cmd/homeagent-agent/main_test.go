@@ -359,7 +359,6 @@ func sha256sumBytes(b []byte) [32]byte {
 	return sha256.Sum256(b)
 }
 
-
 func TestInterfaceClassification(t *testing.T) {
 	virtuals := []string{"utun0", "bridge0", "docker0", "veth123", "tailscale0", "virbr0", "cni0", "br-deadbeef", "br-miot"}
 	for _, name := range virtuals {
@@ -563,7 +562,7 @@ func TestStartDeviceFactsReporterSendsInitialSnapshot(t *testing.T) {
 
 	select {
 	case facts := <-received:
-		if facts.Hostname == "" || facts.AgentVersion != version.Get() || facts.OS != runtime.GOOS || len(facts.ControlProtocols) == 0 || facts.ControlProtocols[0] != 1 {
+		if facts.Hostname == "" || facts.AgentVersion != version.GetAgent() || facts.OS != runtime.GOOS || len(facts.ControlProtocols) == 0 || facts.ControlProtocols[0] != 1 {
 			t.Fatalf("unexpected initial facts: %+v", facts)
 		}
 	case <-time.After(5 * time.Second):

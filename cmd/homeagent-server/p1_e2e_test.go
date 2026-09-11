@@ -540,7 +540,7 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 	if testing.Short() {
 		t.Skip("skipping real binary upgrade test in short mode")
 	}
-	candidateVersion := version.Get()
+	candidateVersion := version.GetServer()
 
 	tempDir := t.TempDir()
 	srcDir := filepath.Join(tempDir, baselineVersion+"-src")
