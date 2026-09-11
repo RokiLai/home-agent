@@ -26,17 +26,18 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Read bridge component versions
+      - name: Read component versions
         id: version
         shell: bash
         run: |
           server_version=$(sed -nE 's/^const defaultServerVersion = "([^"]+)"/\1/p' internal/version/version.go)
           agent_version=$(sed -nE 's/^const defaultAgentVersion = "([^"]+)"/\1/p' internal/version/version.go)
-          if [[ -z "$server_version" || -z "$agent_version" || "$server_version" != "$agent_version" ]]; then
-            echo "Bridge release requires equal non-empty Server and Agent versions" >&2
+          if [[ -z "$server_version" || -z "$agent_version" ]]; then
+            echo "Server and Agent versions must be non-empty" >&2
             exit 1
           fi
-          echo "version=${server_version}" >> "$GITHUB_OUTPUT"
+          echo "server_version=${server_version}" >> "$GITHUB_OUTPUT"
+          echo "agent_version=${agent_version}" >> "$GITHUB_OUTPUT"
 
       - name: Run full regression tests
         run: go test -race -p 1 ./...
@@ -44,7 +45,8 @@ jobs:
       - name: Build release assets
         shell: bash
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          SERVER_VERSION: ${{ steps.version.outputs.server_version }}
+          AGENT_VERSION: ${{ steps.version.outputs.agent_version }}
         run: |
           mkdir -p dist
           while read -r component goos goarch output; do
@@ -53,9 +55,10 @@ jobs:
             if [[ "$component" == "agent" ]]; then
               version_var="AgentVersion"
             fi
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-              go build -trimpath \
-              -ldflags "-s -w -X homeagent/internal/version.${version_var}=${VERSION}" \
+            version="$SERVER_VERSION"
+            if [[ "$component" == "agent" ]]; then version="$AGENT_VERSION"; fi
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-s -w -X homeagent/internal/version.${version_var}=${version}" \
               -o "dist/${output}" "$package"
             (
               cd dist
@@ -80,15 +83,28 @@ jobs:
           agent windows arm64 homeagent-agent-windows-arm64.exe
           TARGETS
 
-      - name: Create GitHub Release
+      - name: Create server GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.server_version }}
         run: |
-          gh release create "$VERSION" dist/* \
+          gh release create "server-${VERSION}" dist/homeagent-server-* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$MERGE_SHA" \
-            --title "$VERSION" \
+            --title "Server ${VERSION}" \
+            --generate-notes
+
+      - name: Create agent GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          VERSION: ${{ steps.version.outputs.agent_version }}
+        run: |
+          gh release create "agent-${VERSION}" dist/homeagent-agent-* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MERGE_SHA" \
+            --title "Agent ${VERSION}" \
             --generate-notes
