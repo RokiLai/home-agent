@@ -13,7 +13,6 @@ import (
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
 	"homeagent/internal/sshsync"
-	"homeagent/internal/version"
 	"homeagent/internal/versionstatus"
 )
 
@@ -156,13 +155,13 @@ func (a *serverHealthAdapters) GetLatestCommand(ctx context.Context, deviceID st
 
 func (a *serverHealthAdapters) GetVersionPolicy(ctx context.Context) (string, string, error) {
 	if a.versionStatus == nil {
-		return version.GetServer(), "", nil
+		return "", "", nil
 	}
 	snapshot := a.versionStatus.Snapshot(githubrelease.ComponentAgent)
 	if snapshot.Status != versionstatus.StatusAvailable && snapshot.Status != versionstatus.StatusStale {
-		return version.GetServer(), "", nil
+		return "", "", nil
 	}
-	return version.GetServer(), snapshot.LatestVersion, nil
+	return snapshot.LatestVersion, "", nil
 }
 
 type serverNameResolver struct {

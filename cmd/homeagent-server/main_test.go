@@ -1,14 +1,76 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"homeagent/internal/device"
+	"homeagent/internal/githubrelease"
+	"homeagent/internal/versionstatus"
 )
+
+type versionPolicyReleaseFetcher struct {
+	release *githubrelease.Release
+}
+
+func (f versionPolicyReleaseFetcher) GetLatestComponentRelease(_ context.Context, component githubrelease.Component, _ bool) (*githubrelease.Release, error) {
+	if component != githubrelease.ComponentAgent {
+		return nil, nil
+	}
+	return f.release, nil
+}
+
+func TestServerHealthAdaptersUseAgentChannelForRecommendedVersion(t *testing.T) {
+	release := &githubrelease.Release{
+		ID:      15,
+		TagName: "agent-v0.6.15",
+		Version: "v0.6.15",
+		HTMLURL: "https://example.test/releases/agent-v0.6.15",
+	}
+	for i, name := range githubrelease.RequiredAssetNames(githubrelease.ComponentAgent) {
+		release.Assets = append(release.Assets, githubrelease.Asset{
+			ID:                 int64(i + 1),
+			Name:               name,
+			Size:               1,
+			BrowserDownloadURL: "https://example.test/" + name,
+		})
+	}
+	versionStatus, err := versionstatus.NewService(
+		versionPolicyReleaseFetcher{release: release},
+		versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "version-status.json")},
+		"v0.6.17",
+		time.Now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := versionStatus.Refresh(context.Background(), githubrelease.ComponentAgent, true); err != nil {
+		t.Fatal(err)
+	}
+
+	recommended, minimum, err := (&serverHealthAdapters{versionStatus: versionStatus}).GetVersionPolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recommended != "v0.6.15" || minimum != "" {
+		t.Fatalf("agent policy must not use server version: recommended=%q minimum=%q", recommended, minimum)
+	}
+}
+
+func TestServerHealthAdaptersDoNotUseServerVersionWithoutAgentSnapshot(t *testing.T) {
+	recommended, minimum, err := (&serverHealthAdapters{}).GetVersionPolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recommended != "" || minimum != "" {
+		t.Fatalf("missing agent snapshot must not fall back to server version: recommended=%q minimum=%q", recommended, minimum)
+	}
+}
 
 func TestParseConfig(t *testing.T) {
 	t.Setenv("HOMEAGENT_JOIN_TOKEN", "secret")
