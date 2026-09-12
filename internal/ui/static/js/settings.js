@@ -2,20 +2,31 @@ import { state, sanitizeHost } from './state.js';
 import { showToast, addLog } from './utils.js';
 import { updateInstallCommand } from './onboarding.js';
 import { apiFetch } from './api.js';
+import { fetchUsersList } from './users.js';
+import { fetchGitHubStatus } from './github.js';
 
 export function switchSettingsSection(sectionName) {
   const validSections = ['general', 'version', 'network', 'users', 'github', 'about'];
   const isAll = !sectionName || sectionName === 'all';
-  const section = isAll ? 'all' : (validSections.includes(sectionName) ? sectionName : 'general');
+  let section = isAll ? 'all' : (validSections.includes(sectionName) ? sectionName : 'general');
+
+  // RBAC fallback protection: non-owner cannot switch to users section
+  if (section === 'users' && state.currentUser && state.currentUser.role !== 'owner') {
+    section = 'general';
+  }
   state.currentSettingsSection = section;
 
   // Toggle section visibility
   const sections = document.querySelectorAll('.settings-section');
   sections.forEach(sec => {
-    if (isAll) {
-      sec.classList.add('active');
+    const secSection = (sec.dataset && sec.dataset.section) || (sec.id ? sec.id.replace('settingsSec', '').toLowerCase() : '');
+    if (section === 'all') {
+      if (secSection === 'users' && state.currentUser && state.currentUser.role !== 'owner') {
+        sec.classList.remove('active');
+      } else {
+        sec.classList.add('active');
+      }
     } else {
-      const secSection = (sec.dataset && sec.dataset.section) || (sec.id ? sec.id.replace('settingsSec', '').toLowerCase() : '');
       if (secSection === section) {
         sec.classList.add('active');
       } else {
@@ -28,7 +39,7 @@ export function switchSettingsSection(sectionName) {
   const tabs = document.querySelectorAll('.settings-tab');
   tabs.forEach(tab => {
     const tabSection = (tab.dataset && tab.dataset.section) || '';
-    if (isAll) {
+    if (section === 'all') {
       if (tabSection === 'all') {
         tab.classList.add('active');
       } else {
@@ -44,11 +55,17 @@ export function switchSettingsSection(sectionName) {
   });
 
   // On demand data loading
-  if (section === 'version' || isAll) {
+  if (section === 'version' || section === 'all') {
     loadVersionStatus();
   }
-  if (section === 'network' || isAll) {
+  if (section === 'network' || section === 'all') {
     loadServerNetworkSettings();
+  }
+  if ((section === 'users' || section === 'all') && state.currentUser && state.currentUser.role === 'owner') {
+    fetchUsersList();
+  }
+  if (section === 'github' || section === 'all') {
+    fetchGitHubStatus();
   }
 }
 
@@ -62,13 +79,6 @@ export function initSettingsForm() {
   loadServerNetworkSettings();
   initVersionStatusEvents();
   loadVersionStatus();
-
-  window.addEventListener('hashchange', () => {
-    if (window.location.hash.startsWith('#/settings')) {
-      const parts = window.location.hash.replace(/^#\/?/, '').split('/');
-      switchSettingsSection(parts[1] || 'all');
-    }
-  });
 }
 
 function versionStateText(channel) {

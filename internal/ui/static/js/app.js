@@ -213,7 +213,7 @@ export async function init() {
     } else if (page === 'dashboard') {
       renderDashboardFocus();
     } else if (page === 'settings' && route) {
-      switchSettingsSection(route.section || 'general');
+      switchSettingsSection(route.section || 'all');
     }
   });
   bindEventListeners();
@@ -235,7 +235,7 @@ export async function init() {
       fetchDevices();
       fetchGitHubStatus();
       fetchCommands();
-      if (state.currentPage === 'users' && state.currentUser && state.currentUser.role === 'owner') {
+      if ((state.currentPage === 'users' || (state.currentPage === 'settings' && (state.currentSettingsSection === 'users' || state.currentSettingsSection === 'all'))) && state.currentUser && state.currentUser.role === 'owner') {
         fetchUsersList();
       }
     }

@@ -84,7 +84,8 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
     // Pages
     'pageDashboard', 'pageDevices', 'pageOnboarding', 'pageGithub', 'pageCommands', 'pageSettings',
     // Nav
-    'navDashboard', 'navDevices', 'navOnboarding', 'navGithub', 'navCommands', 'navSettings', 'navDeviceBadge',
+    'navDashboard', 'navDevices', 'navOnboarding', 'navCommands', 'navSettings', 'navDeviceBadge',
+    'settingsTabGithub', 'settingsTabUsers',
     // Sidebar
     'appSidebar', 'sidebarToggleBtn', 'sidebarCloseBtn', 'sidebarBackdrop', 'liveStatusText', 'sidebarTokenStatus',
     // Top Bar

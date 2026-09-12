@@ -53,10 +53,10 @@ test('RBAC: Owner role reveals user management navigation and renders user table
   const html = await readFile(new URL('../static/index.html', import.meta.url), 'utf8');
   const elements = parseElements(html);
 
-  const navUsers = elements.get('navUsers');
+  const settingsTabUsers = elements.get('settingsTabUsers');
   const adminRoleBadge = elements.get('adminRoleBadge');
   const usersTableBody = elements.get('usersTableBody');
-  assert.ok(navUsers, '#navUsers must exist in DOM');
+  assert.ok(settingsTabUsers, '#settingsTabUsers must exist in DOM');
   assert.ok(adminRoleBadge, '#adminRoleBadge must exist in DOM');
   assert.ok(usersTableBody, '#usersTableBody must exist in DOM');
 
@@ -100,7 +100,7 @@ test('RBAC: Owner role reveals user management navigation and renders user table
 
   const authOk = await checkAuthStatus();
   assert.equal(authOk, true);
-  assert.equal(navUsers.classList.contains('hidden'), false, 'navUsers must be visible for Owner');
+  assert.equal(settingsTabUsers.classList.contains('hidden'), false, 'settingsTabUsers must be visible for Owner');
   assert.match(adminRoleBadge.innerText, /Owner/i);
 
   await fetchUsersList();
@@ -114,7 +114,7 @@ test('RBAC: Viewer role hides user management navigation and restricts dangerous
   const html = await readFile(new URL('../static/index.html', import.meta.url), 'utf8');
   const elements = parseElements(html);
 
-  const navUsers = elements.get('navUsers');
+  const settingsTabUsers = elements.get('settingsTabUsers');
   const adminRoleBadge = elements.get('adminRoleBadge');
   const btnUpgradeAll = elements.get('btnUpgradeAll');
   const btnSyncAll = elements.get('btnSyncAll');
@@ -146,7 +146,7 @@ test('RBAC: Viewer role hides user management navigation and restricts dangerous
   const authOk = await checkAuthStatus();
   assert.equal(authOk, true);
 
-  assert.equal(navUsers.classList.contains('hidden'), true, 'navUsers must be hidden for Viewer');
+  assert.equal(settingsTabUsers.classList.contains('hidden'), true, 'settingsTabUsers must be hidden for Viewer');
   assert.match(adminRoleBadge.innerText, /Viewer/i);
 
   if (btnUpgradeAll) {

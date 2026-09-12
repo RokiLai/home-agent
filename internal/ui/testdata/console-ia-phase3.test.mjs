@@ -69,7 +69,7 @@ function createElement(initial = {}) {
 test('router parseRoute parses settings sections and resolves legacy routes (#/users, #/github)', async () => {
   const { parseRoute } = await import('../static/js/router.js');
 
-  assert.deepEqual(parseRoute('settings'), { page: 'settings', deviceId: null, section: null });
+  assert.deepEqual(parseRoute('settings'), { page: 'settings', deviceId: null, section: 'all' });
   assert.deepEqual(parseRoute('settings/general'), { page: 'settings', deviceId: null, section: 'general' });
   assert.deepEqual(parseRoute('settings/users'), { page: 'settings', deviceId: null, section: 'users' });
   assert.deepEqual(parseRoute('settings/github'), { page: 'settings', deviceId: null, section: 'github' });
@@ -80,9 +80,9 @@ test('router parseRoute parses settings sections and resolves legacy routes (#/u
   // Invalid settings section falls back to general
   assert.deepEqual(parseRoute('settings/unknown_section'), { page: 'settings', deviceId: null, section: 'general' });
 
-  // Legacy route backward compatibility: #/users and #/github
-  assert.deepEqual(parseRoute('users'), { page: 'users', deviceId: null, section: null });
-  assert.deepEqual(parseRoute('github'), { page: 'github', deviceId: null, section: null });
+  // Legacy route backward compatibility: #/users and #/github mapped to settings sub-sections
+  assert.deepEqual(parseRoute('users'), { page: 'settings', deviceId: null, section: 'users' });
+  assert.deepEqual(parseRoute('github'), { page: 'settings', deviceId: null, section: 'github' });
   assert.deepEqual(parseRoute('onboarding'), { page: 'onboarding', deviceId: null, section: null });
 });
 
@@ -134,17 +134,19 @@ test('switchPage activates settings parent navigation for users and github and s
   assert.equal(navSettings.classList.contains('active'), true);
   assert.equal(domNodes.get('pageSettings').classList.contains('active'), true);
 
-  // Test 2: Switch to users legacy page maps parent nav to settings
+  // Test 2: Switch to users legacy page maps parent nav to settings and coerces to settings
   switchPage('users');
-  assert.equal(state.currentPage, 'users');
+  assert.equal(state.currentPage, 'settings');
+  assert.equal(state.currentSettingsSection, 'users');
   assert.equal(navSettings.classList.contains('active'), true, 'Parent nav for users should highlight navSettings');
-  assert.equal(domNodes.get('pageUsers').classList.contains('active'), true);
+  assert.equal(domNodes.get('pageSettings').classList.contains('active'), true);
 
-  // Test 3: Switch to github legacy page maps parent nav to settings
+  // Test 3: Switch to github legacy page maps parent nav to settings and coerces to settings
   switchPage('github');
-  assert.equal(state.currentPage, 'github');
+  assert.equal(state.currentPage, 'settings');
+  assert.equal(state.currentSettingsSection, 'github');
   assert.equal(navSettings.classList.contains('active'), true, 'Parent nav for github should highlight navSettings');
-  assert.equal(domNodes.get('pageGithub').classList.contains('active'), true);
+  assert.equal(domNodes.get('pageSettings').classList.contains('active'), true);
 });
 
 test('settings section switching activates corresponding section and loads data', async () => {
