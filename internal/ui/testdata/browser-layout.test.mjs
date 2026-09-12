@@ -325,7 +325,7 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
 
   const drawerTargets = [
     '#sidebarCloseBtn',
-    '#navDashboard', '#navDevices', '#navOnboarding', '#navGithub', '#navCommands', '#navSettings'
+    '#navDashboard', '#navDevices', '#navOnboarding', '#navCommands', '#navSettings'
   ];
 
   const modalTargets = [

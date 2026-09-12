@@ -153,12 +153,12 @@ test('router parses 4 primary navigations, backward-compatible redirects, and de
   assert.deepEqual(parseRoute('dashboard'), { page: 'dashboard', deviceId: null, section: null });
   assert.deepEqual(parseRoute('devices'), { page: 'devices', deviceId: null, section: null });
   assert.deepEqual(parseRoute('commands'), { page: 'commands', deviceId: null, section: null });
-  assert.deepEqual(parseRoute('settings'), { page: 'settings', deviceId: null, section: null });
+  assert.deepEqual(parseRoute('settings'), { page: 'settings', deviceId: null, section: 'all' });
 
   // 3. Backward compatible routes
   assert.deepEqual(parseRoute('onboarding'), { page: 'onboarding', deviceId: null, section: null });
-  assert.deepEqual(parseRoute('github'), { page: 'github', deviceId: null, section: null });
-  assert.deepEqual(parseRoute('users'), { page: 'users', deviceId: null, section: null });
+  assert.deepEqual(parseRoute('github'), { page: 'settings', deviceId: null, section: 'github' });
+  assert.deepEqual(parseRoute('users'), { page: 'settings', deviceId: null, section: 'users' });
 
   // 4. Device detail routes: #/devices/<deviceId>/<section>
   assert.deepEqual(parseRoute('devices/mac-book-1/overview'), {

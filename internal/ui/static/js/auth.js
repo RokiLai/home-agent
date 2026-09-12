@@ -34,13 +34,21 @@ export function updateRBACVisibility() {
   const isOwner = state.currentUser && state.currentUser.role === 'owner';
   const isViewer = state.currentUser && state.currentUser.role === 'viewer';
 
-  // 1. 用户管理导航项仅对 Owner 可见
+  // 1. 用户管理入口仅对 Owner 可见
   const navUsers = document.getElementById('navUsers');
   if (navUsers) {
     if (isOwner) {
       navUsers.classList.remove('hidden');
     } else {
       navUsers.classList.add('hidden');
+    }
+  }
+  const settingsTabUsers = document.getElementById('settingsTabUsers');
+  if (settingsTabUsers) {
+    if (isOwner) {
+      settingsTabUsers.classList.remove('hidden');
+    } else {
+      settingsTabUsers.classList.add('hidden');
     }
   }
 

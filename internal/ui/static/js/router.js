@@ -60,8 +60,16 @@ export function parseRoute(hashString) {
 
   if (root === 'settings') {
     const rawSection = parts[1];
-    const section = rawSection && validSettingsSections.has(rawSection) ? rawSection : (rawSection ? 'general' : null);
+    const section = rawSection && validSettingsSections.has(rawSection) ? rawSection : (rawSection ? 'general' : 'all');
     return { page: 'settings', deviceId: null, section };
+  }
+
+  if (root === 'users') {
+    return { page: 'settings', deviceId: null, section: 'users' };
+  }
+
+  if (root === 'github') {
+    return { page: 'settings', deviceId: null, section: 'github' };
   }
 
   if (pageMeta[root]) {
@@ -85,6 +93,15 @@ export function setupRouter(onRouteChanged) {
 }
 
 export function switchPage(pageName, routeParams = {}) {
+  // Legacy & direct routes coercion: 'users' and 'github' are unified into settings
+  if (pageName === 'users') {
+    pageName = 'settings';
+    routeParams = { ...routeParams, section: 'users' };
+  } else if (pageName === 'github') {
+    pageName = 'settings';
+    routeParams = { ...routeParams, section: 'github' };
+  }
+
   if (!pageMeta[pageName]) pageName = 'dashboard';
   state.currentPage = pageName;
   if (routeParams.deviceId) {
@@ -99,12 +116,10 @@ export function switchPage(pageName, routeParams = {}) {
   const currentPageTitle = document.getElementById('currentPageTitle');
   const currentPageDesc = document.getElementById('currentPageDesc');
 
-  // Determine active nav item: map deviceDetail -> devices, and users/github -> settings
+  // Determine active nav item: map deviceDetail -> devices
   let activeNavPage = pageName;
   if (pageName === 'deviceDetail') {
     activeNavPage = 'devices';
-  } else if (pageName === 'users' || pageName === 'github') {
-    activeNavPage = 'settings';
   }
 
   // Update Nav active classes
