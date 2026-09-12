@@ -21,18 +21,33 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"types: [closed]",
 		"github.event.pull_request.merged == true",
 		"github.event.pull_request.head.ref == 'dev'",
-		"permissions:\n  contents: write",
+		"permissions:\n  contents: read",
 		"github.event.pull_request.merge_commit_sha",
+		"github.event.pull_request.base.sha",
 		"actions/checkout@v4",
+		"fetch-depth: 0",
 		"actions/setup-go@v5",
-		"go test -race -p 1 ./...",
+		"cache-dependency-path: go.sum",
+		"go test -count=1 -race ./...",
+		"actions/upload-artifact@v4",
+		"actions/download-artifact@v4",
+		"permissions:\n      contents: write",
 		"CGO_ENABLED=0",
-		"homeagent/internal/version.${version_var}=${version}",
+		"homeagent/internal/version.ServerVersion=${SERVER_VERSION}",
+		"homeagent/internal/version.AgentVersion=${AGENT_VERSION}",
 		"sha256sum",
 		"gh release create",
 		"--generate-notes",
+		"--draft",
+		"gh release download",
+		"gh release edit",
+		"--draft=false",
 		"dist/homeagent-server-*",
 		"dist/homeagent-agent-*",
+		"steps.version.outputs.server_changed == 'true'",
+		"steps.version.outputs.agent_changed == 'true'",
+		"cancel-in-progress: false",
+		"timeout-minutes:",
 	}
 	for _, fragment := range required {
 		if !strings.Contains(workflow, fragment) {
@@ -67,7 +82,6 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	forbidden := []string{
 		"quality-gate.sh",
 		"gh release delete",
-		"gh release edit",
 		"docker",
 		"deploy",
 	}
@@ -75,6 +89,12 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		if strings.Contains(strings.ToLower(workflow), fragment) {
 			t.Errorf("release workflow contains forbidden extra action %q", fragment)
 		}
+	}
+	if strings.Contains(workflow, "go test -race -p 1") || strings.Contains(workflow, "go test -count=1 -race -p 1") {
+		t.Error("release workflow must not force package-level test serialization with -p 1")
+	}
+	if got := strings.Count(workflow, "go test -count=1 -race ./..."); got != 1 {
+		t.Errorf("full race regression must run exactly once, got %d", got)
 	}
 }
 
@@ -92,6 +112,10 @@ func TestReleaseWorkflowVersionExtraction(t *testing.T) {
 		"defaultServerVersion",
 		"defaultAgentVersion",
 		"Server and Agent versions must be non-empty",
+		"base_server_version",
+		"base_agent_version",
+		`echo "server_changed=${server_changed}" >> "$GITHUB_OUTPUT"`,
+		`echo "agent_changed=${agent_changed}" >> "$GITHUB_OUTPUT"`,
 	}
 	for _, frag := range requiredFragments {
 		if !strings.Contains(workflow, frag) {
@@ -116,6 +140,76 @@ func TestReleaseWorkflowVersionExtraction(t *testing.T) {
 	if bad := extractVersionFromContent(corrupted); bad != "" {
 		t.Fatalf("expected empty version for corrupted content, got %q", bad)
 	}
+}
+
+func TestReleaseWorkflowUsesSharedRegressionAndIndependentComponentJobs(t *testing.T) {
+	path := filepath.Join("..", "..", ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(raw)
+
+	for _, job := range []struct {
+		name     string
+		required []string
+	}{
+		{"test:", []string{"needs: prepare", "go test -count=1 -race ./..."}},
+		{"build-server:", []string{"needs: prepare", "needs.prepare.outputs.server_changed == 'true'", "actions/upload-artifact@v4"}},
+		{"build-agent:", []string{"needs: prepare", "needs.prepare.outputs.agent_changed == 'true'", "actions/upload-artifact@v4"}},
+		{"release-server:", []string{"needs: [prepare, test, build-server]", "needs.test.result == 'success'", "needs.build-server.result == 'success'", "actions/download-artifact@v4"}},
+		{"release-agent:", []string{"needs: [prepare, test, build-agent]", "needs.test.result == 'success'", "needs.build-agent.result == 'success'", "actions/download-artifact@v4"}},
+	} {
+		rest := releaseWorkflowJobBlock(workflow, job.name)
+		if rest == "" {
+			t.Errorf("release workflow missing job %q", job.name)
+			continue
+		}
+		for _, fragment := range job.required {
+			if !strings.Contains(rest, fragment) {
+				t.Errorf("job %q missing contract fragment %q", job.name, fragment)
+			}
+		}
+	}
+}
+
+func TestReleaseWorkflowChecksTagConflictsBeforeExpensiveJobs(t *testing.T) {
+	path := filepath.Join("..", "..", ".github", "workflows", "release.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	workflow := string(raw)
+
+	prepare := strings.Index(workflow, "\n  prepare:")
+	testJob := strings.Index(workflow, "\n  test:")
+	if prepare < 0 || testJob < 0 || prepare >= testJob {
+		t.Fatal("prepare job with release preflight must precede the test job")
+	}
+	prepareBlock := workflow[prepare:testJob]
+	for _, fragment := range []string{"Check release tag conflicts", "server-${SERVER_VERSION}", "agent-${AGENT_VERSION}", "gh api -i", "/releases/tags/"} {
+		if !strings.Contains(prepareBlock, fragment) {
+			t.Errorf("prepare job missing early tag-conflict contract %q", fragment)
+		}
+	}
+}
+
+func releaseWorkflowJobBlock(workflow, jobName string) string {
+	lines := strings.Split(workflow, "\n")
+	start := -1
+	for index, line := range lines {
+		if line == "  "+jobName {
+			start = index
+			continue
+		}
+		if start >= 0 && strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.HasSuffix(line, ":") {
+			return strings.Join(lines[start:index], "\n")
+		}
+	}
+	if start >= 0 {
+		return strings.Join(lines[start:], "\n")
+	}
+	return ""
 }
 
 func extractVersionFromContent(content string) string {
