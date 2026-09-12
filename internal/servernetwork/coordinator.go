@@ -16,11 +16,14 @@ import (
 	"homeagent/internal/networkaddr"
 )
 
+var ErrConfigConflict = errors.New("config version conflict")
+
 // Config 定义服务端 IPv6 自更新协调器的配置项。
 type Config struct {
 	Enabled         bool
 	Interface       string
 	Records         []string
+	Version         int64
 	Interval        time.Duration
 	Debounce        time.Duration
 	MaxBackoff      time.Duration
@@ -35,6 +38,7 @@ type StatusView struct {
 	Records         []string     `json:"records"`
 	Status          RecordStatus `json:"status"`
 	CurrentAddress  string       `json:"current_address"`
+	ConfigVersion   int64        `json:"config_version"`
 	LastSuccessTime *time.Time   `json:"last_success_time,omitempty"`
 	LastError       string       `json:"last_error,omitempty"`
 }
@@ -47,11 +51,13 @@ type Coordinator struct {
 	store     StateStore
 	logger    *slog.Logger
 
-	mu      sync.Mutex
-	running bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	watcher *networkaddr.Watcher
+	mu               sync.Mutex
+	running          bool
+	stopCh           chan struct{}
+	doneCh           chan struct{}
+	watcher          *networkaddr.Watcher
+	pendingDetection *Detection
+	pendingSince     time.Time
 }
 
 // NewCoordinator 创建 Coordinator 实例并校验配置。
@@ -85,10 +91,10 @@ func NewCoordinator(cfg Config, collector *Collector, publisher ddns.DNSPublishe
 	slices.Sort(normalizedRecords)
 	cfg.Records = normalizedRecords
 
+	if cfg.Version <= 0 {
+		cfg.Version = 1
+	}
 	if cfg.Enabled {
-		if cfg.Interface == "" {
-			return nil, errors.New("server ipv6 interface cannot be empty when self update is enabled")
-		}
 		if len(cfg.Records) == 0 {
 			return nil, errors.New("server ddns records cannot be empty when self update is enabled")
 		}
@@ -124,15 +130,16 @@ func (c *Coordinator) Start(ctx context.Context) {
 
 	// 启动网络事件监听 Watcher
 	if c.collector != nil && c.collector.provider != nil {
+		watchInterface := c.cfg.Interface
 		c.watcher = networkaddr.NewWatcher(networkaddr.WatcherConfig{
-			Interface:         c.cfg.Interface,
+			Interface:         watchInterface,
 			DebounceDuration:  c.cfg.Debounce,
 			HeartbeatInterval: c.cfg.Interval * 2,
 			PollInterval:      c.cfg.Interval,
 			Provider:          c.collector.provider,
 			OnSnapshot: func(snapshot []networkaddr.ReportedIPv6Address, changed bool) {
 				if changed {
-					c.logger.Info("server_interface_address_changed_triggering_reconcile", "interface", c.cfg.Interface)
+					c.logger.Info("server_interface_address_changed_triggering_reconcile", "interface", watchInterface)
 					_ = c.Reconcile(context.Background())
 				}
 			},
@@ -221,8 +228,8 @@ func (c *Coordinator) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// 探测物理网卡地址
-	desiredIP, collectErr := c.collector.Collect(ctx, currentConfirmed)
+	// 自动解析默认路由接口并探测稳定公网 IPv6。
+	detection, collectErr := c.collector.Detect(ctx, currentConfirmed)
 	if collectErr != nil {
 		c.logger.Warn("server_ipv6_collect_failed_or_no_valid_address", "interface", c.cfg.Interface, "error", collectErr)
 		for _, rec := range c.cfg.Records {
@@ -238,8 +245,32 @@ func (c *Coordinator) Reconcile(ctx context.Context) error {
 		_ = c.store.Save(state)
 		return nil
 	}
+	c.cfg.Interface = detection.Interface
+	desiredIP := detection.Address
 
 	desiredAddrStr := desiredIP.String()
+	if currentConfirmed.IsValid() && currentConfirmed != desiredIP {
+		if c.pendingDetection == nil || c.pendingDetection.Interface != detection.Interface || c.pendingDetection.Gateway != detection.Gateway || c.pendingDetection.Address != detection.Address {
+			pending := detection
+			c.pendingDetection = &pending
+			c.pendingSince = now
+			for _, rec := range c.cfg.Records {
+				rs := state.Records[rec]
+				if rs == nil {
+					rs = &RecordState{Record: rec}
+					state.Records[rec] = rs
+				}
+				rs.Status = StatusPending
+				rs.DesiredAddress = desiredAddrStr
+				rs.UpdatedAt = now
+			}
+			return c.store.Save(state)
+		}
+		if now.Sub(c.pendingSince) < c.cfg.Debounce {
+			return nil
+		}
+	}
+	c.pendingDetection = nil
 
 	// 逐条记录调和
 	for _, rec := range c.cfg.Records {
@@ -381,10 +412,11 @@ func (c *Coordinator) GetStatus(ctx context.Context) StatusView {
 	defer c.mu.Unlock()
 
 	view := StatusView{
-		Enabled:   c.cfg.Enabled,
-		Interface: c.cfg.Interface,
-		Records:   c.cfg.Records,
-		Status:    StatusDisabled,
+		Enabled:       c.cfg.Enabled,
+		Interface:     c.cfg.Interface,
+		Records:       c.cfg.Records,
+		Status:        StatusDisabled,
+		ConfigVersion: c.cfg.Version,
 	}
 
 	if !c.cfg.Enabled {
@@ -397,17 +429,22 @@ func (c *Coordinator) GetStatus(ctx context.Context) StatusView {
 		return view
 	}
 
-	// 汇总首个受管域名的状态作为代表状态
+	// 按最严重状态聚合所有受管域名，不能以首条记录代表整体结果。
+	priority := map[RecordStatus]int{
+		StatusDisabled: 0, StatusSynced: 1, StatusPending: 2, StatusSyncing: 3,
+		StatusVerifying: 4, StatusWaitingAddress: 5, StatusFailed: 6, StatusBlocked: 7,
+	}
 	for _, rec := range c.cfg.Records {
 		if rs := state.Records[rec]; rs != nil {
-			view.Status = rs.Status
+			if priority[rs.Status] >= priority[view.Status] {
+				view.Status = rs.Status
+			}
 			view.CurrentAddress = rs.ConfirmedAddress
 			if view.CurrentAddress == "" {
 				view.CurrentAddress = rs.DesiredAddress
 			}
 			view.LastSuccessTime = rs.LastSuccessTime
 			view.LastError = rs.LastError
-			break
 		}
 	}
 
@@ -443,9 +480,6 @@ func (c *Coordinator) UpdateConfig(ctx context.Context, newCfg Config) error {
 	newCfg.Records = normalizedRecords
 
 	if newCfg.Enabled {
-		if newCfg.Interface == "" {
-			return errors.New("server ipv6 interface cannot be empty when self update is enabled")
-		}
 		if len(newCfg.Records) == 0 {
 			return errors.New("server ddns records cannot be empty when self update is enabled")
 		}
@@ -457,21 +491,27 @@ func (c *Coordinator) UpdateConfig(ctx context.Context, newCfg Config) error {
 	}
 
 	c.mu.Lock()
-	c.cfg.Enabled = newCfg.Enabled
-	c.cfg.Interface = newCfg.Interface
-	c.cfg.Records = newCfg.Records
-	if c.collector != nil {
-		c.collector.iface = newCfg.Interface
+	if newCfg.Version > 0 && newCfg.Version != c.cfg.Version {
+		c.mu.Unlock()
+		return ErrConfigConflict
 	}
+	newCfg.Version = c.cfg.Version + 1
+	newCfg.Interface = c.cfg.Interface
 
-	// 保存配置到持久化存储
+	// 先原子保存，再替换内存配置；失败时两者都保持旧值。
 	if cStore, ok := c.store.(ConfigStore); ok {
-		_ = cStore.SaveConfig(&PersistedConfig{
-			Enabled:   newCfg.Enabled,
-			Interface: newCfg.Interface,
-			Records:   newCfg.Records,
-		})
+		if err := cStore.SaveConfig(&PersistedConfig{
+			Enabled: newCfg.Enabled,
+			Records: newCfg.Records,
+			Version: newCfg.Version,
+		}); err != nil {
+			c.mu.Unlock()
+			return fmt.Errorf("save config: %w", err)
+		}
 	}
+	c.cfg.Enabled = newCfg.Enabled
+	c.cfg.Records = newCfg.Records
+	c.cfg.Version = newCfg.Version
 
 	// 动态管理 Watcher
 	if c.running {
@@ -498,6 +538,38 @@ func (c *Coordinator) UpdateConfig(ctx context.Context, newCfg Config) error {
 	}
 	c.mu.Unlock()
 
-	// 立即触发一次调和以刷新状态
 	return c.Reconcile(ctx)
+}
+
+// DetectNetwork 返回自动解析的默认路由接口和稳定公网 IPv6，不产生 DNS 写入。
+func (c *Coordinator) DetectNetwork(ctx context.Context) (Detection, error) {
+	c.mu.Lock()
+	collector := c.collector
+	c.mu.Unlock()
+	if collector == nil {
+		return Detection{}, errors.New("network collector is not configured")
+	}
+	return collector.Detect(ctx, netip.Addr{})
+}
+
+// ValidateRecords 只读验证受管域名的内部所有权和 DNS 服务商可读性。
+func (c *Coordinator) ValidateRecords(ctx context.Context, records []string) error {
+	c.mu.Lock()
+	checker := c.cfg.ConflictChecker
+	publisher := c.publisher
+	c.mu.Unlock()
+	if checker != nil {
+		if err := checker(records); err != nil {
+			return err
+		}
+	}
+	if publisher == nil {
+		return errors.New("dns publisher is not configured")
+	}
+	for _, record := range records {
+		if _, err := publisher.GetAAAA(ctx, record); err != nil {
+			return fmt.Errorf("read dns record %s: %w", record, err)
+		}
+	}
+	return nil
 }

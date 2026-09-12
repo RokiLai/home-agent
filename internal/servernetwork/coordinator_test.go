@@ -22,6 +22,14 @@ type mockDNSPublisher struct {
 	getCalls    int
 }
 
+type failingConfigStore struct {
+	*FileStateStore
+}
+
+func (f failingConfigStore) SaveConfig(*PersistedConfig) error {
+	return errors.New("disk full")
+}
+
 func newMockDNSPublisher() *mockDNSPublisher {
 	return &mockDNSPublisher{
 		records: make(map[string][]netip.Addr),
@@ -151,6 +159,38 @@ func TestCoordinator_ReconcileAddressLossPreservesRecord(t *testing.T) {
 	records, _ := pub.GetAAAA(context.Background(), "hub.example.com")
 	if len(records) != 1 || records[0].String() != "240e:390:1234::100" {
 		t.Errorf("expected preserved DNS record 240e:390:1234::100, got %v", records)
+	}
+}
+
+func TestCoordinator_AddressChangeRequiresTwoStableObservations(t *testing.T) {
+	tempDir := t.TempDir()
+	store := NewFileStateStore(tempDir)
+	pub := newMockDNSPublisher()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	oldAddress := netip.MustParseAddr("240e:390:1234::100")
+	_ = store.Save(&PersistedState{Records: map[string]*RecordState{
+		"hub.example.com": {Record: "hub.example.com", ConfirmedAddress: oldAddress.String(), Status: StatusSynced},
+	}})
+	_ = pub.UpsertAAAA(context.Background(), "hub.example.com", oldAddress, 300)
+	pub.upsertCalls = 0
+	provider := &mockAddressProvider{addrs: []networkaddr.ReportedIPv6Address{{Address: "240e:390:1234::200", Interface: "en0"}}}
+	coord, err := NewCoordinator(Config{Enabled: true, Records: []string{"hub.example.com"}, Debounce: 5 * time.Millisecond}, NewCollector("en0", provider), pub, store, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := coord.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pub.upsertCalls != 0 {
+		t.Fatalf("first changed observation must not write DNS, got %d calls", pub.upsertCalls)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := coord.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pub.upsertCalls != 1 {
+		t.Fatalf("second stable observation must write DNS once, got %d calls", pub.upsertCalls)
 	}
 }
 
@@ -356,13 +396,13 @@ func TestCoordinator_InvalidConfigValidation(t *testing.T) {
 	pub := newMockDNSPublisher()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	_, err := NewCoordinator(Config{
+	coord, err := NewCoordinator(Config{
 		Enabled:   true,
 		Interface: "",
 		Records:   []string{"hub.example.com"},
 	}, nil, pub, nil, logger)
-	if err == nil {
-		t.Fatalf("expected error for empty interface")
+	if err != nil || coord == nil {
+		t.Fatalf("automatic interface configuration should be accepted, got %v", err)
 	}
 
 	_, err = NewCoordinator(Config{
@@ -431,5 +471,44 @@ func TestCoordinator_GetStatusAndUpdateConfig(t *testing.T) {
 	status = coord.GetStatus(ctx)
 	if status.Enabled || status.Status != StatusDisabled {
 		t.Fatalf("expected disabled status after toggle, got %+v", status)
+	}
+}
+
+func TestCoordinator_UpdateConfigPersistenceFailureKeepsOldConfigAndDoesNotWriteDNS(t *testing.T) {
+	baseStore := NewFileStateStore(t.TempDir())
+	store := failingConfigStore{FileStateStore: baseStore}
+	pub := newMockDNSPublisher()
+	provider := &mockAddressProvider{addrs: []networkaddr.ReportedIPv6Address{{Address: "240e:390:1234::100", Interface: "en0"}}}
+	coord, err := NewCoordinator(Config{Enabled: false, Records: []string{"old.example.com"}}, NewCollector("en0", provider), pub, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = coord.UpdateConfig(context.Background(), Config{Enabled: true, Records: []string{"new.example.com"}, Version: 1})
+	if err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	got := coord.GetConfig()
+	if got.Enabled || len(got.Records) != 1 || got.Records[0] != "old.example.com" {
+		t.Fatalf("in-memory config changed after failed save: %+v", got)
+	}
+	if pub.upsertCalls != 0 {
+		t.Fatalf("failed config save must not write DNS, got %d calls", pub.upsertCalls)
+	}
+}
+
+func TestCoordinator_GetStatusAggregatesAllRecords(t *testing.T) {
+	store := NewFileStateStore(t.TempDir())
+	_ = store.Save(&PersistedState{Records: map[string]*RecordState{
+		"a.example.com": {Record: "a.example.com", Status: StatusSynced, ConfirmedAddress: "240e:390::1"},
+		"b.example.com": {Record: "b.example.com", Status: StatusFailed, LastError: "provider failed"},
+	}})
+	coord, err := NewCoordinator(Config{Enabled: true, Interface: "en0", Records: []string{"a.example.com", "b.example.com"}}, NewCollector("en0", &mockAddressProvider{}), newMockDNSPublisher(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := coord.GetStatus(context.Background())
+	if status.Status != StatusFailed || status.LastError != "provider failed" {
+		t.Fatalf("expected aggregate failure, got %+v", status)
 	}
 }

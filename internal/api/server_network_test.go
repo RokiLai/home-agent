@@ -24,7 +24,8 @@ func (m *mockProviderForAPI) GetAddresses(ctx context.Context, iface string) ([]
 }
 
 type mockPublisherForAPI struct {
-	records map[string][]netip.Addr
+	records     map[string][]netip.Addr
+	upsertCalls int
 }
 
 func (m *mockPublisherForAPI) GetAAAA(ctx context.Context, record string) ([]netip.Addr, error) {
@@ -32,6 +33,7 @@ func (m *mockPublisherForAPI) GetAAAA(ctx context.Context, record string) ([]net
 }
 
 func (m *mockPublisherForAPI) UpsertAAAA(ctx context.Context, record string, address netip.Addr, ttl int) error {
+	m.upsertCalls++
 	if m.records == nil {
 		m.records = make(map[string][]netip.Addr)
 	}
@@ -89,11 +91,49 @@ func TestServerNetworkAPI_GetAndPut(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 
-	// 2. PUT /api/v1/server/network - Enable and update records
+	// 2. 自动探测默认路由接口与稳定地址。
+	candidateReq := httptest.NewRequest(http.MethodGet, "/api/v1/server/network/candidates", nil)
+	candidateReq.Header.Set("Authorization", "Bearer admin-token")
+	wCandidate := httptest.NewRecorder()
+	handler.ServeHTTP(wCandidate, candidateReq)
+	if wCandidate.Code != http.StatusOK {
+		t.Fatalf("expected candidate status 200, got %d: %s", wCandidate.Code, wCandidate.Body.String())
+	}
+	var candidateResp map[string]any
+	if err := json.Unmarshal(wCandidate.Body.Bytes(), &candidateResp); err != nil {
+		t.Fatalf("unmarshal candidates: %v", err)
+	}
+	if candidateResp["resolved_interface"] != "en0" || candidateResp["resolved_address"] != "240e:390:1::100" {
+		t.Fatalf("unexpected automatic detection: %+v", candidateResp)
+	}
+
+	// 3. 只读预检并获取单次令牌。
+	validateBody, _ := json.Marshal(map[string]any{"detection_id": candidateResp["detection_id"], "records": []string{"hub.example.com"}})
+	validateReq := httptest.NewRequest(http.MethodPost, "/api/v1/server/network/validate", bytes.NewReader(validateBody))
+	validateReq.Header.Set("Authorization", "Bearer admin-token")
+	wValidate := httptest.NewRecorder()
+	handler.ServeHTTP(wValidate, validateReq)
+	if wValidate.Code != http.StatusOK {
+		t.Fatalf("expected validation status 200, got %d: %s", wValidate.Code, wValidate.Body.String())
+	}
+	var validateResp map[string]any
+	if err := json.Unmarshal(wValidate.Body.Bytes(), &validateResp); err != nil {
+		t.Fatalf("unmarshal validation: %v", err)
+	}
+	if validateResp["validation_status"] != "valid" {
+		t.Fatalf("unexpected validation response: %+v", validateResp)
+	}
+	if pub.upsertCalls != 0 {
+		t.Fatalf("read-only validation must not write DNS, got %d upserts", pub.upsertCalls)
+	}
+
+	// 4. PUT 不提交人工接口，使用预检令牌启用。
 	body, _ := json.Marshal(map[string]any{
-		"enabled":   true,
-		"interface": "en0",
-		"records":   []string{"hub.example.com"},
+		"enabled":                   true,
+		"records":                   []string{"hub.example.com"},
+		"config_version":            1,
+		"validation_token":          validateResp["validation_token"],
+		"external_writer_confirmed": true,
 	})
 	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/server/network", bytes.NewReader(body))
 	putReq.Header.Set("Authorization", "Bearer admin-token")
@@ -112,21 +152,20 @@ func TestServerNetworkAPI_GetAndPut(t *testing.T) {
 		t.Fatalf("unexpected put response: %+v", putResp)
 	}
 
-	// 3. Validation: Enabled=true with empty interface should fail
+	// 5. 启用时不再要求接口，但没有预检令牌必须失败。
 	invalidBody, _ := json.Marshal(map[string]any{
-		"enabled":   true,
-		"interface": "",
-		"records":   []string{"hub.example.com"},
+		"enabled": true,
+		"records": []string{"hub.example.com"},
 	})
 	badReq := httptest.NewRequest(http.MethodPut, "/api/v1/server/network", bytes.NewReader(invalidBody))
 	badReq.Header.Set("Authorization", "Bearer admin-token")
 	wBad := httptest.NewRecorder()
 	handler.ServeHTTP(wBad, badReq)
-	if wBad.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400 for empty interface, got %d", wBad.Code)
+	if wBad.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 without validation token, got %d", wBad.Code)
 	}
 
-	// 4. Unauthorized check
+	// 6. Unauthorized check
 	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/server/network", nil)
 	wUnauth := httptest.NewRecorder()
 	handler.ServeHTTP(wUnauth, unauthReq)

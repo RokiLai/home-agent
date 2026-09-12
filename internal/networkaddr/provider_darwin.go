@@ -4,9 +4,41 @@ package networkaddr
 
 import (
 	"context"
+	"errors"
 	"os/exec"
+	"strings"
 	"time"
 )
+
+type platformDefaultIPv6RouteResolver struct{}
+
+func newPlatformDefaultIPv6RouteResolver() DefaultIPv6RouteResolver {
+	return platformDefaultIPv6RouteResolver{}
+}
+
+func (platformDefaultIPv6RouteResolver) ResolveDefaultIPv6Route(ctx context.Context) (DefaultIPv6Route, error) {
+	out, err := exec.CommandContext(ctx, "/sbin/route", "-n", "get", "-inet6", "default").Output()
+	if err != nil {
+		return DefaultIPv6Route{}, err
+	}
+	var route DefaultIPv6Route
+	for _, line := range strings.Split(string(out), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "interface":
+			route.Interface = strings.TrimSpace(value)
+		case "gateway":
+			route.Gateway = strings.TrimSpace(value)
+		}
+	}
+	if route.Interface == "" {
+		return DefaultIPv6Route{}, errors.New("ipv6 default route has no interface")
+	}
+	return route, nil
+}
 
 // DarwinProvider 通过调用 macOS `ifconfig` 命令采集网络接口上的 IPv6 地址及详细标志。
 type DarwinProvider struct {

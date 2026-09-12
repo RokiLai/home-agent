@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// IsVirtualInterface 与客户端物理接口筛选保持一致，识别不应作为服务端公网地址来源的虚拟接口。
+func IsVirtualInterface(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "br-lan" {
+		return false
+	}
+	for _, prefix := range []string{
+		"utun", "bridge", "docker", "veth", "tailscale", "wg", "tun", "tap",
+		"virbr", "vmnet", "vboxnet", "vethernet", "br-", "cni0", "flannel",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReportedIPv6Address 表示在本地网络接口上探测到的 IPv6 地址详细元数据。
 type ReportedIPv6Address struct {
 	Address        string     `json:"address"`

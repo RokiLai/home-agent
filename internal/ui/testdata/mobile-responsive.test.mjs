@@ -107,6 +107,9 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
     // Settings Page
     'settingsServerUrlInput', 'settingsSaveBtn', 'settingsClearBtn', 'changePasswordForm',
     'oldPasswordInput', 'newPasswordInput', 'confirmPasswordInput', 'savePasswordBtn', 'changePasswordAlert',
+    'serverNetworkResolvedInterface', 'serverNetworkResolvedAddress', 'serverNetworkDetectionMessage',
+    'serverNetworkRedetectBtn', 'serverNetworkRecordsInput', 'serverNetworkExternalWriterConfirmed', 'serverNetworkSaveBtn',
+    'serverNetworkRecordCandidates',
     // Modals
     'ipModal', 'ipModalTitle', 'ipModalDesc', 'ipModalList', 'closeIpModalBtn', 'doneIpModalBtn',
     'renameModal', 'renameDeviceInfo', 'renameDeviceMac', 'deviceAliasInput', 'closeRenameModalBtn', 'cancelRenameModalBtn', 'saveRenameBtn',
@@ -122,6 +125,8 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
     const pattern = new RegExp(`id="${id}"`);
     assert.ok(pattern.test(html), `index.html must retain id="${id}"`);
   }
+
+  assert.doesNotMatch(html, /id="serverNetworkInterfaceInput"/, 'server network interface must not be user-editable');
 
   // Verify health facts grid does not have inline grid-template-columns
   assert.doesNotMatch(html, /style="[^"]*grid-template-columns:\s*1fr\s+1fr/i, 'Inline grid-template-columns must be migrated to CSS class');

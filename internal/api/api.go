@@ -95,6 +95,9 @@ type Server struct {
 	ServerUpgradeOperations  *serverupgrade.OperationManager
 	ServerUpgradeRunner      func(context.Context, string) error
 	ServerNetworkCoordinator *servernetwork.Coordinator
+	serverNetworkValidationMu sync.Mutex
+	serverNetworkDetections   map[string]serverNetworkDetection
+	serverNetworkTokens       map[string]serverNetworkValidationToken
 
 	version            int64
 	wakeRateLimit      sync.Map
@@ -283,6 +286,8 @@ func (s *Server) Handler() http.Handler {
 
 	// Server Network Bootstrap routes (Admin Protected)
 	mux.Handle("GET /api/v1/server/network", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.getServerNetwork)))
+	mux.Handle("GET /api/v1/server/network/candidates", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.getServerNetworkCandidates)))
+	mux.Handle("POST /api/v1/server/network/validate", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.validateServerNetwork)))
 	mux.Handle("PUT /api/v1/server/network", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putServerNetwork)))
 
 	return withCORS(mux)
@@ -3200,9 +3205,53 @@ func (s *Server) systemUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 type serverNetworkReq struct {
-	Enabled   bool     `json:"enabled"`
-	Interface string   `json:"interface"`
-	Records   []string `json:"records"`
+	Enabled                 bool     `json:"enabled"`
+	Interface               string   `json:"interface,omitempty"`
+	Records                 []string `json:"records"`
+	ConfigVersion           int64    `json:"config_version,omitempty"`
+	ValidationToken         string   `json:"validation_token,omitempty"`
+	ExternalWriterConfirmed bool     `json:"external_writer_confirmed,omitempty"`
+}
+
+type serverNetworkDetection struct {
+	Result        servernetwork.Detection
+	ConfigVersion int64
+	ExpiresAt     time.Time
+}
+
+type serverNetworkValidationToken struct {
+	Digest        [32]byte
+	ConfigVersion int64
+	Interface     string
+	Address       string
+	ExpiresAt     time.Time
+	Owner         string
+}
+
+func normalizeServerNetworkRecords(records []string) []string {
+	result := make([]string, 0, len(records))
+	seen := make(map[string]bool)
+	for _, record := range records {
+		record = strings.ToLower(strings.TrimSpace(record))
+		if record != "" && !seen[record] {
+			seen[record] = true
+			result = append(result, record)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func serverNetworkDigest(records []string, version int64, iface, address, authorization string) [32]byte {
+	return sha256.Sum256([]byte(strings.Join(normalizeServerNetworkRecords(records), "\n") + "\x00" + strconv.FormatInt(version, 10) + "\x00" + iface + "\x00" + address + "\x00" + authorization))
+}
+
+func randomOpaqueToken(size int) (string, error) {
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
 func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
@@ -3217,15 +3266,140 @@ func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
 
 	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":        true,
-		"enabled":           status.Enabled,
-		"interface":         status.Interface,
-		"records":           status.Records,
-		"status":            status.Status,
-		"current_address":   status.CurrentAddress,
-		"last_success_time": status.LastSuccessTime,
-		"last_error":        status.LastError,
+		"configured":         true,
+		"enabled":            status.Enabled,
+		"interface":          status.Interface,
+		"resolved_interface": status.Interface,
+		"resolved_address":   status.CurrentAddress,
+		"config_version":     status.ConfigVersion,
+		"records":            status.Records,
+		"status":             status.Status,
+		"current_address":    status.CurrentAddress,
+		"last_success_time":  status.LastSuccessTime,
+		"last_error":         status.LastError,
 	})
+}
+
+func (s *Server) getServerNetworkCandidates(w http.ResponseWriter, r *http.Request) {
+	if s.ServerNetworkCoordinator == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"status": "error", "errors": []string{"not_configured"}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	detection, err := s.ServerNetworkCoordinator.DetectNetwork(ctx)
+	if err != nil {
+		status := "error"
+		if errors.Is(err, servernetwork.ErrNoValidAddress) {
+			status = "no_address"
+		} else if errors.Is(err, servernetwork.ErrUnsupportedRouteInterface) {
+			status = "unsupported_route_interface"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": status, "errors": []string{err.Error()}})
+		return
+	}
+	id, err := randomOpaqueToken(16)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "errors": []string{"validation_unavailable"}})
+		return
+	}
+	now := time.Now().UTC()
+	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
+	s.serverNetworkValidationMu.Lock()
+	if s.serverNetworkDetections == nil {
+		s.serverNetworkDetections = make(map[string]serverNetworkDetection)
+	}
+	s.serverNetworkDetections[id] = serverNetworkDetection{Result: detection, ConfigVersion: status.ConfigVersion, ExpiresAt: now.Add(time.Minute)}
+	s.serverNetworkValidationMu.Unlock()
+	recordCandidates := make([]map[string]any, 0, len(status.Records)+1)
+	seenRecords := make(map[string]bool)
+	for _, record := range normalizeServerNetworkRecords(status.Records) {
+		seenRecords[record] = true
+		recordCandidates = append(recordCandidates, map[string]any{"record": record, "source": "saved", "saved": true, "selected": true, "rejected": false})
+	}
+	if publicURL, parseErr := url.Parse(strings.TrimSpace(s.PublicURL)); parseErr == nil {
+		host := strings.ToLower(strings.TrimSuffix(publicURL.Hostname(), "."))
+		if host != "" && strings.Contains(host, ".") && net.ParseIP(host) == nil && !seenRecords[host] {
+			recordCandidates = append(recordCandidates, map[string]any{"record": host, "source": "server_url", "saved": false, "selected": false, "rejected": false})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"detection_id": id, "detected_at": now, "expires_at": now.Add(time.Minute), "status": "ready",
+		"resolved_interface": detection.Interface, "resolved_address": detection.Address.String(),
+		"candidates":        []map[string]any{{"interface": detection.Interface, "is_default_route": true, "addresses": []map[string]any{{"address": detection.Address.String()}}}},
+		"record_candidates": recordCandidates,
+	})
+}
+
+func (s *Server) validateServerNetwork(w http.ResponseWriter, r *http.Request) {
+	if s.ServerNetworkCoordinator == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"validation_status": "invalid", "error_code": "not_configured"})
+		return
+	}
+	var req struct {
+		DetectionID string   `json:"detection_id"`
+		Records     []string `json:"records"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	records := normalizeServerNetworkRecords(req.Records)
+	if len(records) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"validation_status": "invalid", "error_code": "invalid_record"})
+		return
+	}
+	s.serverNetworkValidationMu.Lock()
+	detection, ok := s.serverNetworkDetections[req.DetectionID]
+	s.serverNetworkValidationMu.Unlock()
+	if !ok || time.Now().After(detection.ExpiresAt) {
+		writeJSON(w, http.StatusOK, map[string]any{"validation_status": "invalid", "error_code": "stale_detection"})
+		return
+	}
+	current, err := s.ServerNetworkCoordinator.DetectNetwork(r.Context())
+	if err != nil || current.Interface != detection.Result.Interface || current.Gateway != detection.Result.Gateway || current.Address != detection.Result.Address {
+		writeJSON(w, http.StatusOK, map[string]any{"validation_status": "invalid", "error_code": "stale_detection"})
+		return
+	}
+	if err := s.ServerNetworkCoordinator.ValidateRecords(r.Context(), records); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"validation_status": "invalid", "error_code": "provider_unavailable", "error": err.Error()})
+		return
+	}
+	token, err := randomOpaqueToken(32)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error_code": "validation_unavailable"})
+		return
+	}
+	now := time.Now().UTC()
+	authorization := r.Header.Get("Authorization")
+	ownerHash := sha256.Sum256([]byte(authorization))
+	owner := hex.EncodeToString(ownerHash[:])
+	digest := serverNetworkDigest(records, detection.ConfigVersion, current.Interface, current.Address.String(), authorization)
+	s.serverNetworkValidationMu.Lock()
+	if s.serverNetworkTokens == nil {
+		s.serverNetworkTokens = make(map[string]serverNetworkValidationToken)
+	}
+	ownerTokens := 0
+	for key, existing := range s.serverNetworkTokens {
+		if now.After(existing.ExpiresAt) {
+			delete(s.serverNetworkTokens, key)
+			continue
+		}
+		if existing.Owner == owner {
+			ownerTokens++
+		}
+	}
+	if ownerTokens >= 10 {
+		s.serverNetworkValidationMu.Unlock()
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error_code": "too_many_validations"})
+		return
+	}
+	s.serverNetworkTokens[token] = serverNetworkValidationToken{Digest: digest, ConfigVersion: detection.ConfigVersion, Interface: current.Interface, Address: current.Address.String(), ExpiresAt: now.Add(time.Minute), Owner: owner}
+	delete(s.serverNetworkDetections, req.DetectionID)
+	s.serverNetworkValidationMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"validation_status": "valid", "validation_token": token, "validated_at": now, "expires_at": now.Add(time.Minute), "planned_address": current.Address.String()})
 }
 
 func (s *Server) putServerNetwork(w http.ResponseWriter, r *http.Request) {
@@ -3236,6 +3410,7 @@ func (s *Server) putServerNetwork(w http.ResponseWriter, r *http.Request) {
 
 	var req serverNetworkReq
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -3243,36 +3418,62 @@ func (s *Server) putServerNetwork(w http.ResponseWriter, r *http.Request) {
 
 	cfg := s.ServerNetworkCoordinator.GetConfig()
 	cfg.Enabled = req.Enabled
-	cfg.Interface = strings.TrimSpace(req.Interface)
-	cfg.Records = req.Records
+	cfg.Records = normalizeServerNetworkRecords(req.Records)
+	cfg.Version = req.ConfigVersion
 
 	if req.Enabled {
-		if cfg.Interface == "" {
-			http.Error(w, "interface cannot be empty when enabled", http.StatusBadRequest)
-			return
-		}
 		if len(cfg.Records) == 0 {
 			http.Error(w, "records cannot be empty when enabled", http.StatusBadRequest)
 			return
 		}
+		if !req.ExternalWriterConfirmed || req.ValidationToken == "" {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "validation_required"})
+			return
+		}
+		s.serverNetworkValidationMu.Lock()
+		token, ok := s.serverNetworkTokens[req.ValidationToken]
+		if ok {
+			delete(s.serverNetworkTokens, req.ValidationToken)
+		}
+		s.serverNetworkValidationMu.Unlock()
+		digest := serverNetworkDigest(cfg.Records, req.ConfigVersion, token.Interface, token.Address, r.Header.Get("Authorization"))
+		if !ok || time.Now().After(token.ExpiresAt) || token.ConfigVersion != req.ConfigVersion || token.Digest != digest {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "stale_validation"})
+			return
+		}
+		if legacyInterface := strings.TrimSpace(req.Interface); legacyInterface != "" && legacyInterface != token.Interface {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "interface_is_read_only"})
+			return
+		}
+	} else if req.ConfigVersion == 0 {
+		// 旧页面兼容：只禁用当前配置，不接受其 records/interface 覆盖。
+		current := s.ServerNetworkCoordinator.GetConfig()
+		cfg.Records = current.Records
+		cfg.Version = current.Version
 	}
 
 	if err := s.ServerNetworkCoordinator.UpdateConfig(r.Context(), cfg); err != nil {
+		if errors.Is(err, servernetwork.ErrConfigConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "config_conflict"})
+			return
+		}
 		http.Error(w, "update server network config failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":        true,
-		"enabled":           status.Enabled,
-		"interface":         status.Interface,
-		"records":           status.Records,
-		"status":            status.Status,
-		"current_address":   status.CurrentAddress,
-		"current_ip":        status.CurrentAddress,
-		"last_success_time": status.LastSuccessTime,
-		"last_sync":         status.LastSuccessTime,
-		"last_error":        status.LastError,
+		"configured":         true,
+		"enabled":            status.Enabled,
+		"resolved_interface": status.Interface,
+		"resolved_address":   status.CurrentAddress,
+		"config_version":     status.ConfigVersion,
+		"records":            status.Records,
+		"status":             status.Status,
+		"current_address":    status.CurrentAddress,
+		"current_ip":         status.CurrentAddress,
+		"last_success_time":  status.LastSuccessTime,
+		"last_sync":          status.LastSuccessTime,
+		"last_error":         status.LastError,
 	})
 }
