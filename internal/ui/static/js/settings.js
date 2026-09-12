@@ -184,6 +184,7 @@ function initVersionStatusEvents() {
 function initServerNetworkEvents() {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
   const saveBtn = document.getElementById('serverNetworkSaveBtn');
+  const redetectBtn = document.getElementById('serverNetworkRedetectBtn');
 
   if (switchEl) {
     switchEl.addEventListener('change', () => {
@@ -196,27 +197,39 @@ function initServerNetworkEvents() {
       saveServerNetworkSettings();
     });
   }
+  if (redetectBtn) {
+    redetectBtn.addEventListener('click', async () => {
+      redetectBtn.disabled = true;
+      try {
+        await detectServerNetwork();
+      } finally {
+        redetectBtn.disabled = false;
+      }
+    });
+  }
 }
+
+let serverNetworkDetectionId = '';
+let serverNetworkConfigVersion = 0;
 
 function updateServerNetworkFieldState(enabled) {
   const fields = document.getElementById('serverNetworkFields');
-  const ifaceInput = document.getElementById('serverNetworkInterfaceInput');
   const recordsInput = document.getElementById('serverNetworkRecordsInput');
+  const writerConfirmed = document.getElementById('serverNetworkExternalWriterConfirmed');
 
   if (fields) {
     fields.style.opacity = enabled ? '1' : '0.5';
   }
-  if (ifaceInput) {
-    ifaceInput.disabled = !enabled;
-  }
   if (recordsInput) {
     recordsInput.disabled = !enabled;
+  }
+  if (writerConfirmed) {
+    writerConfirmed.disabled = !enabled;
   }
 }
 
 function renderServerNetworkStatus(data) {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
-  const ifaceInput = document.getElementById('serverNetworkInterfaceInput');
   const recordsInput = document.getElementById('serverNetworkRecordsInput');
   const badgeEl = document.getElementById('serverNetworkStatusBadge');
   const currentIpEl = document.getElementById('serverNetworkCurrentIp');
@@ -226,14 +239,12 @@ function renderServerNetworkStatus(data) {
     switchEl.checked = !!data.enabled;
     updateServerNetworkFieldState(!!data.enabled);
   }
-  if (ifaceInput) {
-    ifaceInput.value = data.interface || '';
-  }
+  serverNetworkConfigVersion = Number(data.config_version || serverNetworkConfigVersion || 1);
   if (recordsInput) {
     recordsInput.value = (data.records || []).join(', ');
   }
   if (currentIpEl) {
-    currentIpEl.textContent = data.current_ip || '未探测';
+    currentIpEl.textContent = data.resolved_address || data.current_address || data.current_ip || '未探测';
   }
   if (lastSyncEl) {
     lastSyncEl.textContent = data.last_sync ? new Date(data.last_sync).toLocaleString() : '-';
@@ -272,6 +283,50 @@ function renderServerNetworkStatus(data) {
   }
 }
 
+async function detectServerNetwork() {
+  const ifaceEl = document.getElementById('serverNetworkResolvedInterface');
+  const addressEl = document.getElementById('serverNetworkResolvedAddress');
+  const messageEl = document.getElementById('serverNetworkDetectionMessage');
+  if (ifaceEl) ifaceEl.textContent = '探测中';
+  if (addressEl) addressEl.textContent = '探测中';
+  const res = await apiFetch(`${state.serverHost}/api/v1/server/network/candidates`);
+  const data = await res.json();
+  if (!res.ok || data.status !== 'ready') {
+    serverNetworkDetectionId = '';
+    if (ifaceEl) ifaceEl.textContent = '-';
+    if (addressEl) addressEl.textContent = '未解析';
+    if (messageEl) messageEl.textContent = (data.errors || ['自动解析失败']).join('；');
+    return false;
+  }
+
+  const recordCandidatesEl = document.getElementById('serverNetworkRecordCandidates');
+  const recordsInput = document.getElementById('serverNetworkRecordsInput');
+  if (recordCandidatesEl) {
+    recordCandidatesEl.innerHTML = '';
+    for (const candidate of (data.record_candidates || [])) {
+      if (candidate.rejected) continue;
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:.76rem;';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = !!candidate.selected;
+      checkbox.addEventListener('change', () => {
+        const records = (recordsInput?.value || '').split(',').map(item => item.trim()).filter(Boolean);
+        const next = new Set(records);
+        if (checkbox.checked) next.add(candidate.record); else next.delete(candidate.record);
+        if (recordsInput) recordsInput.value = [...next].join(', ');
+      });
+      label.append(checkbox, document.createTextNode(`${candidate.record}（${candidate.source === 'saved' ? '已保存' : '服务端 URL'}）`));
+      recordCandidatesEl.appendChild(label);
+    }
+  }
+  serverNetworkDetectionId = data.detection_id;
+  if (ifaceEl) ifaceEl.textContent = data.resolved_interface || '-';
+  if (addressEl) addressEl.textContent = data.resolved_address || '未解析';
+  if (messageEl) messageEl.textContent = '已按当前默认 IPv6 路由和稳定地址筛选规则自动确定。';
+  return true;
+}
+
 export async function loadServerNetworkSettings() {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
   if (!switchEl) return;
@@ -288,6 +343,7 @@ export async function loadServerNetworkSettings() {
     }
     const data = await res.json();
     renderServerNetworkStatus(data);
+    await detectServerNetwork();
   } catch (err) {
     // 忽略加载异常
   }
@@ -295,35 +351,29 @@ export async function loadServerNetworkSettings() {
 
 export async function saveServerNetworkSettings() {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
-  const ifaceInput = document.getElementById('serverNetworkInterfaceInput');
   const recordsInput = document.getElementById('serverNetworkRecordsInput');
+  const writerConfirmed = document.getElementById('serverNetworkExternalWriterConfirmed');
   const saveBtn = document.getElementById('serverNetworkSaveBtn');
 
   if (!switchEl) return;
 
   const enabled = switchEl.checked;
-  const iface = ifaceInput ? ifaceInput.value.trim() : '';
   const rawRecords = recordsInput ? recordsInput.value.trim() : '';
   const records = rawRecords ? rawRecords.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (enabled) {
-    if (!iface) {
-      showToast('请输入物理网络接口名称（如 en0 或 eth0）', 'error');
-      if (ifaceInput) ifaceInput.focus();
-      return;
-    }
     if (records.length === 0) {
       showToast('请输入至少一个受管域名', 'error');
       if (recordsInput) recordsInput.focus();
       return;
     }
+    if (!writerConfirmed || !writerConfirmed.checked) {
+      showToast('请确认域名所有权并停止其他 DDNS 发布器', 'error');
+      return;
+    }
   }
 
-  const payload = {
-    enabled,
-    interface: iface,
-    records,
-  };
+  const payload = { enabled, records, config_version: serverNetworkConfigVersion };
 
   if (saveBtn) {
     saveBtn.disabled = true;
@@ -331,6 +381,25 @@ export async function saveServerNetworkSettings() {
   }
 
   try {
+    if (enabled) {
+      if (!serverNetworkDetectionId && !(await detectServerNetwork())) {
+        showToast('当前无法自动解析有效 IPv6 地址', 'error');
+        return;
+      }
+      const validateRes = await apiFetch(`${state.serverHost}/api/v1/server/network/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ detection_id: serverNetworkDetectionId, records }),
+      });
+      const validation = await validateRes.json();
+      if (!validateRes.ok || validation.validation_status !== 'valid') {
+        serverNetworkDetectionId = '';
+        showToast(validation.error || validation.error_code || '配置预检失败', 'error');
+        return;
+      }
+      payload.validation_token = validation.validation_token;
+      payload.external_writer_confirmed = true;
+    }
     const res = await apiFetch(`${state.serverHost}/api/v1/server/network`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -345,7 +414,7 @@ export async function saveServerNetworkSettings() {
 
     renderServerNetworkStatus(data);
     showToast('自举网络设置已更新', 'success');
-    addLog('success', enabled ? `已启用服务端 IPv6 自举 (${iface})` : '已停用服务端 IPv6 自举');
+    addLog('success', enabled ? '已启用服务端 IPv6 自动解析与 DDNS 自举' : '已停用服务端 IPv6 自举');
   } catch (err) {
     showToast(`保存失败: ${err.message}`, 'error');
   } finally {

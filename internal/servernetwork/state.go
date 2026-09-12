@@ -56,8 +56,9 @@ type PersistedState struct {
 // PersistedConfig 保存服务端 IPv6 自举网络配置。
 type PersistedConfig struct {
 	Enabled   bool     `json:"enabled"`
-	Interface string   `json:"interface"`
+	Interface string   `json:"interface,omitempty"` // 仅用于读取旧配置；新配置不再写入人工接口。
 	Records   []string `json:"records"`
+	Version   int64    `json:"version,omitempty"`
 }
 
 // ConfigStore 定义自举配置持久化接口。

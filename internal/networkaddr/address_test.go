@@ -143,6 +143,19 @@ func TestNormalizeAndFilterCandidates(t *testing.T) {
 	}
 }
 
+func TestIsVirtualInterfaceMatchesClientContract(t *testing.T) {
+	for _, name := range []string{"utun0", "bridge100", "docker0", "tailscale0", "wg0"} {
+		if !IsVirtualInterface(name) {
+			t.Fatalf("expected %s to be virtual", name)
+		}
+	}
+	for _, name := range []string{"en0", "eth0", "br-lan"} {
+		if IsVirtualInterface(name) {
+			t.Fatalf("expected %s to be eligible physical interface", name)
+		}
+	}
+}
+
 func TestAddressesEqual(t *testing.T) {
 	t1 := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	t2 := time.Date(2026, 8, 17, 13, 0, 0, 0, time.UTC)

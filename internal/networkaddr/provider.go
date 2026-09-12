@@ -14,6 +14,22 @@ type AddressProvider interface {
 	GetAddresses(ctx context.Context, iface string) ([]ReportedIPv6Address, error)
 }
 
+// DefaultIPv6Route 是内核实际选中的 IPv6 默认路由标识。
+type DefaultIPv6Route struct {
+	Interface string `json:"interface"`
+	Gateway   string `json:"gateway"`
+}
+
+// DefaultIPv6RouteResolver 查询当前 IPv6 默认出站路由。
+type DefaultIPv6RouteResolver interface {
+	ResolveDefaultIPv6Route(ctx context.Context) (DefaultIPv6Route, error)
+}
+
+// NewDefaultIPv6RouteResolver 返回当前平台的默认路由解析器。
+func NewDefaultIPv6RouteResolver() DefaultIPv6RouteResolver {
+	return newPlatformDefaultIPv6RouteResolver()
+}
+
 // NewDefaultProvider 返回平台特定的默认 AddressProvider 实现。
 func NewDefaultProvider() AddressProvider {
 	if runtime.GOOS == "darwin" {

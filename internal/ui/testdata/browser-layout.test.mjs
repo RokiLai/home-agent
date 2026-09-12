@@ -788,6 +788,23 @@ test('7. Version panel keeps component boundaries and mobile overflow contract',
   assert.ok(labels.server.length > 0 && labels.agent.length > 0, 'Both channel states must remain visible after refresh');
 });
 
-test('7. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
+test('8. Server network resolves interface and IPv6 automatically without editable selectors', async () => {
+  await evalJS(`window.location.hash = '#/settings';`);
+  await waitFor('document.getElementById("serverNetworkResolvedInterface").textContent === "en0"');
+  const result = await evalJS(`(() => ({
+    legacyInput: Boolean(document.getElementById('serverNetworkInterfaceInput')),
+    iface: document.getElementById('serverNetworkResolvedInterface').textContent,
+    address: document.getElementById('serverNetworkResolvedAddress').textContent,
+    candidate: document.getElementById('serverNetworkRecordCandidates').textContent,
+    message: document.getElementById('serverNetworkDetectionMessage').textContent
+  }))()`);
+  assert.equal(result.legacyInput, false, 'network interface input must be removed');
+  assert.equal(result.iface, 'en0');
+  assert.equal(result.address, '240e:390:1::100');
+  assert.match(result.candidate, /home\.example\.com/);
+  assert.match(result.message, /自动确定/);
+});
+
+test('9. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
   assert.equal(runtimeErrors.length, 0, `Runtime errors detected during tests: ${runtimeErrors.join('; ')}`);
 });

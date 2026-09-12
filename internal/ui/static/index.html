@@ -668,15 +668,33 @@
 
                 <div id="serverNetworkFields" style="transition: opacity 0.2s ease;">
                   <div class="form-group">
-                    <label for="serverNetworkInterfaceInput">物理网络接口 (网卡名称)</label>
-                    <input type="text" id="serverNetworkInterfaceInput" class="form-control" placeholder="en0" autocomplete="off">
-                    <span class="text-muted" style="font-size: 0.74rem; margin-top: 4px;">例如 macOS 上通常为 en0，Linux 上通常为 eth0。</span>
+                    <label>当前网络自动解析</label>
+                    <div id="serverNetworkDetectionCard" class="detail-row" style="padding: 8px 12px; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                      <div style="display: flex; flex-direction: column; gap: 4px; width: 100%;">
+                        <div style="display: flex; justify-content: space-between; gap: 12px;">
+                          <span class="text-muted" style="font-size: 0.78rem;">默认路由接口</span>
+                          <span id="serverNetworkResolvedInterface" class="font-mono" style="font-size: 0.78rem;">探测中</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; gap: 12px;">
+                          <span class="text-muted" style="font-size: 0.78rem;">稳定公网 IPv6</span>
+                          <span id="serverNetworkResolvedAddress" class="font-mono" style="font-size: 0.78rem; overflow-wrap: anywhere;">探测中</span>
+                        </div>
+                        <span id="serverNetworkDetectionMessage" class="text-muted" style="font-size: 0.74rem;">系统会按默认 IPv6 路由和客户端同源规则自动确定，无需选择网卡或地址。</span>
+                      </div>
+                    </div>
+                    <button id="serverNetworkRedetectBtn" type="button" class="btn btn-secondary" style="margin-top: 8px;">重新探测</button>
                   </div>
 
                   <div class="form-group" style="margin-top: 14px;">
                     <label for="serverNetworkRecordsInput">受管域名 (逗号分隔)</label>
+                    <div id="serverNetworkRecordCandidates" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;"></div>
                     <input type="text" id="serverNetworkRecordsInput" class="form-control" placeholder="homeagent.example.com" autocomplete="off">
                     <span class="text-muted" style="font-size: 0.74rem; margin-top: 4px;">服务端的完整域名，多个域名使用英文逗号分隔。</span>
+                  </div>
+
+                  <div class="form-group" style="display: flex; align-items: flex-start; gap: 8px; margin-top: 14px;">
+                    <input type="checkbox" id="serverNetworkExternalWriterConfirmed" style="width: 18px; height: 18px; margin-top: 2px;">
+                    <label for="serverNetworkExternalWriterConfirmed" style="margin: 0; font-size: 0.78rem;">我确认有权管理这些域名，并已停止其他 DDNS 发布器写入相同记录。</label>
                   </div>
 
                   <div id="serverNetworkInfoBox" class="detail-row" style="margin-top: 14px; padding: 8px 12px; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08);">

@@ -265,6 +265,19 @@ func TestBrowserLayoutAndAccessibility(t *testing.T) {
 		w.Write([]byte(`{"success":true,"accepted":true}`))
 	})
 
+	mux.HandleFunc("/api/v1/server/network/candidates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"detection_id":"detection-test","status":"ready","resolved_interface":"en0","resolved_address":"240e:390:1::100","record_candidates":[{"record":"home.example.com","source":"server_url","saved":false,"selected":false,"rejected":false}]}`))
+	})
+	mux.HandleFunc("/api/v1/server/network/validate", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"validation_status":"valid","validation_token":"validation-test","planned_address":"240e:390:1::100"}`))
+	})
+	mux.HandleFunc("/api/v1/server/network", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"configured":true,"enabled":false,"records":[],"status":"disabled","config_version":1,"resolved_interface":"en0","resolved_address":"240e:390:1::100"}`))
+	})
+
 	mux.HandleFunc("/api/v1/devices/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/health/events") {

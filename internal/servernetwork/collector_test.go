@@ -2,6 +2,7 @@ package servernetwork
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -12,6 +13,15 @@ import (
 type mockAddressProvider struct {
 	addrs []networkaddr.ReportedIPv6Address
 	err   error
+}
+
+type mockRouteResolver struct {
+	route networkaddr.DefaultIPv6Route
+	err   error
+}
+
+func (m mockRouteResolver) ResolveDefaultIPv6Route(context.Context) (networkaddr.DefaultIPv6Route, error) {
+	return m.route, m.err
 }
 
 func (m *mockAddressProvider) GetAddresses(ctx context.Context, iface string) ([]networkaddr.ReportedIPv6Address, error) {
@@ -27,12 +37,12 @@ func TestCollector_CollectAndSelectCandidate(t *testing.T) {
 	past := now.Add(-1 * time.Hour)
 
 	tests := []struct {
-		name              string
-		providerAddrs     []networkaddr.ReportedIPv6Address
-		currentConfirmed  netip.Addr
-		expectAddr        netip.Addr
-		expectErr         error
-		now               time.Time
+		name             string
+		providerAddrs    []networkaddr.ReportedIPv6Address
+		currentConfirmed netip.Addr
+		expectAddr       netip.Addr
+		expectErr        error
+		now              time.Time
 	}{
 		{
 			name: "single valid address",
@@ -131,3 +141,33 @@ func TestCollector_ProviderErrorAndDefaults(t *testing.T) {
 	}
 }
 
+func TestCollector_AutomaticallyResolvesDefaultRouteAndAddress(t *testing.T) {
+	provider := &mockAddressProvider{addrs: []networkaddr.ReportedIPv6Address{
+		{Address: "240e:390:1234::20", Interface: "en0"},
+		{Address: "240e:390:1234::10", Interface: "en0"},
+	}}
+	collector := NewAutoCollectorWithTime(provider, mockRouteResolver{route: networkaddr.DefaultIPv6Route{
+		Interface: "en0",
+		Gateway:   "fe80::1%en0",
+	}}, func() time.Time { return time.Now().UTC() })
+
+	result, err := collector.Detect(context.Background(), netip.Addr{})
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if result.Interface != "en0" || result.Address.String() != "240e:390:1234::10" {
+		t.Fatalf("unexpected automatic result: %+v", result)
+	}
+}
+
+func TestCollector_AutomaticResolutionRejectsVirtualDefaultRoute(t *testing.T) {
+	collector := NewAutoCollectorWithTime(&mockAddressProvider{}, mockRouteResolver{route: networkaddr.DefaultIPv6Route{
+		Interface: "utun3",
+		Gateway:   "fe80::1%utun3",
+	}}, func() time.Time { return time.Now().UTC() })
+
+	_, err := collector.Detect(context.Background(), netip.Addr{})
+	if !errors.Is(err, ErrUnsupportedRouteInterface) {
+		t.Fatalf("expected ErrUnsupportedRouteInterface, got %v", err)
+	}
+}

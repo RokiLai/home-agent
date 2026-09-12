@@ -385,29 +385,25 @@ func serve(c config) error {
 	if cfClient != nil {
 		store := servernetwork.NewFileStateStore(c.dataDir)
 		enabled := c.serverIPv6SelfUpdate
-		iface := c.serverIPv6Interface
 		records := strings.Split(c.serverDDNSRecords, ",")
+		configVersion := int64(1)
 
 		// 优先读取 Web 管理端已保存的持久化配置
 		if persistedCfg, err := store.LoadConfig(); err == nil && persistedCfg != nil {
 			enabled = persistedCfg.Enabled
-			if persistedCfg.Interface != "" {
-				iface = persistedCfg.Interface
-			}
 			if len(persistedCfg.Records) > 0 {
 				records = persistedCfg.Records
 			}
+			if persistedCfg.Version > 0 {
+				configVersion = persistedCfg.Version
+			}
 		}
 
-		if iface == "" && runtime.GOOS == "darwin" {
-			iface = "en0"
-		}
-
-		collector := servernetwork.NewCollector(iface, networkaddr.NewDefaultProvider())
+		collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
 		coord, err := servernetwork.NewCoordinator(servernetwork.Config{
 			Enabled:    enabled,
-			Interface:  iface,
 			Records:    records,
+			Version:    configVersion,
 			Interval:   c.serverDDNSInterval,
 			Debounce:   c.serverDDNSDebounce,
 			MaxBackoff: 60 * time.Second,
