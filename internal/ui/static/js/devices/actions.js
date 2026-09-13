@@ -524,6 +524,73 @@ export function closeHealthModal() {
   requestCloseModal('deviceHealthModal');
 }
 
+export const HEALTH_EVENT_TYPE_LABELS = {
+  opened: { text: '异常产生', className: 'status-error' },
+  resolved: { text: '已恢复', className: 'status-synced' },
+  changed: { text: '状态变更', className: 'status-pending' }
+};
+
+export const HEALTH_REASON_CODE_LABELS = {
+  device_offline: '设备离线',
+  heartbeat_stale: '心跳陈旧',
+  device_never_seen: '从未上报',
+  agent_version_outdated: '客户端版本过旧',
+  agent_version_invalid: '客户端版本非法',
+  ssh_sync_failed: 'SSH 密钥同步失败',
+  ssh_key_drift: 'SSH 密钥配置漂移',
+  ddns_sync_failed: 'DDNS 解析同步失败',
+  ddns_no_valid_address: '未检测到有效 IPv6',
+  ddns_address_drift: 'DDNS 解析记录漂移',
+  ddns_prefix_stale: 'IPv6 网络前缀陈旧',
+  upgrade_failed: '自升级执行失败',
+  upgrade_not_converged: '自升级未收敛',
+  disk_space_low: '磁盘空间不足',
+  memory_pressure: '内存压力偏高'
+};
+
+export function formatHealthEventType(type) {
+  const normalized = (type || '').toLowerCase();
+  const entry = HEALTH_EVENT_TYPE_LABELS[normalized];
+  if (entry) {
+    return { label: entry.text, className: entry.className };
+  }
+  return {
+    label: (type || '').toUpperCase() || 'UNKNOWN',
+    className: 'status-secondary'
+  };
+}
+
+export function formatHealthReasonCode(code) {
+  if (!code) return { label: '未知原因', code: '' };
+  const label = HEALTH_REASON_CODE_LABELS[code];
+  return {
+    label: label || code,
+    code: code
+  };
+}
+
+export function renderHealthEventsTimeline(events) {
+  if (!events || events.length === 0) {
+    return `<div class="text-muted" style="padding:6px 0;">暂无状态变动历史记录。</div>`;
+  }
+  return events.map(ev => {
+    const typeInfo = formatHealthEventType(ev.type);
+    const reasonInfo = formatHealthReasonCode(ev.reason_code);
+    const timeStr = ev.occurred_at ? new Date(ev.occurred_at).toLocaleTimeString() : '-';
+    const showCodeTag = reasonInfo.code && reasonInfo.label !== reasonInfo.code;
+    return `
+      <div class="health-event-item" style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,0.02);border-radius:4px;gap:8px;">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+          <span class="status-badge ${typeInfo.className}" style="font-size:0.65rem;flex-shrink:0;">${escapeHTML(typeInfo.label)}</span>
+          <span style="font-weight:600;font-size:0.8rem;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHTML(reasonInfo.code)}">${escapeHTML(reasonInfo.label)}</span>
+          ${showCodeTag ? `<span class="font-mono text-muted" style="font-size:0.68rem;flex-shrink:0;opacity:0.75;">(${escapeHTML(reasonInfo.code)})</span>` : ''}
+        </div>
+        <span class="text-muted" style="font-size:0.72rem;flex-shrink:0;white-space:nowrap;">${escapeHTML(timeStr)}</span>
+      </div>
+    `;
+  }).join('');
+}
+
 export async function openHealthModal(deviceID, triggerEl) {
   const d = state.devices.find(dev => dev.id === deviceID);
   if (!d) return;
@@ -642,19 +709,7 @@ export async function openHealthModal(deviceID, triggerEl) {
       if (res.ok) {
         const data = await res.json();
         const events = data.events || [];
-        if (events.length === 0) {
-          timeline.innerHTML = `<div class="text-muted" style="padding:6px 0;">暂无状态变动历史记录。</div>`;
-        } else {
-          timeline.innerHTML = events.map(ev => `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,0.02);border-radius:4px;">
-              <div>
-                <span class="status-badge ${ev.type === 'resolved' ? 'status-synced' : 'status-error'}" style="font-size:0.65rem;margin-right:6px;">${escapeHTML(ev.type.toUpperCase())}</span>
-                <span class="font-mono" style="font-weight:600;">${escapeHTML(ev.reason_code)}</span>
-              </div>
-              <span class="text-muted" style="font-size:0.72rem;">${new Date(ev.occurred_at).toLocaleTimeString()}</span>
-            </div>
-          `).join('');
-        }
+        timeline.innerHTML = renderHealthEventsTimeline(events);
       } else {
         timeline.innerHTML = `<div class="text-muted">无法拉取历史记录</div>`;
       }
