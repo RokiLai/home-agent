@@ -1,0 +1,9 @@
+task: dynamic-about-server-version
+description: 将“关于系统”页面中的服务端版本硬编码改为通过 API 动态绑定渲染，并升级服务端版本至 v0.6.26。
+allowed_paths:
+  - changes/dynamic-about-server-version.yaml
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html
+  - internal/ui/static/js/settings.js
+  - internal/ui/testdata/version-status.test.mjs

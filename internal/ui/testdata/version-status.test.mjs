@@ -9,7 +9,7 @@ test('version status renders independent server and agent channels without false
   const elements = new Map([
     'serverCurrentVersion', 'serverLatestVersion', 'serverVersionState', 'serverVersionCheckedAt',
     'serverUpgradeBtn', 'serverReleaseLink', 'agentLatestVersion', 'agentVersionState',
-    'agentVersionCheckedAt', 'agentUpdateSummary', 'versionRefreshBtn'
+    'agentVersionCheckedAt', 'agentUpdateSummary', 'versionRefreshBtn', 'aboutServerVersion'
   ].map(id => [id, element()]));
   globalThis.window = { location: { origin: 'http://homeagent.test', hash: '' }, addEventListener() {} };
   globalThis.localStorage = { getItem() { return null; } };
@@ -22,6 +22,7 @@ test('version status renders independent server and agent channels without false
   });
 
   assert.equal(elements.get('serverCurrentVersion').textContent, 'v0.6.14');
+  assert.equal(elements.get('aboutServerVersion').textContent, 'v0.6.14');
   assert.equal(elements.get('serverLatestVersion').textContent, 'v0.6.15');
   assert.equal(elements.get('serverUpgradeBtn').disabled, false);
   assert.match(elements.get('agentVersionState').textContent, /检查失败/);
