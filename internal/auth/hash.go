@@ -16,6 +16,18 @@ const (
 	DefaultBcryptCost = 12
 )
 
+var currentBcryptCost = DefaultBcryptCost
+
+// SetBcryptCostForTest 允许测试套件在初始化或测试运行期间调整哈希代价。
+// 返回恢复函数以支持 defer 还原。
+func SetBcryptCostForTest(cost int) func() {
+	prev := currentBcryptCost
+	currentBcryptCost = cost
+	return func() {
+		currentBcryptCost = prev
+	}
+}
+
 // HashToken 计算任意明文 Token 的 SHA-256 十六进制哈希串。
 func HashToken(rawToken string) string {
 	if rawToken == "" {
@@ -35,7 +47,7 @@ func SecureCompareHash(hash1, hash2 string) bool {
 
 // HashPassword 使用 bcrypt 算法生成强密码哈希。
 func HashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), DefaultBcryptCost)
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), currentBcryptCost)
 	if err != nil {
 		return "", fmt.Errorf("hash password: %w", err)
 	}

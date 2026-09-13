@@ -382,6 +382,7 @@ func serve(c config) error {
 	}
 
 	var serverNetworkCoord *servernetwork.Coordinator
+	serverIPv6Collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
 	if cfClient != nil {
 		store := servernetwork.NewFileStateStore(c.dataDir)
 		enabled := c.serverIPv6SelfUpdate
@@ -399,7 +400,6 @@ func serve(c config) error {
 			}
 		}
 
-		collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
 		coord, err := servernetwork.NewCoordinator(servernetwork.Config{
 			Enabled:    enabled,
 			Records:    records,
@@ -420,7 +420,7 @@ func serve(c config) error {
 				}
 				return nil
 			},
-		}, collector, cfClient, store, logger)
+		}, serverIPv6Collector, cfClient, store, logger)
 		if err != nil {
 			logger.Warn("init_server_ipv6_coordinator_failed", "error", err)
 		} else {
@@ -550,6 +550,7 @@ func serve(c config) error {
 		GitHubReleaseClient:      releaseClient,
 		VersionStatus:            versionStatusSvc,
 		ServerUpgradeOperations:  serverUpgradeOperations,
+		ServerIPv6Collector:      serverIPv6Collector,
 		ServerNetworkCoordinator: serverNetworkCoord,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}

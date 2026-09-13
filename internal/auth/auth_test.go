@@ -8,7 +8,31 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
+
+func init() {
+	SetBcryptCostForTest(bcrypt.MinCost)
+}
+
+func TestDefaultBcryptCostProductionContract(t *testing.T) {
+	if DefaultBcryptCost != 12 {
+		t.Fatalf("DefaultBcryptCost must be 12 for production security, got %d", DefaultBcryptCost)
+	}
+	// 验证以生产标准代价 12 生成的哈希能够被 CheckPassword 成功识别并匹配
+	pass := "ProdContractPass123!"
+	bytes, err := bcrypt.GenerateFromPassword([]byte(pass), DefaultBcryptCost)
+	if err != nil {
+		t.Fatalf("GenerateFromPassword with DefaultBcryptCost failed: %v", err)
+	}
+	if !CheckPassword(string(bytes), pass) {
+		t.Fatal("CheckPassword failed on hash generated with DefaultBcryptCost")
+	}
+	if CheckPassword(string(bytes), "WrongPass!") {
+		t.Fatal("CheckPassword matched incorrect password on DefaultBcryptCost hash")
+	}
+}
 
 type mockAuthorizer struct {
 	tokens map[string]string // token -> deviceID

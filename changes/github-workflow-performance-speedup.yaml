@@ -1,0 +1,12 @@
+task: github-workflow-performance-speedup
+description: 实施 GitHub Actions 工作流测试与构建提速方案：测试模式 Bcrypt 密码哈希代价解耦、前端 Node 契约测试并发调度、发布资产多目标并发编译与构建缓存隔离。
+allowed_paths:
+  - changes/github-workflow-performance-speedup.yaml
+  - docs/planning/GitHub工作流测试与构建提速方案.md
+  - internal/auth/hash.go
+  - internal/auth/auth_test.go
+  - internal/api/api_test.go
+  - internal/ui/embed_test.go
+  - .github/workflows/release.yml
+  - internal/version/version.go
+  - internal/version/version_test.go

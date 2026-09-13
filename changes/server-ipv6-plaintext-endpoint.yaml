@@ -1,0 +1,14 @@
+task: server-ipv6-plaintext-endpoint
+description: 提供服务端原生自举与设备 IPv6 纯文本接口，支持回环免密与脱敏自举，解耦外部 ddns-go 同机更新
+allowed_paths:
+  - changes/server-ipv6-plaintext-endpoint.yaml
+  - docs/features/服务端与设备IPv6纯文本接口与ddns-go解耦方案.md
+  - internal/api/api.go
+  - internal/api/server_network_test.go
+  - internal/api/api_test.go
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-server/main_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html
+  - internal/ui/embed_test.go

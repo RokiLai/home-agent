@@ -10,7 +10,10 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+	"time"
 
+	"homeagent/internal/auth"
+	"homeagent/internal/devicestate"
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/servernetwork"
 )
@@ -171,5 +174,158 @@ func TestServerNetworkAPI_GetAndPut(t *testing.T) {
 	handler.ServeHTTP(wUnauth, unauthReq)
 	if wUnauth.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401 for missing token, got %d", wUnauth.Code)
+	}
+}
+
+func TestServerIPv6TextEndpoint(t *testing.T) {
+	prov := &mockProviderForAPI{
+		addrs: []networkaddr.ReportedIPv6Address{
+			{Address: "240e:390:1::100", Interface: "en0"},
+		},
+	}
+	collector := servernetwork.NewCollector("en0", prov)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server := &Server{
+		Token:               "admin-token",
+		ServerIPv6Collector: collector,
+		Log:                 logger,
+	}
+	handler := server.Handler()
+
+	// 1. 本地回环 IPv4 (127.0.0.1) 免密直通
+	reqLoop4 := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6", nil)
+	reqLoop4.RemoteAddr = "127.0.0.1:54321"
+	wLoop4 := httptest.NewRecorder()
+	handler.ServeHTTP(wLoop4, reqLoop4)
+	if wLoop4.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 127.0.0.1 loopback, got %d: %s", wLoop4.Code, wLoop4.Body.String())
+	}
+	if ct := wLoop4.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Fatalf("expected text/plain; charset=utf-8, got %q", ct)
+	}
+	if body := wLoop4.Body.String(); body != "240e:390:1::100\n" {
+		t.Fatalf("expected 240e:390:1::100\\n, got %q", body)
+	}
+
+	// 2. 本地回环 IPv6 (::1) 免密直通
+	reqLoop6 := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6", nil)
+	reqLoop6.RemoteAddr = "[::1]:54321"
+	wLoop6 := httptest.NewRecorder()
+	handler.ServeHTTP(wLoop6, reqLoop6)
+	if wLoop6.Code != http.StatusOK {
+		t.Fatalf("expected 200 for [::1] loopback, got %d: %s", wLoop6.Code, wLoop6.Body.String())
+	}
+	if body := wLoop6.Body.String(); body != "240e:390:1::100\n" {
+		t.Fatalf("expected 240e:390:1::100\\n, got %q", body)
+	}
+
+	// 3. 外部网络 (192.168.1.50) 无 Token 被拦截
+	reqExtUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6", nil)
+	reqExtUnauth.RemoteAddr = "192.168.1.50:54321"
+	wExtUnauth := httptest.NewRecorder()
+	handler.ServeHTTP(wExtUnauth, reqExtUnauth)
+	if wExtUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for external unauthenticated request, got %d", wExtUnauth.Code)
+	}
+
+	// 4. 外部网络带 Authorization Header 通过
+	reqExtAuthHeader := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6", nil)
+	reqExtAuthHeader.RemoteAddr = "192.168.1.50:54321"
+	reqExtAuthHeader.Header.Set("Authorization", "Bearer admin-token")
+	wExtAuthHeader := httptest.NewRecorder()
+	handler.ServeHTTP(wExtAuthHeader, reqExtAuthHeader)
+	if wExtAuthHeader.Code != http.StatusOK {
+		t.Fatalf("expected 200 for external authenticated header request, got %d: %s", wExtAuthHeader.Code, wExtAuthHeader.Body.String())
+	}
+
+	// 5. 外部网络带 Query 参数 ?token=admin-token 通过
+	reqExtAuthQuery := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6?token=admin-token", nil)
+	reqExtAuthQuery.RemoteAddr = "192.168.1.50:54321"
+	wExtAuthQuery := httptest.NewRecorder()
+	handler.ServeHTTP(wExtAuthQuery, reqExtAuthQuery)
+	if wExtAuthQuery.Code != http.StatusOK {
+		t.Fatalf("expected 200 for external authenticated query request, got %d: %s", wExtAuthQuery.Code, wExtAuthQuery.Body.String())
+	}
+
+	sm, err := auth.NewSessionManager(t.TempDir() + "/sessions.json")
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+	serverWithSM := &Server{
+		Token:               "admin-token",
+		ServerIPv6Collector: collector,
+		SessionManager:      sm,
+		Log:                 logger,
+	}
+	handlerWithSM := serverWithSM.Handler()
+	wExtAuthWithSM := httptest.NewRecorder()
+	handlerWithSM.ServeHTTP(wExtAuthWithSM, reqExtAuthQuery)
+	if wExtAuthWithSM.Code != http.StatusOK {
+		t.Fatalf("expected 200 for external token request when SessionManager is enabled, got %d: %s", wExtAuthWithSM.Code, wExtAuthWithSM.Body.String())
+	}
+
+	// 6. 无有效地址时返回 503 纯文本
+	prov.addrs = nil
+	reqNoAddr := httptest.NewRequest(http.MethodGet, "/api/v1/server/ipv6", nil)
+	reqNoAddr.RemoteAddr = "127.0.0.1:54321"
+	wNoAddr := httptest.NewRecorder()
+	handler.ServeHTTP(wNoAddr, reqNoAddr)
+	if wNoAddr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no valid address, got %d: %s", wNoAddr.Code, wNoAddr.Body.String())
+	}
+	if ct := wNoAddr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Fatalf("expected text/plain on failure, got %q", ct)
+	}
+}
+
+func TestDeviceIPv6TextEndpoint_LoopbackAndToken(t *testing.T) {
+	devStateSvc := devicestate.NewService(nil)
+	_, _, err := devStateSvc.UpdateReportedAddresses(
+		"dev-1", "home", 1, time.Now().UTC(),
+		[]networkaddr.ReportedIPv6Address{{Address: "2001:db8:1::100"}},
+	)
+	if err != nil {
+		t.Fatalf("failed to update addresses: %v", err)
+	}
+
+	server := &Server{
+		Token:              "admin-token",
+		DeviceStateService: devStateSvc,
+		Log:                slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	handler := server.Handler()
+
+	// 1. 本地回环请求免密访问设备 IPv6
+	reqLoop := httptest.NewRequest(http.MethodGet, "/api/v1/devices/dev-1/ipv6", nil)
+	reqLoop.RemoteAddr = "127.0.0.1:43210"
+	wLoop := httptest.NewRecorder()
+	handler.ServeHTTP(wLoop, reqLoop)
+	if wLoop.Code != http.StatusOK {
+		t.Fatalf("expected 200 for loopback device ipv6 query, got %d: %s", wLoop.Code, wLoop.Body.String())
+	}
+	if body := wLoop.Body.String(); body != "2001:db8:1::100\n" {
+		t.Fatalf("expected 2001:db8:1::100\\n, got %q", body)
+	}
+
+	// 2. 外部请求无 Token 返回 401
+	reqExtUnauth := httptest.NewRequest(http.MethodGet, "/api/v1/devices/dev-1/ipv6", nil)
+	reqExtUnauth.RemoteAddr = "192.168.1.50:43210"
+	wExtUnauth := httptest.NewRecorder()
+	handler.ServeHTTP(wExtUnauth, reqExtUnauth)
+	if wExtUnauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated external request, got %d", wExtUnauth.Code)
+	}
+
+	// 3. 外部请求携带 Query 参数 ?token=admin-token 返回 200
+	reqExtToken := httptest.NewRequest(http.MethodGet, "/api/v1/devices/dev-1/ipv6?token=admin-token", nil)
+	reqExtToken.RemoteAddr = "192.168.1.50:43210"
+	wExtToken := httptest.NewRecorder()
+	handler.ServeHTTP(wExtToken, reqExtToken)
+	if wExtToken.Code != http.StatusOK {
+		t.Fatalf("expected 200 for query token external request, got %d: %s", wExtToken.Code, wExtToken.Body.String())
+	}
+	if body := wExtToken.Body.String(); body != "2001:db8:1::100\n" {
+		t.Fatalf("expected 2001:db8:1::100\\n, got %q", body)
 	}
 }

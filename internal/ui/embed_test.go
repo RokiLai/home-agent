@@ -19,6 +19,7 @@ import (
 )
 
 func TestIdempotencyKeyBrowserCompatibility(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/idempotency.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -27,6 +28,7 @@ func TestIdempotencyKeyBrowserCompatibility(t *testing.T) {
 }
 
 func TestDeviceListResponseRendersDOMWithoutUncaughtErrors(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/device-rendering.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -35,6 +37,7 @@ func TestDeviceListResponseRendersDOMWithoutUncaughtErrors(t *testing.T) {
 }
 
 func TestLogoutResponseRendersVisibleLoginPanel(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/auth-logout.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -43,6 +46,7 @@ func TestLogoutResponseRendersVisibleLoginPanel(t *testing.T) {
 }
 
 func TestUpgradeAllFrontendTracksFinalOutcomes(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/upgrade-results.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -51,6 +55,7 @@ func TestUpgradeAllFrontendTracksFinalOutcomes(t *testing.T) {
 }
 
 func TestMobileResponsiveContractAndRendering(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/mobile-responsive.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -59,6 +64,7 @@ func TestMobileResponsiveContractAndRendering(t *testing.T) {
 }
 
 func TestMultiUserAndRBACDOMTests(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/multi-user-rbac.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -67,6 +73,7 @@ func TestMultiUserAndRBACDOMTests(t *testing.T) {
 }
 
 func TestFrontendSyntaxAndScopeIntegrity(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/frontend-syntax.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -75,6 +82,7 @@ func TestFrontendSyntaxAndScopeIntegrity(t *testing.T) {
 }
 
 func TestConsoleInformationArchitecturePhase1(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/console-ia-phase1.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -83,6 +91,7 @@ func TestConsoleInformationArchitecturePhase1(t *testing.T) {
 }
 
 func TestConsoleInformationArchitecturePhase2(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/console-ia-phase2.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -91,6 +100,7 @@ func TestConsoleInformationArchitecturePhase2(t *testing.T) {
 }
 
 func TestConsoleInformationArchitecturePhase3(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/console-ia-phase3.test.mjs")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -99,6 +109,7 @@ func TestConsoleInformationArchitecturePhase3(t *testing.T) {
 }
 
 func TestBrowserLayoutAndAccessibility(t *testing.T) {
+	t.Parallel()
 	var authMu sync.Mutex
 	isLoggedIn := false
 
