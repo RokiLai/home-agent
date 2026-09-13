@@ -128,12 +128,16 @@ jobs:
           SERVER_VERSION: ${{ needs.prepare.outputs.server_version }}
         run: |
           mkdir -p dist
-          while read -r component goos goarch output; do
+          build_target() {
+            local component="$1" goos="$2" goarch="$3" output="$4"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
               -ldflags "-s -w -X homeagent/internal/version.ServerVersion=${SERVER_VERSION}" \
               -o "dist/${output}" "./cmd/homeagent-${component}"
             (cd dist && sha256sum "$output" > "${output}.sha256")
-          done <<'TARGETS'
+          }
+          export -f build_target
+          export SERVER_VERSION
+          cat <<'TARGETS' | xargs -n 4 -P 2 bash -c 'build_target "$@"' _
           server linux amd64 homeagent-server-linux-amd64
           server linux arm64 homeagent-server-linux-arm64
           server linux arm homeagent-server-linux-arm
@@ -174,12 +178,16 @@ jobs:
           AGENT_VERSION: ${{ needs.prepare.outputs.agent_version }}
         run: |
           mkdir -p dist
-          while read -r component goos goarch output; do
+          build_target() {
+            local component="$1" goos="$2" goarch="$3" output="$4"
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
               -ldflags "-s -w -X homeagent/internal/version.AgentVersion=${AGENT_VERSION}" \
               -o "dist/${output}" "./cmd/homeagent-${component}"
             (cd dist && sha256sum "$output" > "${output}.sha256")
-          done <<'TARGETS'
+          }
+          export -f build_target
+          export AGENT_VERSION
+          cat <<'TARGETS' | xargs -n 4 -P 2 bash -c 'build_target "$@"' _
           agent linux amd64 homeagent-agent-linux-amd64
           agent linux arm64 homeagent-agent-linux-arm64
           agent linux arm homeagent-agent-linux-arm

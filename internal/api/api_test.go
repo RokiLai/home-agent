@@ -34,7 +34,13 @@ import (
 	"homeagent/internal/sshsync"
 	"homeagent/internal/upgradeplan"
 	"homeagent/internal/versionstatus"
+
+	"golang.org/x/crypto/bcrypt"
 )
+
+func init() {
+	auth.SetBcryptCostForTest(bcrypt.MinCost)
+}
 
 func TestRegisterListDelete(t *testing.T) {
 	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
