@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -238,4 +239,166 @@ func parsePage(raw string) int {
 	var page int
 	_, _ = fmt.Sscanf(raw, "%d", &page)
 	return page
+}
+
+func TestClientTokenFuncInjectsAuthorizationBearer(t *testing.T) {
+	var receivedAuthHeader string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			_, _ = fmt.Fprint(w, `{"id":100,"tag_name":"v1.0.0","name":"v1.0.0"}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			_, _ = fmt.Fprint(w, `[{"id":200,"tag_name":"server-v1.0.0","name":"server-v1.0.0","draft":false,"prerelease":false}]`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{
+		Repo:    "RokiLai/home-agent",
+		APIBase: ts.URL,
+		TokenFunc: func() string {
+			return "ghp_test_token_secret_xyz"
+		},
+	})
+
+	// 1. GetLatestComponentRelease
+	rel, err := c.GetLatestComponentRelease(context.Background(), ComponentServer, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rel.TagName != "server-v1.0.0" {
+		t.Fatalf("unexpected tag: %s", rel.TagName)
+	}
+	if receivedAuthHeader != "Bearer ghp_test_token_secret_xyz" {
+		t.Fatalf("expected Bearer header, got %q", receivedAuthHeader)
+	}
+
+	// 2. GetLatestRelease
+	receivedAuthHeader = ""
+	relLatest, err := c.GetLatestRelease(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error on latest release: %v", err)
+	}
+	if relLatest.TagName != "v1.0.0" {
+		t.Fatalf("unexpected tag: %s", relLatest.TagName)
+	}
+	if receivedAuthHeader != "Bearer ghp_test_token_secret_xyz" {
+		t.Fatalf("expected Bearer header on latest release, got %q", receivedAuthHeader)
+	}
+}
+
+func TestClientTokenFuncNilOrEmptySendsNoAuthorization(t *testing.T) {
+	var receivedAuthHeader string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"id":300,"tag_name":"server-v1.0.0","draft":false,"prerelease":false}]`)
+	}))
+	defer ts.Close()
+
+	// 1. Nil TokenFunc
+	cNil := NewClient(Config{
+		Repo:      "RokiLai/home-agent",
+		APIBase:   ts.URL,
+		TokenFunc: nil,
+	})
+	if _, err := cNil.GetLatestComponentRelease(context.Background(), ComponentServer, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedAuthHeader != "" {
+		t.Fatalf("expected no Authorization header when nil, got %q", receivedAuthHeader)
+	}
+
+	// 2. Empty or whitespace TokenFunc
+	cEmpty := NewClient(Config{
+		Repo:    "RokiLai/home-agent",
+		APIBase: ts.URL,
+		TokenFunc: func() string {
+			return "   \t\n  "
+		},
+	})
+	receivedAuthHeader = "dirty"
+	if _, err := cEmpty.GetLatestComponentRelease(context.Background(), ComponentServer, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedAuthHeader != "" {
+		t.Fatalf("expected no Authorization header when empty string, got %q", receivedAuthHeader)
+	}
+}
+
+func TestClientTokenFuncDoesNotLeakToAssetDownloads(t *testing.T) {
+	rawHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	var receivedAuthHeader string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "%s  homeagent-server-darwin-arm64\n", rawHash)
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{
+		Repo:            "RokiLai/home-agent",
+		DownloadBaseURL: ts.URL,
+		TokenFunc: func() string {
+			return "sensitive_token_do_not_send_to_s3"
+		},
+	})
+
+	hash, err := c.FetchAssetSHA256(context.Background(), "server-v1.0.0", "homeagent-server-darwin-arm64")
+	if err != nil {
+		t.Fatalf("unexpected error fetching sha256: %v", err)
+	}
+	if hash != rawHash {
+		t.Fatalf("expected hash %s, got %s", rawHash, hash)
+	}
+	if receivedAuthHeader != "" {
+		t.Fatalf("Authorization header must NOT be sent to static asset download endpoints: got %q", receivedAuthHeader)
+	}
+}
+
+func TestClientHandles401UnauthorizedAnd403RateLimit(t *testing.T) {
+	statusToReturn := http.StatusUnauthorized
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusToReturn)
+		if statusToReturn == http.StatusUnauthorized {
+			_, _ = fmt.Fprint(w, `{"message":"Bad credentials","status":"401"}`)
+		} else if statusToReturn == http.StatusForbidden {
+			_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded","status":"403"}`)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{
+		Repo:    "RokiLai/home-agent",
+		APIBase: ts.URL,
+		TokenFunc: func() string {
+			return "bad_revoked_token"
+		},
+	})
+
+	// 1. 401 Unauthorized
+	statusToReturn = http.StatusUnauthorized
+	_, err := c.GetLatestComponentRelease(context.Background(), ComponentServer, true)
+	if err == nil {
+		t.Fatal("expected error on 401 unauthorized")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Fatalf("expected error message to contain 401, got %v", err)
+	}
+
+	// 2. 403 Rate Limited
+	statusToReturn = http.StatusForbidden
+	_, err = c.GetLatestComponentRelease(context.Background(), ComponentServer, true)
+	if err == nil {
+		t.Fatal("expected error on 403 forbidden")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("expected error message to contain 403, got %v", err)
+	}
 }

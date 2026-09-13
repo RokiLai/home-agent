@@ -116,3 +116,15 @@ func releaseWithAssets(component githubrelease.Component, id int64, tag, compone
 	}
 	return release
 }
+
+func TestClassifyErrorBadCredentials(t *testing.T) {
+	err401 := errors.New("github api returned status 401 for releases list")
+	if code := classifyError(err401); code != "bad_credentials" {
+		t.Fatalf("expected bad_credentials, got %q", code)
+	}
+
+	errBadCreds := errors.New("github api returned 401: bad credentials")
+	if code := classifyError(errBadCreds); code != "bad_credentials" {
+		t.Fatalf("expected bad_credentials, got %q", code)
+	}
+}

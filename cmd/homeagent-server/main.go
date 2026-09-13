@@ -57,6 +57,7 @@ type config struct {
 	storageDriver, mysqlDSN                               string
 	consulAddr, consulService                             string
 	githubRepo, githubMirrorPrefix, upgradeSource         string
+	githubToken                                           string
 	timeout                                               time.Duration
 	sync                                                  bool
 	mac, broadcast                                        string
@@ -136,6 +137,7 @@ func parseConfig(name string, args []string) (config, []string, error) {
 		scripts:            env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
 		githubRepo:         env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"),
 		githubMirrorPrefix: env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""),
+		githubToken:        env("HOMEAGENT_GITHUB_TOKEN", env("GITHUB_TOKEN", "")),
 		upgradeSource:      env("HOMEAGENT_UPGRADE_SOURCE", "github"),
 		timeout:            5 * time.Second,
 		sync:               true,
@@ -163,6 +165,7 @@ func parseConfig(name string, args []string) (config, []string, error) {
 	fs.StringVar(&c.scripts, "scripts-dir", c.scripts, "installer scripts directory")
 	fs.StringVar(&c.githubRepo, "github-repo", c.githubRepo, "GitHub repository (owner/repo)")
 	fs.StringVar(&c.githubMirrorPrefix, "github-mirror-prefix", c.githubMirrorPrefix, "GitHub mirror or proxy prefix")
+	fs.StringVar(&c.githubToken, "github-token", c.githubToken, "GitHub personal access token for release querying")
 	fs.StringVar(&c.upgradeSource, "upgrade-source", c.upgradeSource, "upgrade source mode (github or local)")
 	fs.DurationVar(&c.timeout, "ssh-timeout", c.timeout, "SSH timeout")
 	fs.BoolVar(&c.sync, "sync", c.sync, "enable SSH synchronization")
@@ -208,6 +211,30 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+type githubTokenGetter interface {
+	GetCredentials() (githubsync.GitHubCredentials, error)
+}
+
+func resolveGitHubToken(svc githubTokenGetter, fallbackToken string) string {
+	if svc != nil {
+		if creds, err := svc.GetCredentials(); err == nil {
+			if tok := strings.TrimSpace(creds.Auth.AccessToken); tok != "" {
+				return tok
+			}
+		}
+	}
+	if tok := strings.TrimSpace(fallbackToken); tok != "" {
+		return tok
+	}
+	if tok := strings.TrimSpace(os.Getenv("HOMEAGENT_GITHUB_TOKEN")); tok != "" {
+		return tok
+	}
+	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
+		return tok
+	}
+	return ""
 }
 
 func components(c config) (*registry.Registry, *sshsync.Controller, string, error) {
@@ -435,6 +462,9 @@ func serve(c config) error {
 	releaseClient := githubrelease.NewClient(githubrelease.Config{
 		Repo:         c.githubRepo,
 		MirrorPrefix: c.githubMirrorPrefix,
+		TokenFunc: func() string {
+			return resolveGitHubToken(ghSvc, c.githubToken)
+		},
 	})
 	versionStatusSvc, err := versionstatus.NewService(
 		releaseClient,
@@ -1015,6 +1045,7 @@ func selfUpgradeCommand(args []string) error {
 	targetVer := fs.String("version", "", "Target version (e.g. v0.7.0, defaults to latest release)")
 	repo := fs.String("repo", env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"), "GitHub repository (owner/repo)")
 	mirror := fs.String("mirror", env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""), "Optional GitHub mirror/proxy prefix")
+	token := fs.String("token", env("HOMEAGENT_GITHUB_TOKEN", env("GITHUB_TOKEN", "")), "GitHub personal access token for release querying")
 	force := fs.Bool("force", false, "Force re-download and upgrade even if already on target version")
 	checkOnly := fs.Bool("check-only", false, "Only check if a new version is available without upgrading")
 
@@ -1025,6 +1056,9 @@ func selfUpgradeCommand(args []string) error {
 	ghClient := githubrelease.NewClient(githubrelease.Config{
 		Repo:         *repo,
 		MirrorPrefix: *mirror,
+		TokenFunc: func() string {
+			return resolveGitHubToken(nil, *token)
+		},
 	})
 
 	if *checkOnly {

@@ -11,6 +11,7 @@ import (
 
 	"homeagent/internal/device"
 	"homeagent/internal/githubrelease"
+	"homeagent/internal/githubsync"
 	"homeagent/internal/versionstatus"
 )
 
@@ -413,5 +414,71 @@ func TestParseConfigServerIPv6SelfUpdate(t *testing.T) {
 	}
 	if c2.serverDDNSRecords != "custom.domain.org" {
 		t.Errorf("expected records custom.domain.org, got %s", c2.serverDDNSRecords)
+	}
+}
+
+func TestParseConfigGitHubToken(t *testing.T) {
+	t.Setenv("HOMEAGENT_GITHUB_TOKEN", "env_token_homeagent")
+	c, _, err := parseConfig("serve", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.githubToken != "env_token_homeagent" {
+		t.Fatalf("expected env_token_homeagent, got %q", c.githubToken)
+	}
+
+	c2, _, err := parseConfig("serve", []string{"--github-token", "cli_token_override"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.githubToken != "cli_token_override" {
+		t.Fatalf("expected cli_token_override, got %q", c2.githubToken)
+	}
+}
+
+type mockGitHubCredentialProvider struct {
+	creds githubsync.GitHubCredentials
+	err   error
+}
+
+func (m mockGitHubCredentialProvider) GetCredentials() (githubsync.GitHubCredentials, error) {
+	return m.creds, m.err
+}
+
+func TestResolveGitHubTokenPriority(t *testing.T) {
+	// 1. Priority 1: ghSvc has token
+	svcWithToken := mockGitHubCredentialProvider{
+		creds: githubsync.GitHubCredentials{
+			Auth: githubsync.GitHubAuth{AccessToken: "oauth_token_from_service"},
+		},
+	}
+	tok := resolveGitHubToken(svcWithToken, "fallback_token")
+	if tok != "oauth_token_from_service" {
+		t.Fatalf("expected oauth_token_from_service, got %q", tok)
+	}
+
+	// 2. Priority 2: ghSvc has no token, fallbackToken provided
+	svcEmpty := mockGitHubCredentialProvider{
+		err: githubsync.ErrNotConnected,
+	}
+	tok2 := resolveGitHubToken(svcEmpty, "cli_fallback_token")
+	if tok2 != "cli_fallback_token" {
+		t.Fatalf("expected cli_fallback_token, got %q", tok2)
+	}
+
+	// 3. Priority 3: ghSvc nil, fallbackToken empty, env var set
+	t.Setenv("HOMEAGENT_GITHUB_TOKEN", "env_token_priority")
+	t.Setenv("GITHUB_TOKEN", "")
+	tok3 := resolveGitHubToken(nil, "")
+	if tok3 != "env_token_priority" {
+		t.Fatalf("expected env_token_priority, got %q", tok3)
+	}
+
+	// 4. Priority 4: All empty -> returns empty string
+	t.Setenv("HOMEAGENT_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	tok4 := resolveGitHubToken(nil, "")
+	if tok4 != "" {
+		t.Fatalf("expected empty string, got %q", tok4)
 	}
 }
