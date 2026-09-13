@@ -107,6 +107,9 @@ before(async () => {
     `--user-data-dir=${chromeTempDir}`,
     '--no-first-run',
     '--no-default-browser-check',
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
     '--enable-features=NetworkServiceInProcess',
     '--use-mock-keychain',
     '--password-store=basic',
@@ -119,13 +122,15 @@ before(async () => {
     '--window-size=1280,800'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
+  let stderrLogs = '';
   const wsUrl = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error('Timed out waiting for Chrome DevTools listening port'));
-    }, 10000);
+      reject(new Error(`Timed out waiting for Chrome DevTools listening port. stderr: ${stderrLogs}`));
+    }, 15000);
 
     chromeProcess.stderr.on('data', (chunk) => {
       const str = chunk.toString();
+      stderrLogs += str;
       const match = str.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/);
       if (match) {
         clearTimeout(timeout);
@@ -136,6 +141,13 @@ before(async () => {
     chromeProcess.on('error', (err) => {
       clearTimeout(timeout);
       reject(err);
+    });
+
+    chromeProcess.on('exit', (code, signal) => {
+      if (code !== null && code !== 0) {
+        clearTimeout(timeout);
+        reject(new Error(`Chrome process exited unexpectedly with code ${code}, signal ${signal}. stderr: ${stderrLogs}`));
+      }
     });
   });
   cdp = new CDPClient(wsUrl);
