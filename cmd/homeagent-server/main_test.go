@@ -482,3 +482,23 @@ func TestResolveGitHubTokenPriority(t *testing.T) {
 		t.Fatalf("expected empty string, got %q", tok4)
 	}
 }
+
+func TestCheckServerSupervised(t *testing.T) {
+	// 默认未设置环境变量 -> false
+	t.Setenv("HOMEAGENT_SUPERVISED", "")
+	if checkServerSupervised() {
+		t.Fatal("expected false when HOMEAGENT_SUPERVISED is not true")
+	}
+
+	// 错误值 -> false
+	t.Setenv("HOMEAGENT_SUPERVISED", "1")
+	if checkServerSupervised() {
+		t.Fatal("expected false when HOMEAGENT_SUPERVISED is 1")
+	}
+
+	// 环境变量为 true 且当前进程目录可写 -> true
+	t.Setenv("HOMEAGENT_SUPERVISED", "true")
+	if !checkServerSupervised() {
+		t.Fatal("expected true when HOMEAGENT_SUPERVISED is true in writable directory")
+	}
+}
