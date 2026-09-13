@@ -551,6 +551,27 @@ func serve(c config) error {
 		return fmt.Errorf("initialize server upgrade operations: %w", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var serverUpgradeRunner func(context.Context, string) error
+	if checkServerSupervised() {
+		serverUpgradeRunner = func(upgradeCtx context.Context, targetVersion string) error {
+			_, err := serverupgrade.PerformServerSelfUpgrade(upgradeCtx, serverupgrade.Options{
+				TargetVersion: targetVersion,
+				Repo:          c.githubRepo,
+				MirrorPrefix:  c.githubMirrorPrefix,
+				Client:        releaseClient,
+				RestartCallback: func() error {
+					logger.Info("server_upgrade_triggering_restart", "target_version", targetVersion)
+					stop()
+					return nil
+				},
+			})
+			return err
+		}
+	}
+
 	handler := (&api.Server{
 		Registry:           r,
 		Broker:             eventBroker,
@@ -580,12 +601,11 @@ func serve(c config) error {
 		GitHubReleaseClient:      releaseClient,
 		VersionStatus:            versionStatusSvc,
 		ServerUpgradeOperations:  serverUpgradeOperations,
+		ServerUpgradeRunner:      serverUpgradeRunner,
 		ServerIPv6Collector:      serverIPv6Collector,
 		ServerNetworkCoordinator: serverNetworkCoord,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		refresh := func() {
 			for _, component := range []githubrelease.Component{githubrelease.ComponentServer, githubrelease.ComponentAgent} {
@@ -1105,4 +1125,22 @@ func selfUpgradeCommand(args []string) error {
 
 	fmt.Printf("[OK] Successfully upgraded server from %s to %s.\n", res.PreviousVersion, res.TargetVersion)
 	return nil
+}
+
+var checkServerSupervised = func() bool {
+	if os.Getenv("HOMEAGENT_SUPERVISED") != "true" {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	dir := filepath.Dir(exe)
+	tmp, err := os.CreateTemp(dir, ".permcheck-*")
+	if err != nil {
+		return false
+	}
+	_ = tmp.Close()
+	_ = os.Remove(tmp.Name())
+	return true
 }

@@ -1,0 +1,14 @@
+task: server-web-upgrade-supervisor
+description: 实施服务端 Web 界面自升级与独立恢复监督器，装配 ServerUpgradeRunner，增加宿主机独立回滚 Supervisor 脚本，补齐跨重启状态收敛与测试。
+allowed_paths:
+  - changes/server-web-upgrade-supervisor.yaml
+  - docs/features/服务端Web界面自升级与独立恢复监督设计方案.md
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-server/main_test.go
+  - internal/serverupgrade/operation.go
+  - internal/serverupgrade/operation_test.go
+  - internal/serverupgrade/upgrade.go
+  - internal/serverupgrade/upgrade_test.go
+  - scripts/homeagent-server-runner.sh

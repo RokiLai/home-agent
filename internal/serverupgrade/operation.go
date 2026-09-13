@@ -66,10 +66,21 @@ func NewOperationManager(path, currentVersion string) (*OperationManager, error)
 	}
 	changed := false
 	for id, operation := range m.operations {
-		if (operation.Status == OperationRestarting || operation.Status == OperationVerifying) && operation.TargetVersion == currentVersion {
-			operation.Status, operation.UpdatedAt = OperationSucceeded, time.Now().UTC()
-			operation.ErrorCode, operation.ErrorMessage = "", ""
-			m.operations[id], changed = operation, true
+		if operation.Status == OperationRestarting || operation.Status == OperationVerifying {
+			if operation.TargetVersion == currentVersion {
+				operation.Status, operation.UpdatedAt = OperationSucceeded, time.Now().UTC()
+				operation.ErrorCode, operation.ErrorMessage = "", ""
+				m.operations[id], changed = operation, true
+			} else if operation.PreviousVersion == currentVersion {
+				operation.Status, operation.UpdatedAt = OperationRolledBack, time.Now().UTC()
+				operation.ErrorCode, operation.ErrorMessage = "rollback_detected", "upgrade failed and rolled back to previous version"
+				operation.RollbackStatus = "restored"
+				m.operations[id], changed = operation, true
+			} else {
+				operation.Status, operation.UpdatedAt = OperationFailed, time.Now().UTC()
+				operation.ErrorCode, operation.ErrorMessage = "version_mismatch", "server restarted with unexpected version"
+				m.operations[id], changed = operation, true
+			}
 		}
 	}
 	if changed {

@@ -27,6 +27,15 @@ func TestIdempotencyKeyBrowserCompatibility(t *testing.T) {
 	}
 }
 
+func TestHealthHistoryFormattersAndTimeline(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("node", "--test", "testdata/health-history-formatters.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("health history formatters JavaScript tests failed: %v\n%s", err, output)
+	}
+}
+
 func TestDeviceListResponseRendersDOMWithoutUncaughtErrors(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/device-rendering.test.mjs")
