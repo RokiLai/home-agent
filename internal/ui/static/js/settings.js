@@ -55,7 +55,7 @@ export function switchSettingsSection(sectionName) {
   });
 
   // On demand data loading
-  if (section === 'version' || section === 'all') {
+  if (section === 'version' || section === 'about' || section === 'all') {
     loadVersionStatus();
   }
   if (section === 'network' || section === 'all') {
@@ -103,6 +103,7 @@ export function renderVersionStatus(data) {
     if (el) el.textContent = value;
   };
   setText('serverCurrentVersion', server.current_version || '未知');
+  setText('aboutServerVersion', server.current_version || '未知');
   setText('serverLatestVersion', server.latest_version || '未知');
   setText('serverVersionState', versionStateText(server));
   setText('serverVersionCheckedAt', checkedAtText(server.checked_at));
