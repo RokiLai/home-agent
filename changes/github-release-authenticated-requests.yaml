@@ -1,0 +1,14 @@
+task: github-release-authenticated-requests
+description: 实现 GitHub Release 客户端认证请求机制、凭据自动绑定复用与频控退避优化
+allowed_paths:
+  - changes/github-release-authenticated-requests.yaml
+  - docs/features/GitHub发布查询认证与频控优化设计方案.md
+  - internal/githubrelease/client.go
+  - internal/githubrelease/client_test.go
+  - internal/versionstatus/service.go
+  - internal/versionstatus/service_test.go
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-server/main_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html

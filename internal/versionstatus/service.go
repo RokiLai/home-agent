@@ -172,6 +172,9 @@ func classifyError(err error) string {
 	if strings.Contains(message, "pagination incomplete") {
 		return "incomplete"
 	}
+	if strings.Contains(message, "status 401") || strings.Contains(message, "bad credentials") {
+		return "bad_credentials"
+	}
 	if strings.Contains(message, "status 403") || strings.Contains(message, "status 429") || strings.Contains(message, "rate limit") {
 		return "rate_limited"
 	}

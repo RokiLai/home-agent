@@ -26,6 +26,7 @@ type Config struct {
 	MirrorPrefix    string        // 可选加速镜像前缀 (如 "https://ghproxy.net/")
 	CacheTTL        time.Duration // 最新 Release 缓存时长 (默认 10 分钟)
 	HTTPClient      *http.Client  // 底层 HTTP 客户端
+	TokenFunc       func() string // 动态获取 GitHub Token 的回调函数（返回空则发送匿名请求）
 }
 
 // Release 表示 GitHub Release 元数据。
@@ -70,6 +71,7 @@ type Client struct {
 	mirrorPrefix    string
 	cacheTTL        time.Duration
 	httpClient      *http.Client
+	tokenFunc       func() string
 
 	mu             sync.RWMutex
 	cachedRel      *Release
@@ -112,7 +114,16 @@ func NewClient(cfg Config) *Client {
 		mirrorPrefix:    cfg.MirrorPrefix,
 		cacheTTL:        ttl,
 		httpClient:      httpClient,
+		tokenFunc:       cfg.TokenFunc,
 		componentCache:  make(map[Component]cachedComponentRelease),
+	}
+}
+
+func (c *Client) applyAuth(req *http.Request) {
+	if c.tokenFunc != nil {
+		if token := strings.TrimSpace(c.tokenFunc()); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 }
 
@@ -142,6 +153,7 @@ func (c *Client) GetLatestComponentRelease(ctx context.Context, component Compon
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		req.Header.Set("User-Agent", "HomeAgent-Server")
+		c.applyAuth(req)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("list github releases: %w", err)
@@ -312,6 +324,7 @@ func (c *Client) GetLatestRelease(ctx context.Context, forceRefresh bool) (*Rele
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "HomeAgent-Server")
+	c.applyAuth(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
