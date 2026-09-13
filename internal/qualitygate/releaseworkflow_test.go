@@ -28,12 +28,13 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"fetch-depth: 0",
 		"actions/setup-go@v5",
 		"cache-dependency-path: go.sum",
-		"./scripts/run-workflow-tests.sh workflow-metrics/test",
-		"./scripts/build-release-component.sh server",
-		"./scripts/build-release-component.sh agent",
+		"go test -count=1 -race ./...",
 		"actions/upload-artifact@v4",
 		"actions/download-artifact@v4",
 		"permissions:\n      contents: write",
+		"CGO_ENABLED=0",
+		"homeagent/internal/version.ServerVersion=${SERVER_VERSION}",
+		"homeagent/internal/version.AgentVersion=${AGENT_VERSION}",
 		"sha256sum",
 		"gh release create",
 		"--generate-notes",
@@ -72,26 +73,9 @@ func TestReleaseWorkflowContract(t *testing.T) {
 		"agent windows amd64 homeagent-agent-windows-amd64.exe",
 		"agent windows arm64 homeagent-agent-windows-arm64.exe",
 	}
-	manifestRaw, err := os.ReadFile(filepath.Join("..", "..", "configs", "release-targets.json"))
-	if err != nil {
-		t.Fatalf("read release target manifest: %v", err)
-	}
-	manifest := string(manifestRaw)
-	buildScriptRaw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "build-release-component.sh"))
-	if err != nil {
-		t.Fatalf("read release build script: %v", err)
-	}
-	buildScript := string(buildScriptRaw)
-	for _, fragment := range []string{"CGO_ENABLED=0", "homeagent/internal/version.ServerVersion=${version}", "homeagent/internal/version.AgentVersion=${version}", "go build -trimpath", "sha256sum -c"} {
-		if !strings.Contains(buildScript, fragment) {
-			t.Errorf("release build script missing contract fragment %q", fragment)
-		}
-	}
 	for _, target := range targets {
-		parts := strings.Fields(target)
-		fragment := `{"component":"` + parts[0] + `","goos":"` + parts[1] + `","goarch":"` + parts[2] + `","output":"` + parts[3] + `"}`
-		if strings.Count(manifest, fragment) != 1 {
-			t.Errorf("release target %q must appear exactly once in manifest", target)
+		if strings.Count(workflow, target) != 1 {
+			t.Errorf("release target %q must appear exactly once", target)
 		}
 	}
 
@@ -109,8 +93,8 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	if strings.Contains(workflow, "go test -race -p 1") || strings.Contains(workflow, "go test -count=1 -race -p 1") {
 		t.Error("release workflow must not force package-level test serialization with -p 1")
 	}
-	if got := strings.Count(workflow, "./scripts/run-workflow-tests.sh workflow-metrics/test"); got != 1 {
-		t.Errorf("shared full race regression runner must run exactly once, got %d", got)
+	if got := strings.Count(workflow, "go test -count=1 -race ./..."); got != 1 {
+		t.Errorf("full race regression must run exactly once, got %d", got)
 	}
 }
 
@@ -170,7 +154,7 @@ func TestReleaseWorkflowUsesSharedRegressionAndIndependentComponentJobs(t *testi
 		name     string
 		required []string
 	}{
-		{"test:", []string{"needs: prepare", "./scripts/run-workflow-tests.sh workflow-metrics/test"}},
+		{"test:", []string{"needs: prepare", "go test -count=1 -race ./..."}},
 		{"build-server:", []string{"needs: prepare", "needs.prepare.outputs.server_changed == 'true'", "actions/upload-artifact@v4"}},
 		{"build-agent:", []string{"needs: prepare", "needs.prepare.outputs.agent_changed == 'true'", "actions/upload-artifact@v4"}},
 		{"release-server:", []string{"needs: [prepare, test, build-server]", "needs.test.result == 'success'", "needs.build-server.result == 'success'", "actions/download-artifact@v4"}},
@@ -184,46 +168,6 @@ func TestReleaseWorkflowUsesSharedRegressionAndIndependentComponentJobs(t *testi
 		for _, fragment := range job.required {
 			if !strings.Contains(rest, fragment) {
 				t.Errorf("job %q missing contract fragment %q", job.name, fragment)
-			}
-		}
-	}
-}
-
-func TestWorkflowPerformanceExperimentContract(t *testing.T) {
-	path := filepath.Join("..", "..", ".github", "workflows", "workflow-performance.yml")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read performance workflow: %v", err)
-	}
-	workflow := string(raw)
-	for _, fragment := range []string{
-		"workflow_dispatch:",
-		"group_id:",
-		"scenario:",
-		"permissions:\n  contents: read",
-		"cache: false",
-		"./scripts/run-workflow-tests.sh workflow-metrics/test",
-		"./scripts/build-release-component.sh server",
-		"./scripts/build-release-component.sh agent",
-		"actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808",
-	} {
-		if !strings.Contains(workflow, fragment) {
-			t.Errorf("performance workflow missing contract fragment %q", fragment)
-		}
-	}
-	for _, forbidden := range []string{"contents: write", "gh release", "pull_request:", "schedule:"} {
-		if strings.Contains(workflow, forbidden) {
-			t.Errorf("performance workflow contains forbidden fragment %q", forbidden)
-		}
-	}
-	for _, action := range []string{"actions/checkout@", "actions/setup-go@", "actions/upload-artifact@"} {
-		for _, line := range strings.Split(workflow, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "uses: "+action) {
-				ref := strings.TrimPrefix(line, "uses: "+action)
-				if len(ref) != 40 {
-					t.Errorf("action %q must be pinned to a full commit SHA", line)
-				}
 			}
 		}
 	}

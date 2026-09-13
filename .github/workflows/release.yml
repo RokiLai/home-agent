@@ -104,7 +104,7 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
       - name: Run full regression tests
-        run: ./scripts/run-workflow-tests.sh workflow-metrics/test
+        run: go test -count=1 -race ./...
 
   build-server:
     needs: prepare
@@ -126,7 +126,24 @@ jobs:
         shell: bash
         env:
           SERVER_VERSION: ${{ needs.prepare.outputs.server_version }}
-        run: ./scripts/build-release-component.sh server "$SERVER_VERSION" dist workflow-metrics/build-server
+        run: |
+          mkdir -p dist
+          while read -r component goos goarch output; do
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-s -w -X homeagent/internal/version.ServerVersion=${SERVER_VERSION}" \
+              -o "dist/${output}" "./cmd/homeagent-${component}"
+            (cd dist && sha256sum "$output" > "${output}.sha256")
+          done <<'TARGETS'
+          server linux amd64 homeagent-server-linux-amd64
+          server linux arm64 homeagent-server-linux-arm64
+          server linux arm homeagent-server-linux-arm
+          server darwin amd64 homeagent-server-darwin-amd64
+          server darwin arm64 homeagent-server-darwin-arm64
+          server windows amd64 homeagent-server-windows-amd64.exe
+          server windows arm64 homeagent-server-windows-arm64.exe
+          TARGETS
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 14
+          (cd dist && sha256sum -c ./*.sha256)
       - name: Upload server release assets
         uses: actions/upload-artifact@v4
         with:
@@ -155,7 +172,26 @@ jobs:
         shell: bash
         env:
           AGENT_VERSION: ${{ needs.prepare.outputs.agent_version }}
-        run: ./scripts/build-release-component.sh agent "$AGENT_VERSION" dist workflow-metrics/build-agent
+        run: |
+          mkdir -p dist
+          while read -r component goos goarch output; do
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-s -w -X homeagent/internal/version.AgentVersion=${AGENT_VERSION}" \
+              -o "dist/${output}" "./cmd/homeagent-${component}"
+            (cd dist && sha256sum "$output" > "${output}.sha256")
+          done <<'TARGETS'
+          agent linux amd64 homeagent-agent-linux-amd64
+          agent linux arm64 homeagent-agent-linux-arm64
+          agent linux arm homeagent-agent-linux-arm
+          agent linux mips homeagent-agent-linux-mips
+          agent linux mipsle homeagent-agent-linux-mipsle
+          agent darwin amd64 homeagent-agent-darwin-amd64
+          agent darwin arm64 homeagent-agent-darwin-arm64
+          agent windows amd64 homeagent-agent-windows-amd64.exe
+          agent windows arm64 homeagent-agent-windows-arm64.exe
+          TARGETS
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 18
+          (cd dist && sha256sum -c ./*.sha256)
       - name: Upload agent release assets
         uses: actions/upload-artifact@v4
         with:

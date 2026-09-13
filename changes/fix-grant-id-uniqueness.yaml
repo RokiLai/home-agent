@@ -1,9 +1,0 @@
-task: fix-grant-id-uniqueness
-description: 修复设备授权 ID 仅依赖墙钟时间导致的偶发重复，并覆盖随机源失败与并发唯一性。
-allowed_paths:
-  - changes/fix-grant-id-uniqueness.yaml
-  - docs/planning/GitHub工作流测试与构建提速方案.md
-  - internal/device/grant.go
-  - internal/device/grant_test.go
-  - internal/version/version.go
-  - internal/version/version_test.go

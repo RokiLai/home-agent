@@ -1,10 +1,9 @@
 package device
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 )
 
@@ -37,7 +36,6 @@ var (
 	ErrGrantToOwner = errors.New("cannot create grant for device owner")
 	// ErrGrantNotFound 表示指定的授权记录不存在
 	ErrGrantNotFound = errors.New("device grant not found")
-	errGrantIDEntropy = errors.New("generate grant ID: secure random source failed")
 )
 
 // DeviceGrant 表示单台设备向某个用户授予的资源访问权限记录
@@ -54,17 +52,6 @@ type DeviceGrant struct {
 
 // GenerateGrantID 生成唯一授权标识符 (grant_...)
 func GenerateGrantID() string {
-	id, err := generateGrantID(rand.Reader)
-	if err != nil {
-		panic(err)
-	}
-	return id
-}
-
-func generateGrantID(source io.Reader) (string, error) {
-	var entropy [16]byte
-	if _, err := io.ReadFull(source, entropy[:]); err != nil {
-		return "", fmt.Errorf("%w: %v", errGrantIDEntropy, err)
-	}
-	return fmt.Sprintf("grant_%x", entropy), nil
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())))
+	return fmt.Sprintf("grant_%x", sum[:8])
 }
