@@ -1,0 +1,5 @@
+task: server-web-upgrade-supervisor-design
+description: 编写服务端 Web 界面自升级与独立恢复监督设计方案，明确宿主机守护与独立回滚、状态机流转、Runner 装配门禁、Web 轮询体验及验收标准；不实施代码变更。
+allowed_paths:
+  - changes/server-web-upgrade-supervisor-design.yaml
+  - docs/features/服务端Web界面自升级与独立恢复监督设计方案.md
