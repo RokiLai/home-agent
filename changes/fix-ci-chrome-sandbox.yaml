@@ -1,0 +1,5 @@
+task: fix-ci-chrome-sandbox
+description: 修复 Linux CI 环境中 Chrome 启动缺少沙盒兼容参数导致的超时失败问题，增加 no-sandbox 与 dev-shm-usage 参数并输出 stderr 诊断。
+allowed_paths:
+  - changes/fix-ci-chrome-sandbox.yaml
+  - internal/ui/testdata/browser-layout.test.mjs
