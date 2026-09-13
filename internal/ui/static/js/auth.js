@@ -262,12 +262,38 @@ export async function handleChangePassword(e) {
 
     showToast('登录密码修改成功');
     addLog('success', '用户登录密码已成功更新');
-    if (changePasswordForm) changePasswordForm.reset();
+    closeChangePasswordModal();
   } catch (err) {
     showChangePasswordError(err.message || '网络通信异常，请重试');
   } finally {
     if (savePasswordBtn) savePasswordBtn.disabled = false;
   }
+}
+
+export function openChangePasswordModal() {
+  const modal = document.getElementById('changePasswordModal');
+  const alert = document.getElementById('changePasswordAlert');
+  const form = document.getElementById('changePasswordForm');
+  if (alert) {
+    alert.classList.add('hidden');
+    alert.innerText = '';
+  }
+  if (form) form.reset();
+  if (modal) modal.classList.remove('hidden');
+  const oldPass = document.getElementById('oldPasswordInput');
+  if (oldPass) oldPass.focus();
+}
+
+export function closeChangePasswordModal() {
+  const modal = document.getElementById('changePasswordModal');
+  const alert = document.getElementById('changePasswordAlert');
+  const form = document.getElementById('changePasswordForm');
+  if (modal) modal.classList.add('hidden');
+  if (alert) {
+    alert.classList.add('hidden');
+    alert.innerText = '';
+  }
+  if (form) form.reset();
 }
 
 export function showChangePasswordError(msg) {
@@ -276,6 +302,11 @@ export function showChangePasswordError(msg) {
     changePasswordAlert.innerText = msg;
     changePasswordAlert.classList.remove('hidden');
   }
+}
+
+if (typeof window !== 'undefined') {
+  window.openChangePasswordModal = openChangePasswordModal;
+  window.closeChangePasswordModal = closeChangePasswordModal;
 }
 
 setAuthFailureHandler(showLoginOverlay);

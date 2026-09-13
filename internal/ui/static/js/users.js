@@ -56,7 +56,12 @@ export function renderUsersTable(users) {
         </div>
       `;
     } else if (isSelf) {
-      actionButtons = `<span class="text-muted text-xs">当前登录账号</span>`;
+      actionButtons = `
+        <div class="table-actions">
+          <button class="btn btn-xs btn-secondary" onclick="window.openChangePasswordModal()">修改密码</button>
+          <span class="text-muted text-xs">当前账号</span>
+        </div>
+      `;
     } else {
       actionButtons = `<span class="text-muted text-xs">只读权限</span>`;
     }
