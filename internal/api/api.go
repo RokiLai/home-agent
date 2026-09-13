@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -94,6 +95,7 @@ type Server struct {
 	VersionStatus            *versionstatus.Service
 	ServerUpgradeOperations  *serverupgrade.OperationManager
 	ServerUpgradeRunner      func(context.Context, string) error
+	ServerIPv6Collector      *servernetwork.Collector
 	ServerNetworkCoordinator *servernetwork.Coordinator
 	serverNetworkValidationMu sync.Mutex
 	serverNetworkDetections   map[string]serverNetworkDetection
@@ -168,6 +170,26 @@ func (s *Server) Handler() http.Handler {
 		requireAdminOrDevice = auth.RequireAdminOrDevice(s.SessionManager, s.Registry)
 	} else {
 		requireAdminOrDevice = func(next http.Handler) http.Handler { return auth.Bearer(s.Token, next) }
+	}
+
+	requireLoopbackOr := func(base func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if isLoopbackRequest(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				bearer := auth.ExtractBearerToken(r)
+				if s.Token != "" && bearer != "" && bearer == s.Token {
+					next.ServeHTTP(w, r)
+					return
+				}
+				if r.Header.Get("Authorization") == "" && bearer != "" {
+					r.Header.Set("Authorization", "Bearer "+bearer)
+				}
+				base(next).ServeHTTP(w, r)
+			})
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -273,7 +295,7 @@ func (s *Server) Handler() http.Handler {
 	// IPv6 & DDNS Control Plane routes (Admin or Device)
 	mux.Handle("PUT /api/v1/devices/{id}/network-state", requireAdminOrDevice(http.HandlerFunc(s.putDeviceNetworkState)))
 	mux.Handle("GET /api/v1/devices/{id}/network-state", requireAdminOrDevice(http.HandlerFunc(s.getDeviceNetworkState)))
-	mux.Handle("GET /api/v1/devices/{id}/ipv6", requireAdminOrDevice(http.HandlerFunc(s.getDeviceIPv6Text)))
+	mux.Handle("GET /api/v1/devices/{id}/ipv6", requireLoopbackOr(requireAdminOrDevice)(http.HandlerFunc(s.getDeviceIPv6Text)))
 	mux.Handle("PUT /api/v1/devices/{id}/network-prefixes", requireDevice(http.HandlerFunc(s.putRouterPrefixes)))
 	mux.Handle("GET /api/v1/networks/{id}/prefixes", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getNetworkPrefixes)))
 
@@ -289,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/server/network/candidates", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.getServerNetworkCandidates)))
 	mux.Handle("POST /api/v1/server/network/validate", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.validateServerNetwork)))
 	mux.Handle("PUT /api/v1/server/network", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putServerNetwork)))
+	mux.Handle("GET /api/v1/server/ipv6", requireLoopbackOr(requirePerm(auth.PermInstanceSettingsRead, nil))(http.HandlerFunc(s.getServerIPv6Text)))
 
 	return withCORS(mux)
 }
@@ -3252,6 +3275,65 @@ func randomOpaqueToken(size int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
+func (s *Server) getServerIPv6Text(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var ip netip.Addr
+	var err error
+
+	if s.ServerIPv6Collector != nil {
+		detection, detectErr := s.ServerIPv6Collector.Detect(ctx, netip.Addr{})
+		if detectErr != nil {
+			err = detectErr
+		} else {
+			ip = detection.Address
+		}
+	} else if s.ServerNetworkCoordinator != nil {
+		detection, detectErr := s.ServerNetworkCoordinator.DetectNetwork(ctx)
+		if detectErr != nil {
+			err = detectErr
+		} else {
+			ip = detection.Address
+		}
+	} else {
+		collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
+		detection, detectErr := collector.Detect(ctx, netip.Addr{})
+		if detectErr != nil {
+			err = detectErr
+		} else {
+			ip = detection.Address
+		}
+	}
+
+	if err != nil || !ip.IsValid() {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		msg := "no valid global unicast ipv6 address found on interface"
+		if err != nil {
+			msg = err.Error()
+		}
+		_, _ = fmt.Fprintln(w, msg)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintln(w, ip.String())
 }
 
 func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
