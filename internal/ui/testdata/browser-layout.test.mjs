@@ -320,7 +320,7 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
     '#dashboardCopyBtn', '#clearLogsBtn',
     '#btnSyncAll', '#btnUpgradeAll', '#deviceSearchInput',
     '#copyCommandBtn', '#btnRefreshClaimToken',
-    '#settingsSaveBtn', '#settingsClearBtn', '#savePasswordBtn'
+    '#settingsSaveBtn', '#settingsClearBtn', '#btnOpenChangePassword'
   ];
 
   const drawerTargets = [
@@ -330,7 +330,7 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
 
   const modalTargets = [
     '#closeRenameModalBtn', '#cancelRenameModalBtn', '#saveRenameBtn',
-    '#closeIpModalBtn', '#doneIpModalBtn'
+    '#closeIpModalBtn', '#doneIpModalBtn', '#savePasswordBtn'
   ];
 
   const authTargets = [
@@ -459,6 +459,15 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
   }
   await evalJS(`document.getElementById('doneIpModalBtn').click();`);
   await waitFor('document.getElementById("ipModal").classList.contains("hidden")');
+
+  // Change Password Modal
+  await evalJS(`document.getElementById('btnOpenChangePassword').click();`);
+  await waitFor('!document.getElementById("changePasswordModal").classList.contains("hidden")');
+  for (const pwdTarget of ['#savePasswordBtn']) {
+    await inspectAndHitTest(pwdTarget);
+  }
+  await evalJS(`window.closeChangePasswordModal();`);
+  await waitFor('document.getElementById("changePasswordModal").classList.contains("hidden")');
 
   // 4. Test Unauthenticated Login Overlay
   await evalJS(`document.getElementById('btnLogout').click();`);

@@ -108,6 +108,8 @@ test('RBAC: Owner role reveals user management navigation and renders user table
   assert.ok(usersTableBody.innerHTML.includes('bob_viewer'), 'Table must render username bob_viewer');
   assert.ok(usersTableBody.innerHTML.includes('重置密码'), 'Table must contain reset password action for other users');
   assert.ok(usersTableBody.innerHTML.includes('删除'), 'Table must contain delete action for other users');
+  assert.ok(usersTableBody.innerHTML.includes('修改密码'), 'Table must contain change password action for current user');
+  assert.ok(usersTableBody.innerHTML.includes('当前账号'), 'Table must indicate current account label');
 });
 
 test('RBAC: Viewer role hides user management navigation and restricts dangerous write actions', async () => {
@@ -116,8 +118,10 @@ test('RBAC: Viewer role hides user management navigation and restricts dangerous
 
   const settingsTabUsers = elements.get('settingsTabUsers');
   const adminRoleBadge = elements.get('adminRoleBadge');
+  const btnOpenChangePassword = elements.get('btnOpenChangePassword');
   const btnUpgradeAll = elements.get('btnUpgradeAll');
   const btnSyncAll = elements.get('btnSyncAll');
+  assert.ok(btnOpenChangePassword, '#btnOpenChangePassword must exist for all users');
 
   globalThis.window = { location: { origin: 'http://homeagent.test', hash: '#/dashboard' } };
   globalThis.localStorage = { getItem() { return null; } };

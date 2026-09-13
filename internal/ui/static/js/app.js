@@ -165,6 +165,15 @@ export function bindEventListeners() {
       closeAllDropdowns();
       closeActiveModal();
       closeMobileSidebar();
+      if (typeof window !== 'undefined' && typeof window.closeChangePasswordModal === 'function') {
+        window.closeChangePasswordModal();
+      }
+      if (typeof window !== 'undefined' && typeof window.closeResetUserPasswordModal === 'function') {
+        window.closeResetUserPasswordModal();
+      }
+      if (typeof window !== 'undefined' && typeof window.closeCreateUserModal === 'function') {
+        window.closeCreateUserModal();
+      }
     }
   });
 
