@@ -1,0 +1,6 @@
+task: bump-server-v0-6-25
+description: 提升服务端版本至 v0.6.25 以触发正式 GitHub Release 构建与发布。
+allowed_paths:
+  - changes/bump-server-v0-6-25.yaml
+  - internal/version/version.go
+  - internal/version/version_test.go
