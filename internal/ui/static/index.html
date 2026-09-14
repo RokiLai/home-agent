@@ -541,11 +541,14 @@
               <div class="panel-header">
                 <div class="panel-title-group">
                   <h3 class="panel-title">服务端 IPv6 DDNS 自举</h3>
+                  <h3 class="panel-title">服务端 IPv6 与 DDNS 接口</h3>
                   <p class="panel-desc" style="margin-top: 4px; font-size: 0.8rem; color: var(--text-muted);">
                     从宿主机物理网卡直接采集公网 IPv6 并更新服务端域名，消除客户端循环依赖
+                    从宿主机物理网卡直接采集公网稳定 IPv6，为外部 ddns-go 提供本地免密直通接口，消除回环死锁
                   </p>
                 </div>
                 <div id="serverNetworkStatusBadge" class="badge badge-secondary" style="font-size: 0.8rem; padding: 4px 10px;">未启用</div>
+                <div id="serverNetworkStatusBadge" class="badge badge-secondary" style="font-size: 0.8rem; padding: 4px 10px;">探测中</div>
               </div>
 
               <div class="settings-form" style="max-width: 600px; margin-top: 10px;">
@@ -568,10 +571,24 @@
                           <span id="serverNetworkResolvedAddress" class="font-mono" style="font-size: 0.78rem; overflow-wrap: anywhere;">探测中</span>
                         </div>
                         <span id="serverNetworkDetectionMessage" class="text-muted" style="font-size: 0.74rem;">系统会按默认 IPv6 路由和客户端同源规则自动确定，无需选择网卡或地址。</span>
+                <div class="form-group">
+                  <label>当前网络自动解析</label>
+                  <div id="serverNetworkDetectionCard" class="detail-row" style="padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                    <div style="display: flex; flex-direction: column; gap: 6px; width: 100%;">
+                      <div style="display: flex; justify-content: space-between; gap: 12px;">
+                        <span class="text-muted" style="font-size: 0.78rem;">默认路由接口</span>
+                        <span id="serverNetworkResolvedInterface" class="font-mono" style="font-size: 0.78rem;">-</span>
                       </div>
+                      <div style="display: flex; justify-content: space-between; gap: 12px;">
+                        <span class="text-muted" style="font-size: 0.78rem;">稳定公网 IPv6</span>
+                        <span id="serverNetworkResolvedAddress" class="font-mono" style="font-size: 0.78rem; overflow-wrap: anywhere;">未解析</span>
+                      </div>
+                      <span id="serverNetworkDetectionMessage" class="text-muted" style="font-size: 0.74rem;">系统会按默认 IPv6 路由和客户端同源规则自动确定，无需选择网卡或地址。</span>
                     </div>
                     <button id="serverNetworkRedetectBtn" type="button" class="btn btn-secondary" style="margin-top: 8px;">重新探测</button>
                   </div>
+                  <button id="serverNetworkRedetectBtn" type="button" class="btn btn-secondary" style="margin-top: 8px;">重新探测</button>
+                </div>
 
                   <div class="form-group" style="margin-top: 14px;">
                     <label for="serverNetworkRecordsInput">受管域名 (逗号分隔)</label>
@@ -590,11 +607,21 @@
                       <div style="display: flex; justify-content: space-between;">
                         <span class="text-muted" style="font-size: 0.78rem;">当前探测公网 IPv6</span>
                         <span id="serverNetworkCurrentIp" class="font-mono" style="font-size: 0.78rem;">未探测</span>
+                <div class="form-group" style="margin-top: 18px;">
+                  <label>外部 ddns-go 同步接口（推荐）</label>
+                  <div class="detail-row" style="padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                    <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+                      <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" id="serverIPv6EndpointInput" class="form-control font-mono" style="font-size: 0.78rem; padding: 6px 10px; background: rgba(0, 0, 0, 0.2);" readonly>
+                        <button id="copyServerIPv6EndpointBtn" type="button" class="btn btn-secondary" style="white-space: nowrap; font-size: 0.78rem; padding: 6px 12px;">复制地址</button>
                       </div>
                       <div id="serverNetworkLastSyncRow" style="display: flex; justify-content: space-between;">
                         <span class="text-muted" style="font-size: 0.78rem;">上次同步完成时间</span>
                         <span id="serverNetworkLastSyncTime" class="text-muted" style="font-size: 0.78rem;">-</span>
                       </div>
+                      <span class="text-muted" style="font-size: 0.74rem; line-height: 1.4;">
+                        在同机运行的 ddns-go 中，添加需要同步的公网域名，IPv6 获取方式选择「通过接口获取」并填入此 URL 即可。本地回环访问免密直通。
+                      </span>
                     </div>
                   </div>
                 </div>

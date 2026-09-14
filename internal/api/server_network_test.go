@@ -329,3 +329,86 @@ func TestDeviceIPv6TextEndpoint_LoopbackAndToken(t *testing.T) {
 		t.Fatalf("expected 2001:db8:1::100\\n, got %q", body)
 	}
 }
+
+func TestServerNetworkCandidates_WithoutCoordinator(t *testing.T) {
+	prov := &mockProviderForAPI{
+		addrs: []networkaddr.ReportedIPv6Address{
+			{Address: "240e:390:1::100", Interface: "en0"},
+		},
+	}
+	collector := servernetwork.NewCollector("en0", prov)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server := &Server{
+		Token:               "admin-token",
+		ServerIPv6Collector: collector,
+		Log:                 logger,
+	}
+	handler := server.Handler()
+
+	// 1. 无 Coordinator 时 GET /api/v1/server/network/candidates 探测成功
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/network/candidates", nil)
+	req.Header.Set("Authorization", "Bearer admin-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if resp["status"] != "ready" {
+		t.Fatalf("expected status ready, got %v", resp["status"])
+	}
+	if resp["resolved_interface"] != "en0" || resp["resolved_address"] != "240e:390:1::100" {
+		t.Fatalf("unexpected detection: %+v", resp)
+	}
+
+	// 2. 无有效地址时返回 200 与 no_address 状态，不得返回 501
+	emptyProv := &mockProviderForAPI{addrs: nil}
+	emptyCollector := servernetwork.NewCollector("en0", emptyProv)
+	serverEmpty := &Server{
+		Token:               "admin-token",
+		ServerIPv6Collector: emptyCollector,
+		Log:                 logger,
+	}
+	emptyHandler := serverEmpty.Handler()
+
+	reqEmpty := httptest.NewRequest(http.MethodGet, "/api/v1/server/network/candidates", nil)
+	reqEmpty.Header.Set("Authorization", "Bearer admin-token")
+	wEmpty := httptest.NewRecorder()
+	emptyHandler.ServeHTTP(wEmpty, reqEmpty)
+
+	if wEmpty.Code != http.StatusOK {
+		t.Fatalf("expected 200 for no_address, got %d: %s", wEmpty.Code, wEmpty.Body.String())
+	}
+	var emptyResp map[string]any
+	if err := json.Unmarshal(wEmpty.Body.Bytes(), &emptyResp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if emptyResp["status"] != "no_address" {
+		t.Fatalf("expected status no_address, got %v", emptyResp["status"])
+	}
+
+	// 3. GET /api/v1/server/network 在无 Coordinator 时返回可用状态
+	reqNet := httptest.NewRequest(http.MethodGet, "/api/v1/server/network", nil)
+	reqNet.Header.Set("Authorization", "Bearer admin-token")
+	wNet := httptest.NewRecorder()
+	handler.ServeHTTP(wNet, reqNet)
+
+	if wNet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for network status, got %d: %s", wNet.Code, wNet.Body.String())
+	}
+	var netResp map[string]any
+	if err := json.Unmarshal(wNet.Body.Bytes(), &netResp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if netResp["status"] != "standalone_detector" {
+		t.Fatalf("expected status standalone_detector, got %v", netResp["status"])
+	}
+	if netResp["resolved_interface"] != "en0" || netResp["resolved_address"] != "240e:390:1::100" {
+		t.Fatalf("unexpected netResp: %+v", netResp)
+	}
+}
