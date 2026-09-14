@@ -111,6 +111,7 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
     'serverNetworkResolvedInterface', 'serverNetworkResolvedAddress', 'serverNetworkDetectionMessage',
     'serverNetworkRedetectBtn', 'serverNetworkRecordsInput', 'serverNetworkExternalWriterConfirmed', 'serverNetworkSaveBtn',
     'serverNetworkRecordCandidates',
+    'serverNetworkRedetectBtn', 'serverIPv6EndpointInput', 'copyServerIPv6EndpointBtn',
     // Modals
     'ipModal', 'ipModalTitle', 'ipModalDesc', 'ipModalList', 'closeIpModalBtn', 'doneIpModalBtn',
     'renameModal', 'renameDeviceInfo', 'renameDeviceMac', 'deviceAliasInput', 'closeRenameModalBtn', 'cancelRenameModalBtn', 'saveRenameBtn',
@@ -128,6 +129,9 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
   }
 
   assert.doesNotMatch(html, /id="serverNetworkInterfaceInput"/, 'server network interface must not be user-editable');
+  assert.doesNotMatch(html, /id="serverNetworkRecordsInput"/, 'server network records input must be removed');
+  assert.doesNotMatch(html, /id="serverNetworkExternalWriterConfirmed"/, 'server network external writer checkbox must be removed');
+  assert.doesNotMatch(html, /id="serverNetworkSaveBtn"/, 'server network save button must be removed');
 
   // Verify health facts grid does not have inline grid-template-columns
   assert.doesNotMatch(html, /style="[^"]*grid-template-columns:\s*1fr\s+1fr/i, 'Inline grid-template-columns must be migrated to CSS class');

@@ -1,0 +1,14 @@
+task: simplify-server-ipv6-ddns-ui
+description: 解除服务端 IPv6 探测对 Cloudflare 的依赖，精简 Web 控制台自举面板为开箱即用的状态展示与 ddns-go 引导
+allowed_paths:
+  - changes/simplify-server-ipv6-ddns-ui.yaml
+  - docs/features/服务端IPv6状态与ddns-go集成优化方案.md
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/api/api.go
+  - internal/api/server_network_test.go
+  - internal/ui/static/index.html
+  - internal/ui/static/js/settings.js
+  - internal/ui/testdata/mobile-responsive.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/ui/embed_test.go

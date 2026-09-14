@@ -192,10 +192,20 @@ function initVersionStatusEvents() {
   }
 }
 
+function updateServerIPv6EndpointURL() {
+  const input = document.getElementById('serverIPv6EndpointInput');
+  if (!input) return;
+  let base = state.serverHost || (typeof window !== 'undefined' && window.location ? window.location.origin : '');
+  if (!base) base = 'http://127.0.0.1:8080';
+  input.value = `${base.replace(/\/+$/, '')}/api/v1/server/ipv6`;
+}
+
 function initServerNetworkEvents() {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
   const saveBtn = document.getElementById('serverNetworkSaveBtn');
   const redetectBtn = document.getElementById('serverNetworkRedetectBtn');
+  const copyBtn = document.getElementById('copyServerIPv6EndpointBtn');
+  const endpointInput = document.getElementById('serverIPv6EndpointInput');
 
   if (switchEl) {
     switchEl.addEventListener('change', () => {
@@ -211,13 +221,37 @@ function initServerNetworkEvents() {
   if (redetectBtn) {
     redetectBtn.addEventListener('click', async () => {
       redetectBtn.disabled = true;
+      redetectBtn.textContent = '探测中...';
       try {
         await detectServerNetwork();
+        await detectServerNetwork(true);
       } finally {
         redetectBtn.disabled = false;
+        redetectBtn.textContent = '重新探测';
       }
     });
   }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      updateServerIPv6EndpointURL();
+      const url = endpointInput ? endpointInput.value : '';
+      if (!url) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(url);
+        } else if (endpointInput) {
+          endpointInput.select();
+          document.execCommand('copy');
+        }
+        showToast('已复制接口地址', 'success');
+      } catch (err) {
+        showToast('复制失败，请手动复制', 'error');
+      }
+    });
+  }
+
+  updateServerIPv6EndpointURL();
 }
 
 let serverNetworkDetectionId = '';
@@ -264,8 +298,22 @@ function renderServerNetworkStatus(data) {
   if (badgeEl) {
     badgeEl.className = 'badge';
     if (!data.enabled) {
+    if (data.status === 'standalone_detector' || data.status === 'synced') {
+      badgeEl.classList.add('badge-success');
+      badgeEl.textContent = '探测正常';
+      badgeEl.title = '服务端 IPv6 探测正常';
+    } else if (data.status === 'no_address') {
+      badgeEl.classList.add('badge-warning');
+      badgeEl.textContent = '无有效 IPv6';
+      badgeEl.title = '当前物理网卡未分配有效公网 IPv6';
+    } else if (data.status === 'error') {
+      badgeEl.classList.add('badge-danger');
+      badgeEl.textContent = '探测失败';
+      badgeEl.title = data.last_error || '网络探测异常';
+    } else {
       badgeEl.classList.add('badge-secondary');
       badgeEl.textContent = '未启用';
+      badgeEl.textContent = '就绪';
       badgeEl.title = '';
     } else {
       switch (data.status) {
@@ -295,18 +343,67 @@ function renderServerNetworkStatus(data) {
 }
 
 async function detectServerNetwork() {
+async function detectServerNetwork(interactive = false) {
   const ifaceEl = document.getElementById('serverNetworkResolvedInterface');
   const addressEl = document.getElementById('serverNetworkResolvedAddress');
   const messageEl = document.getElementById('serverNetworkDetectionMessage');
+  const badgeEl = document.getElementById('serverNetworkStatusBadge');
+
   if (ifaceEl) ifaceEl.textContent = '探测中';
   if (addressEl) addressEl.textContent = '探测中';
   const res = await apiFetch(`${state.serverHost}/api/v1/server/network/candidates`);
   const data = await res.json();
   if (!res.ok || data.status !== 'ready') {
+  if (badgeEl) {
+    badgeEl.className = 'badge badge-info';
+    badgeEl.textContent = '探测中';
+  }
+
+  try {
+    const res = await apiFetch(`${state.serverHost}/api/v1/server/network/candidates`);
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ready') {
+      serverNetworkDetectionId = '';
+      if (ifaceEl) ifaceEl.textContent = data.resolved_interface || '-';
+      if (addressEl) addressEl.textContent = '未解析';
+      const errMsg = (data.errors || ['自动解析失败']).join('；');
+      if (messageEl) messageEl.textContent = errMsg;
+      if (badgeEl) {
+        badgeEl.className = data.status === 'no_address' ? 'badge badge-warning' : 'badge badge-danger';
+        badgeEl.textContent = data.status === 'no_address' ? '无有效 IPv6' : '探测失败';
+      }
+      if (interactive) {
+        showToast(errMsg, 'error');
+      }
+      return false;
+    }
+
+    serverNetworkDetectionId = data.detection_id;
+    if (ifaceEl) ifaceEl.textContent = data.resolved_interface || '-';
+    if (addressEl) addressEl.textContent = data.resolved_address || '未解析';
+    if (messageEl) messageEl.textContent = '已按当前默认 IPv6 路由和稳定地址筛选规则自动确定。';
+    if (badgeEl) {
+      badgeEl.className = 'badge badge-success';
+      badgeEl.textContent = '探测正常';
+    }
+    if (interactive) {
+      showToast('网络探测完成', 'success');
+    }
+    return true;
+  } catch (err) {
     serverNetworkDetectionId = '';
     if (ifaceEl) ifaceEl.textContent = '-';
     if (addressEl) addressEl.textContent = '未解析';
     if (messageEl) messageEl.textContent = (data.errors || ['自动解析失败']).join('；');
+    const errMsg = `探测异常: ${err.message}`;
+    if (messageEl) messageEl.textContent = errMsg;
+    if (badgeEl) {
+      badgeEl.className = 'badge badge-danger';
+      badgeEl.textContent = '探测异常';
+    }
+    if (interactive) {
+      showToast(errMsg, 'error');
+    }
     return false;
   }
 
@@ -341,6 +438,9 @@ async function detectServerNetwork() {
 export async function loadServerNetworkSettings() {
   const switchEl = document.getElementById('serverNetworkEnabledSwitch');
   if (!switchEl) return;
+  updateServerIPv6EndpointURL();
+  const badgeEl = document.getElementById('serverNetworkStatusBadge');
+  if (!badgeEl && !document.getElementById('serverNetworkResolvedInterface')) return;
 
   try {
     const res = await apiFetch(`${state.serverHost}/api/v1/server/network`);
@@ -355,6 +455,7 @@ export async function loadServerNetworkSettings() {
     const data = await res.json();
     renderServerNetworkStatus(data);
     await detectServerNetwork();
+    await detectServerNetwork(false);
   } catch (err) {
     // 忽略加载异常
   }
