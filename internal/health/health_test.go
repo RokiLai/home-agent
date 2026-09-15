@@ -777,8 +777,8 @@ func TestService_EvaluateAll_100Devices_Performance(t *testing.T) {
 	elapsed := time.Since(start)
 
 	t.Logf("100 devices EvaluateAll completed in: %v", elapsed)
-	if elapsed >= 1*time.Second {
-		t.Fatalf("expected 100 devices sweep to complete in < 1s, took %v", elapsed)
+	if elapsed >= maxEvaluateAll100DevicesDuration {
+		t.Fatalf("expected 100 devices sweep to complete in < %v, took %v", maxEvaluateAll100DevicesDuration, elapsed)
 	}
 
 	summary, err := svc.GetSummary(ctx)
