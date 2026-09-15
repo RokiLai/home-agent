@@ -123,32 +123,78 @@ before(async () => {
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let stderrLogs = '';
-  const wsUrl = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Timed out waiting for Chrome DevTools listening port. stderr: ${stderrLogs}`));
-    }, 15000);
+  let stdoutLogs = '';
+  const portFilePath = path.join(chromeTempDir, 'DevToolsActivePort');
 
-    chromeProcess.stderr.on('data', (chunk) => {
+  const wsUrl = await new Promise((resolve, reject) => {
+    let resolved = false;
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      clearInterval(pollInterval);
+    };
+
+    const finish = (url) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(url);
+    };
+
+    const fail = (err) => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(err);
+    };
+
+    const timeout = setTimeout(() => {
+      fail(new Error(`Timed out waiting for Chrome DevTools listening port after 45000ms. stdout: ${stdoutLogs} stderr: ${stderrLogs}`));
+    }, 45000);
+
+    const checkDevToolsActivePort = () => {
+      try {
+        if (fs.existsSync(portFilePath)) {
+          const content = fs.readFileSync(portFilePath, 'utf8');
+          const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          if (lines.length >= 2) {
+            const port = lines[0];
+            const browserPath = lines[1];
+            finish(`ws://127.0.0.1:${port}${browserPath.startsWith('/') ? '' : '/'}${browserPath}`);
+          }
+        }
+      } catch (_) {}
+    };
+
+    const pollInterval = setInterval(checkDevToolsActivePort, 100);
+
+    const onData = (chunk, isErr) => {
       const str = chunk.toString();
-      stderrLogs += str;
+      if (isErr) {
+        stderrLogs += str;
+      } else {
+        stdoutLogs += str;
+      }
       const match = str.match(/DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/[^\s]+)/);
       if (match) {
-        clearTimeout(timeout);
-        resolve(match[1]);
+        finish(match[1]);
       }
-    });
+    };
+
+    chromeProcess.stdout.on('data', (chunk) => onData(chunk, false));
+    chromeProcess.stderr.on('data', (chunk) => onData(chunk, true));
 
     chromeProcess.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
+      fail(err);
     });
 
     chromeProcess.on('exit', (code, signal) => {
       if (code !== null && code !== 0) {
-        clearTimeout(timeout);
-        reject(new Error(`Chrome process exited unexpectedly with code ${code}, signal ${signal}. stderr: ${stderrLogs}`));
+        fail(new Error(`Chrome process exited unexpectedly with code ${code}, signal ${signal}. stdout: ${stdoutLogs} stderr: ${stderrLogs}`));
       }
     });
+
+    checkDevToolsActivePort();
   });
   cdp = new CDPClient(wsUrl);
   await cdp.connect();
