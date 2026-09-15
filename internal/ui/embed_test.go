@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,15 @@ func TestFrontendSyntaxAndScopeIntegrity(t *testing.T) {
 	}
 }
 
+func TestFileShareFrontendContract(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("node", "--test", "testdata/fileshare.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fileshare JavaScript DOM tests failed: %v\n%s", err, output)
+	}
+}
+
 func TestConsoleInformationArchitecturePhase1(t *testing.T) {
 	t.Parallel()
 	cmd := exec.Command("node", "--test", "testdata/console-ia-phase1.test.mjs")
@@ -134,7 +144,7 @@ func TestBrowserLayoutAndAccessibility(t *testing.T) {
 			w.Write([]byte(`{"error":"unauthorized"}`))
 			return
 		}
-		w.Write([]byte(`{"username":"admin"}`))
+		w.Write([]byte(`{"user_id":"usr-owner","username":"admin","role":"owner","permissions":["instance.settings.manage"]}`))
 	})
 
 	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
@@ -275,6 +285,44 @@ func TestBrowserLayoutAndAccessibility(t *testing.T) {
 		})
 	})
 
+	var filesMu sync.Mutex
+	fileUploaded := false
+	mux.HandleFunc("/api/v1/files", func(w http.ResponseWriter, r *http.Request) {
+		filesMu.Lock()
+		defer filesMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.Copy(io.Discard, r.Body)
+			time.Sleep(250 * time.Millisecond)
+			fileUploaded = true
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"file-uploaded","name":"browser-upload.txt","size":14,"sha256":"abc","created_at":"2026-09-15T10:00:00Z","expires_at":"2026-09-22T10:00:00Z"}`))
+			return
+		}
+		if fileUploaded {
+			w.Write([]byte(`{"files":[{"id":"file-uploaded","name":"browser-upload.txt","size":14,"sha256":"abc","created_at":"2026-09-15T10:00:00Z","expires_at":"2026-09-22T10:00:00Z"},{"id":"file-browser-1","name":"家庭共享资料.zip","size":1048576,"sha256":"0123456789abcdef","created_at":"2026-09-15T10:00:00Z","expires_at":"2026-09-22T10:00:00Z"}],"quota_bytes":21474836480,"used_bytes":1048590,"reserved_bytes":0}`))
+			return
+		}
+		w.Write([]byte(`{"files":[{"id":"file-browser-1","name":"家庭共享资料.zip","size":1048576,"sha256":"0123456789abcdef","created_at":"2026-09-15T10:00:00Z","expires_at":"2026-09-22T10:00:00Z"}],"quota_bytes":21474836480,"used_bytes":1048576,"reserved_bytes":0}`))
+	})
+	mux.HandleFunc("/api/v1/files/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/links") {
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{"id":"link-browser-1","download_url":"https://home.test/api/v1/public/files/file-browser-1/download?token=secret","expires_at":"2026-09-16T10:00:00Z"}`))
+				return
+			}
+			w.Write([]byte(`{"links":[]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/files/settings", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"retention_days":7,"revision":1,"quota_bytes":21474836480,"used_bytes":1048576,"reserved_bytes":0}`))
+	})
+
 	mux.HandleFunc("/api/v1/batch/sync", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"success":true,"accepted":true}`))
@@ -335,6 +383,7 @@ func TestGetIndexHTML(t *testing.T) {
 		"pageDevices",
 		"pageOnboarding",
 		"pageGithub",
+		"pageFiles",
 		"pageSettings",
 		"app.js",
 		"style.css",
@@ -586,7 +635,8 @@ func TestESMModuleImportsResolve(t *testing.T) {
 
 			// 只校验相对路径导入（如 ./state.js, ../utils.js）
 			if strings.HasPrefix(relImport, ".") {
-				targetPath := path.Clean(path.Join(dir, relImport))
+				fileImport := strings.FieldsFunc(relImport, func(r rune) bool { return r == '?' || r == '#' })[0]
+				targetPath := path.Clean(path.Join(dir, fileImport))
 				if _, err := staticFS.Open(targetPath); err != nil {
 					t.Errorf("broken ESM import in %s: cannot resolve %q (resolved to %q): %v", filePath, relImport, targetPath, err)
 				}

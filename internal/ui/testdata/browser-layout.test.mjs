@@ -298,7 +298,7 @@ test('1. Viewport matrix: No page-level horizontal overflow across all breakpoin
   await waitFor('document.getElementById("loginOverlay").classList.contains("hidden")');
 
   // Verify 6 protected routes under each viewport
-  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/settings'];
+  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/files', '#/settings'];
 
   for (const vp of viewports) {
     await setViewport(vp.width, vp.height, vp.width < 900);
@@ -332,12 +332,13 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
     '#dashboardCopyBtn', '#clearLogsBtn',
     '#btnSyncAll', '#btnUpgradeAll', '#deviceSearchInput',
     '#copyCommandBtn', '#btnRefreshClaimToken',
-    '#settingsSaveBtn', '#settingsClearBtn', '#btnOpenChangePassword'
+    '#settingsSaveBtn', '#settingsClearBtn', '#btnOpenChangePassword',
+    '#fileUploadBtn'
   ];
 
   const drawerTargets = [
     '#sidebarCloseBtn',
-    '#navDashboard', '#navDevices', '#navOnboarding', '#navCommands', '#navSettings'
+    '#navDashboard', '#navDevices', '#navOnboarding', '#navCommands', '#navFiles', '#navSettings'
   ];
 
   const modalTargets = [
@@ -404,7 +405,7 @@ test('2. State activation matrix: 44px touch target geometry & click hit closure
   }
 
   // 1. Test 6 main pages
-  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/settings'];
+  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/files', '#/settings'];
   for (const r of routes) {
     await evalJS(`window.location.hash = '${r}';`);
     await new Promise(r => setTimeout(r, 60));
@@ -509,7 +510,7 @@ test('3. 200% OS text scale: Full journey interaction and wrapping without overf
   await cdp.send('Emulation.setEmulatedOSTextScale', { scale: 2 }, targetSessionId);
 
   // Full journey through all 6 routes
-  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/settings'];
+  const routes = ['#/dashboard', '#/devices', '#/onboarding', '#/github', '#/commands', '#/files', '#/settings'];
   for (const r of routes) {
     await evalJS(`window.location.hash = '${r}';`);
     await new Promise(r => setTimeout(r, 60));
@@ -758,7 +759,76 @@ test('6. Device card header layout and health detail click hit across viewports 
   await waitFor('document.getElementById("deviceHealthModal").classList.contains("hidden")');
 });
 
-test('7. Version panel keeps component boundaries and mobile overflow contract', async () => {
+test('7. File relay API render, dialog, upload callback, and geometry', async () => {
+  await setViewport(390, 844, true);
+  await evalJS(`window.location.hash = '#/files';`);
+  await waitFor('document.querySelectorAll("#filesTableBody tr").length === 1');
+
+  const geometry = await evalJS(`(() => {
+    const page = document.getElementById('pageFiles');
+    const input = document.getElementById('fileUploadInput');
+    const upload = document.getElementById('fileUploadBtn');
+    const actions = Array.from(document.querySelectorAll('.file-actions button'));
+    return {
+      pageOverflow: page.scrollWidth > page.clientWidth + 1,
+      nativeInputHidden: input.getBoundingClientRect().width <= 1 && input.getBoundingClientRect().height <= 1,
+      uploadControlButtonCount: document.querySelectorAll('.files-upload-control button').length,
+      uploadUsesPrimaryStyle: upload.classList.contains('btn') && upload.classList.contains('btn-primary'),
+      uploadWidth: upload.getBoundingClientRect().width,
+      uploadHeight: upload.getBoundingClientRect().height,
+      actionCount: actions.length,
+      actionsHit: actions.every(button => {
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return hit === button || button.contains(hit);
+      })
+    };
+  })()`);
+  assert.equal(geometry.pageOverflow, false, 'file page must not overflow on mobile');
+  assert.equal(geometry.nativeInputHidden, true, 'native file input must be visually hidden');
+  assert.equal(geometry.uploadControlButtonCount, 1, 'file selection and upload must use one visible button');
+  assert.equal(geometry.uploadUsesPrimaryStyle, true, 'combined upload button must use the console primary style');
+  assert.ok(geometry.uploadWidth >= 44 && geometry.uploadHeight >= 44, 'upload button must meet touch target size');
+  assert.equal(geometry.actionCount, 3, 'file row must expose download, link, and delete actions');
+  assert.equal(geometry.actionsHit, true, 'file actions must be clickable at their center');
+
+  await evalJS(`document.querySelector('.file-actions button:nth-child(2)').click()`);
+  await waitFor('document.getElementById("fileLinksDialog").open');
+  const dialogGeometry = await evalJS(`(() => {
+    const rect = document.getElementById('fileLinksDialog').getBoundingClientRect();
+    return {
+      centerDeltaX: Math.abs(rect.left + rect.width / 2 - innerWidth / 2),
+      centerDeltaY: Math.abs(rect.top + rect.height / 2 - innerHeight / 2)
+    };
+  })()`);
+  assert.ok(dialogGeometry.centerDeltaX <= 2, `file links dialog must be horizontally centered, delta=${dialogGeometry.centerDeltaX}`);
+  assert.ok(dialogGeometry.centerDeltaY <= 2, `file links dialog must be vertically centered, delta=${dialogGeometry.centerDeltaY}`);
+  await evalJS(`document.getElementById('closeFileLinksBtn').click()`);
+  await waitFor('!document.getElementById("fileLinksDialog").open');
+
+  const uploadPath = path.join(chromeTempDir, 'browser-upload.txt');
+  fs.writeFileSync(uploadPath, 'browser upload');
+  const documentNode = await cdp.send('DOM.getDocument', {}, targetSessionId);
+  const inputNode = await cdp.send('DOM.querySelector', { nodeId: documentNode.root.nodeId, selector: '#fileUploadInput' }, targetSessionId);
+  await cdp.send('DOM.setFileInputFiles', { nodeId: inputNode.nodeId, files: [uploadPath] }, targetSessionId);
+  await waitFor('document.getElementById("fileUploadSelection").innerText === "browser-upload.txt"');
+  await waitFor('document.getElementById("fileUploadBtn").innerText.includes("正在保存")');
+  await waitFor('document.getElementById("toastMsg").innerText.includes("上传成功")');
+  await waitFor('document.querySelectorAll("#filesTableBody tr").length === 2');
+  const uploadResult = await evalJS(`({
+    names: document.getElementById('filesTableBody').innerText,
+    usage: document.getElementById('fileUsageText').innerText,
+    selection: document.getElementById('fileUploadSelection').innerText,
+    buttonText: document.getElementById('fileUploadBtn').innerText
+  })`);
+  assert.match(uploadResult.names, /browser-upload\.txt/, 'uploaded file must appear in the list immediately');
+  assert.match(uploadResult.usage, /1\.0 MiB/, 'capacity usage must refresh after upload');
+  assert.equal(uploadResult.selection, '未选择文件', 'file selection must reset after a successful upload');
+  assert.equal(uploadResult.buttonText, '选择并上传文件', 'combined upload button must reset after success');
+  assert.equal(runtimeErrors.length, 0, `File relay interaction must have no uncaught errors: ${runtimeErrors.join('; ')}`);
+});
+
+test('8. Version panel keeps component boundaries and mobile overflow contract', async () => {
   await cdp.send('Page.navigate', { url: `${serverUrl}/` }, targetSessionId);
   await waitFor('document.readyState === "complete"');
   await waitFor('document.getElementById("loginOverlay")');
@@ -809,7 +879,7 @@ test('7. Version panel keeps component boundaries and mobile overflow contract',
   assert.ok(labels.server.length > 0 && labels.agent.length > 0, 'Both channel states must remain visible after refresh');
 });
 
-test('8. Server network resolves interface and IPv6 automatically without editable selectors', async () => {
+test('9. Server network resolves interface and IPv6 automatically without editable selectors', async () => {
   await evalJS(`window.location.hash = '#/settings';`);
   await waitFor('document.getElementById("serverNetworkResolvedInterface").textContent === "en0"');
   const result = await evalJS(`(() => ({
@@ -830,6 +900,6 @@ test('8. Server network resolves interface and IPv6 automatically without editab
   assert.match(result.message, /自动确定/);
 });
 
-test('9. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
+test('10. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
   assert.equal(runtimeErrors.length, 0, `Runtime errors detected during tests: ${runtimeErrors.join('; ')}`);
 });

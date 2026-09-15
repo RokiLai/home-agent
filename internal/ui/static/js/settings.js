@@ -4,9 +4,10 @@ import { updateInstallCommand } from './onboarding.js';
 import { apiFetch } from './api.js';
 import { fetchUsersList } from './users.js';
 import { fetchGitHubStatus } from './github.js';
+import { loadFileSettings } from './files.js';
 
 export function switchSettingsSection(sectionName) {
-  const validSections = ['general', 'version', 'network', 'users', 'github', 'about'];
+  const validSections = ['general', 'version', 'network', 'files', 'users', 'github', 'about'];
   const isAll = !sectionName || sectionName === 'all';
   let section = isAll ? 'all' : (validSections.includes(sectionName) ? sectionName : 'general');
 
@@ -60,6 +61,9 @@ export function switchSettingsSection(sectionName) {
   }
   if (section === 'network' || section === 'all') {
     loadServerNetworkSettings();
+  }
+  if (section === 'files' || section === 'all') {
+    loadFileSettings().catch(() => {});
   }
   if ((section === 'users' || section === 'all') && state.currentUser && state.currentUser.role === 'owner') {
     fetchUsersList();

@@ -36,6 +36,7 @@ import (
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
@@ -97,9 +98,13 @@ type Server struct {
 	ServerUpgradeRunner      func(context.Context, string) error
 	ServerIPv6Collector      *servernetwork.Collector
 	ServerNetworkCoordinator *servernetwork.Coordinator
+	FileShare                *fileshare.Service
 	serverNetworkValidationMu sync.Mutex
 	serverNetworkDetections   map[string]serverNetworkDetection
 	serverNetworkTokens       map[string]serverNetworkValidationToken
+	fileShareOnce             sync.Once
+	fileDownloadSlots         chan struct{}
+	fileDownloadRates         sync.Map
 
 	version            int64
 	wakeRateLimit      sync.Map
@@ -264,6 +269,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/commands", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.listCommands)))
 	mux.Handle("GET /api/v1/commands/{id}", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.getCommand)))
 	mux.Handle("POST /api/v1/commands/{id}/cancel", requirePerm(auth.PermCommandsCancel, nil)(http.HandlerFunc(s.cancelCommand)))
+
+	// Temporary file relay routes. Public downloads are authorized by an expiring capability token.
+	mux.Handle("POST /api/v1/files", requireSession(http.HandlerFunc(s.uploadFile)))
+	mux.Handle("GET /api/v1/files", requireSession(http.HandlerFunc(s.listFiles)))
+	mux.Handle("GET /api/v1/files/settings", requireSession(http.HandlerFunc(s.getFileSettings)))
+	mux.Handle("PUT /api/v1/files/settings", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putFileSettings)))
+	mux.Handle("GET /api/v1/files/{id}/download", requireSession(http.HandlerFunc(s.downloadFile)))
+	mux.Handle("DELETE /api/v1/files/{id}", requireSession(http.HandlerFunc(s.deleteFile)))
+	mux.Handle("POST /api/v1/files/{id}/links", requireSession(http.HandlerFunc(s.createFileLink)))
+	mux.Handle("GET /api/v1/files/{id}/links", requireSession(http.HandlerFunc(s.listFileLinks)))
+	mux.Handle("DELETE /api/v1/files/{id}/links/{link_id}", requireSession(http.HandlerFunc(s.revokeFileLink)))
+	mux.HandleFunc("GET /api/v1/public/files/{id}/download", s.downloadPublicFile)
 	mux.Handle("GET /api/v1/upgrade-plans", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.listUpgradePlans)))
 	mux.Handle("GET /api/v1/upgrade-plans/{id}", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getUpgradePlan)))
 

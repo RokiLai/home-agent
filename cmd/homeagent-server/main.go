@@ -33,6 +33,7 @@ import (
 	"homeagent/internal/ddns"
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/health"
@@ -269,6 +270,12 @@ func serve(c config) error {
 		return fmt.Errorf("init command repository: %w", err)
 	}
 	commandService := command.NewService(commandRepo, nil)
+	fileShareService, fileShareErr := fileshare.Open(filepath.Join(c.dataDir, "files"), fileshare.Options{})
+	if fileShareErr != nil {
+		logger.Error("fileshare_initialization_failed", "error", fileShareErr)
+	} else if cleanupErr := fileShareService.CleanupExpired(); cleanupErr != nil {
+		logger.Warn("fileshare_startup_cleanup_failed", "error", cleanupErr)
+	}
 	acceptTimeout := durationEnv("HOMEAGENT_COMMAND_ACCEPT_TIMEOUT", 15*time.Second)
 	commandTimeouts := map[command.Kind]command.TimeoutPolicy{
 		command.KindSSHKeys:      {Accept: acceptTimeout, Finish: durationEnv("HOMEAGENT_COMMAND_SSH_FINISH_TIMEOUT", time.Minute)},
@@ -604,6 +611,7 @@ func serve(c config) error {
 		ServerUpgradeRunner:      serverUpgradeRunner,
 		ServerIPv6Collector:      serverIPv6Collector,
 		ServerNetworkCoordinator: serverNetworkCoord,
+		FileShare:                fileShareService,
 	}).Handler()
 	server := &http.Server{Addr: c.listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
@@ -634,6 +642,22 @@ func serve(c config) error {
 	}()
 
 	healthSvc.StartSweep(ctx, 1*time.Minute)
+	if fileShareService != nil {
+		go func() {
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if cleanupErr := fileShareService.CleanupExpired(); cleanupErr != nil {
+						logger.Warn("fileshare_cleanup_failed", "error", cleanupErr)
+					}
+				}
+			}
+		}()
+	}
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
