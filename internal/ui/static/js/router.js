@@ -14,6 +14,10 @@ export const pageMeta = {
     title: '操作记录',
     desc: '控制命令的投递、接受与最终执行状态'
   },
+  files: {
+    title: '文件中转',
+    desc: '临时文件上传、下载与限时链接管理'
+  },
   settings: {
     title: '系统设置',
     desc: '管理员会话与服务端通信参数配置'
@@ -37,7 +41,7 @@ export const pageMeta = {
 };
 
 const validDetailSections = new Set(['overview', 'health', 'ssh', 'network', 'commands', 'settings']);
-const validSettingsSections = new Set(['all', 'general', 'version', 'network', 'users', 'github', 'about']);
+const validSettingsSections = new Set(['all', 'general', 'version', 'network', 'files', 'users', 'github', 'about']);
 
 export function parseRoute(hashString) {
   const clean = (hashString || '').replace(/^#\/?/, '').trim();

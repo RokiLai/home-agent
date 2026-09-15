@@ -2762,3 +2762,59 @@ body.sidebar-open {
   color: #fff !important;
   border-color: var(--primary) !important;
 }
+
+.files-toolbar,
+.files-upload-control,
+.file-link-create,
+.file-link-row,
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.files-toolbar {
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.files-upload-control { min-width: min(100%, 620px); }
+.file-upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.file-upload-input:focus-visible + #fileUploadBtn { outline: 2px solid var(--primary); outline-offset: 2px; }
+.file-upload-selection {
+  min-width: 0;
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-usage { width: min(280px, 100%); font-size: 0.82rem; }
+.files-usage-track { height: 8px; background: var(--border-color); overflow: hidden; margin-top: 6px; }
+.files-usage-bar { height: 100%; width: 0; background: var(--emerald); transition: width 0.2s ease; }
+.file-upload-progress { margin-bottom: 16px; }
+.file-upload-progress span { display: block; margin-top: 6px; font-size: 0.78rem; color: var(--text-muted); }
+.file-name, .file-hash { display: block; max-width: 360px; overflow-wrap: anywhere; }
+.file-hash { color: var(--text-muted); font-size: 0.7rem; margin-top: 3px; }
+.file-actions { white-space: nowrap; }
+.file-settings-form { max-width: 600px; }
+.file-links-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; }
+.file-links-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+.file-links-list { display: grid; gap: 8px; margin-top: 16px; }
+.file-link-row { justify-content: space-between; border-top: 1px solid var(--border-color); padding-top: 8px; font-size: 0.82rem; }
+
+@media (max-width: 700px) {
+  .files-toolbar, .files-upload-control, .file-link-create { align-items: stretch; flex-direction: column; }
+  .file-upload-selection { max-width: 100%; }
+  .files-usage { width: 100%; }
+  .files-table-wrap th:nth-child(3), .files-table-wrap td:nth-child(3) { display: none; }
+  .file-actions { gap: 6px; }
+}

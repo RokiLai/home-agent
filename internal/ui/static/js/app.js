@@ -10,8 +10,10 @@ import { fetchDevices, handleSyncAll, handleUpgradeAll } from './devices/actions
 import { renderDevices, renderDeviceDetailView, renderDashboardFocus } from './devices/render.js';
 import { fetchCommands } from './commands.js';
 import { fetchUsersList } from './users.js';
+import { fetchFiles, initFileShare, loadFileSettings } from './files.js?v=3';
 
 export function bindEventListeners() {
+	initFileShare();
   const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
   const sidebarCloseBtn = document.getElementById('sidebarCloseBtn');
   const sidebarBackdrop = document.getElementById('sidebarBackdrop');
@@ -65,6 +67,8 @@ export function bindEventListeners() {
     await fetchDevices();
     await fetchGitHubStatus();
     await fetchCommands();
+    await fetchFiles();
+    await loadFileSettings().catch(() => {});
     if (state.currentUser && state.currentUser.role === 'owner') {
       await fetchUsersList();
     }
@@ -221,6 +225,8 @@ export async function init() {
       renderDeviceDetailView(route.deviceId, route.section);
     } else if (page === 'dashboard') {
       renderDashboardFocus();
+    } else if (page === 'files') {
+      fetchFiles();
     } else if (page === 'settings' && route) {
       switchSettingsSection(route.section || 'all');
     }
@@ -233,6 +239,8 @@ export async function init() {
     fetchDevices();
     fetchGitHubStatus();
     fetchCommands();
+    fetchFiles();
+    loadFileSettings().catch(() => {});
     if (state.currentUser && state.currentUser.role === 'owner') {
       fetchUsersList();
     }
