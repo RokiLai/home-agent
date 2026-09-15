@@ -3,7 +3,6 @@ package version
 
 import "strings"
 
-const defaultServerVersion = "v0.6.26"
 const defaultServerVersion = "v0.6.27"
 const defaultAgentVersion = "v0.6.16"
 

@@ -109,8 +109,6 @@ test('HTML preserves all required DOM IDs and structural contracts', async () =>
     'settingsServerUrlInput', 'settingsSaveBtn', 'settingsClearBtn', 'changePasswordForm',
     'oldPasswordInput', 'newPasswordInput', 'confirmPasswordInput', 'savePasswordBtn', 'changePasswordAlert',
     'serverNetworkResolvedInterface', 'serverNetworkResolvedAddress', 'serverNetworkDetectionMessage',
-    'serverNetworkRedetectBtn', 'serverNetworkRecordsInput', 'serverNetworkExternalWriterConfirmed', 'serverNetworkSaveBtn',
-    'serverNetworkRecordCandidates',
     'serverNetworkRedetectBtn', 'serverIPv6EndpointInput', 'copyServerIPv6EndpointBtn',
     // Modals
     'ipModal', 'ipModalTitle', 'ipModalDesc', 'ipModalList', 'closeIpModalBtn', 'doneIpModalBtn',

@@ -1,0 +1,11 @@
+task: fix-server-version-multiline-ci
+description: 修复 version.go 中重复声明 defaultServerVersion 导致 CI 提取多行版本失败的问题
+allowed_paths:
+  - changes/fix-server-version-multiline-ci.yaml
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/api/api.go
+  - internal/ui/static/js/settings.js
+  - internal/ui/static/index.html
+  - internal/ui/testdata/mobile-responsive.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
