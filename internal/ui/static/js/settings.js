@@ -297,7 +297,6 @@ function renderServerNetworkStatus(data) {
 
   if (badgeEl) {
     badgeEl.className = 'badge';
-    if (!data.enabled) {
     if (data.status === 'standalone_detector' || data.status === 'synced') {
       badgeEl.classList.add('badge-success');
       badgeEl.textContent = '探测正常';
@@ -312,37 +311,12 @@ function renderServerNetworkStatus(data) {
       badgeEl.title = data.last_error || '网络探测异常';
     } else {
       badgeEl.classList.add('badge-secondary');
-      badgeEl.textContent = '未启用';
       badgeEl.textContent = '就绪';
       badgeEl.title = '';
-    } else {
-      switch (data.status) {
-        case 'synced':
-          badgeEl.classList.add('badge-success');
-          badgeEl.textContent = '已同步';
-          badgeEl.title = 'IPv6 DDNS 记录已成功同步';
-          break;
-        case 'probing':
-          badgeEl.classList.add('badge-info');
-          badgeEl.textContent = '探测中';
-          badgeEl.title = '正在探测网卡 IPv6 地址';
-          break;
-        case 'error':
-          badgeEl.classList.add('badge-danger');
-          badgeEl.textContent = '同步异常';
-          badgeEl.title = data.last_error || '同步发生错误';
-          break;
-        default:
-          badgeEl.classList.add('badge-secondary');
-          badgeEl.textContent = '空闲';
-          badgeEl.title = '';
-          break;
-      }
     }
   }
 }
 
-async function detectServerNetwork() {
 async function detectServerNetwork(interactive = false) {
   const ifaceEl = document.getElementById('serverNetworkResolvedInterface');
   const addressEl = document.getElementById('serverNetworkResolvedAddress');
@@ -351,9 +325,6 @@ async function detectServerNetwork(interactive = false) {
 
   if (ifaceEl) ifaceEl.textContent = '探测中';
   if (addressEl) addressEl.textContent = '探测中';
-  const res = await apiFetch(`${state.serverHost}/api/v1/server/network/candidates`);
-  const data = await res.json();
-  if (!res.ok || data.status !== 'ready') {
   if (badgeEl) {
     badgeEl.className = 'badge badge-info';
     badgeEl.textContent = '探测中';
@@ -394,7 +365,6 @@ async function detectServerNetwork(interactive = false) {
     serverNetworkDetectionId = '';
     if (ifaceEl) ifaceEl.textContent = '-';
     if (addressEl) addressEl.textContent = '未解析';
-    if (messageEl) messageEl.textContent = (data.errors || ['自动解析失败']).join('；');
     const errMsg = `探测异常: ${err.message}`;
     if (messageEl) messageEl.textContent = errMsg;
     if (badgeEl) {
@@ -406,38 +376,9 @@ async function detectServerNetwork(interactive = false) {
     }
     return false;
   }
-
-  const recordCandidatesEl = document.getElementById('serverNetworkRecordCandidates');
-  const recordsInput = document.getElementById('serverNetworkRecordsInput');
-  if (recordCandidatesEl) {
-    recordCandidatesEl.innerHTML = '';
-    for (const candidate of (data.record_candidates || [])) {
-      if (candidate.rejected) continue;
-      const label = document.createElement('label');
-      label.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:.76rem;';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = !!candidate.selected;
-      checkbox.addEventListener('change', () => {
-        const records = (recordsInput?.value || '').split(',').map(item => item.trim()).filter(Boolean);
-        const next = new Set(records);
-        if (checkbox.checked) next.add(candidate.record); else next.delete(candidate.record);
-        if (recordsInput) recordsInput.value = [...next].join(', ');
-      });
-      label.append(checkbox, document.createTextNode(`${candidate.record}（${candidate.source === 'saved' ? '已保存' : '服务端 URL'}）`));
-      recordCandidatesEl.appendChild(label);
-    }
-  }
-  serverNetworkDetectionId = data.detection_id;
-  if (ifaceEl) ifaceEl.textContent = data.resolved_interface || '-';
-  if (addressEl) addressEl.textContent = data.resolved_address || '未解析';
-  if (messageEl) messageEl.textContent = '已按当前默认 IPv6 路由和稳定地址筛选规则自动确定。';
-  return true;
 }
 
 export async function loadServerNetworkSettings() {
-  const switchEl = document.getElementById('serverNetworkEnabledSwitch');
-  if (!switchEl) return;
   updateServerIPv6EndpointURL();
   const badgeEl = document.getElementById('serverNetworkStatusBadge');
   if (!badgeEl && !document.getElementById('serverNetworkResolvedInterface')) return;
@@ -445,8 +386,6 @@ export async function loadServerNetworkSettings() {
   try {
     const res = await apiFetch(`${state.serverHost}/api/v1/server/network`);
     if (res.status === 403) {
-      const saveBtn = document.getElementById('serverNetworkSaveBtn');
-      if (saveBtn) saveBtn.style.display = 'none';
       return;
     }
     if (!res.ok) {
@@ -454,7 +393,6 @@ export async function loadServerNetworkSettings() {
     }
     const data = await res.json();
     renderServerNetworkStatus(data);
-    await detectServerNetwork();
     await detectServerNetwork(false);
   } catch (err) {
     // 忽略加载异常

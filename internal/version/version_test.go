@@ -7,8 +7,6 @@ import (
 )
 
 func TestDefaultVersionHasSingleSource(t *testing.T) {
-	if defaultServerVersion != "v0.6.26" || defaultAgentVersion != "v0.6.16" {
-		t.Fatalf("defaults = %q/%q, want v0.6.26/v0.6.16", defaultServerVersion, defaultAgentVersion)
 	if defaultServerVersion != "v0.6.27" || defaultAgentVersion != "v0.6.16" {
 		t.Fatalf("defaults = %q/%q, want v0.6.27/v0.6.16", defaultServerVersion, defaultAgentVersion)
 	}
@@ -20,7 +18,6 @@ func TestDefaultVersionHasSingleSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(source), `const defaultServerVersion = "v0.6.26"`) {
 	if !strings.Contains(string(source), `const defaultServerVersion = "v0.6.27"`) {
 		t.Fatalf("version.go does not contain expected server version literal")
 	}

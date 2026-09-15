@@ -3306,30 +3306,6 @@ func (s *Server) getServerIPv6Text(w http.ResponseWriter, r *http.Request) {
 
 	detection, err := s.detectNetworkInternal(ctx)
 	var ip netip.Addr
-	var err error
-
-	if s.ServerIPv6Collector != nil {
-		detection, detectErr := s.ServerIPv6Collector.Detect(ctx, netip.Addr{})
-		if detectErr != nil {
-			err = detectErr
-		} else {
-			ip = detection.Address
-		}
-	} else if s.ServerNetworkCoordinator != nil {
-		detection, detectErr := s.ServerNetworkCoordinator.DetectNetwork(ctx)
-		if detectErr != nil {
-			err = detectErr
-		} else {
-			ip = detection.Address
-		}
-	} else {
-		collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
-		detection, detectErr := collector.Detect(ctx, netip.Addr{})
-		if detectErr != nil {
-			err = detectErr
-		} else {
-			ip = detection.Address
-		}
 	if err == nil {
 		ip = detection.Address
 	}
@@ -3361,9 +3337,6 @@ func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
 			resolvedAddr = detection.Address.String()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"configured": false,
-			"enabled":    false,
-			"status":     "not_configured",
 			"configured":         true,
 			"enabled":            true,
 			"status":             "standalone_detector",
@@ -3392,13 +3365,8 @@ func (s *Server) getServerNetwork(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getServerNetworkCandidates(w http.ResponseWriter, r *http.Request) {
-	if s.ServerNetworkCoordinator == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"status": "error", "errors": []string{"not_configured"}})
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	detection, err := s.ServerNetworkCoordinator.DetectNetwork(ctx)
 	detection, err := s.detectNetworkInternal(ctx)
 	if err != nil {
 		status := "error"
@@ -3416,7 +3384,6 @@ func (s *Server) getServerNetworkCandidates(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	now := time.Now().UTC()
-	status := s.ServerNetworkCoordinator.GetStatus(r.Context())
 	var configVersion int64
 	var statusRecords []string
 	if s.ServerNetworkCoordinator != nil {
@@ -3428,13 +3395,10 @@ func (s *Server) getServerNetworkCandidates(w http.ResponseWriter, r *http.Reque
 	if s.serverNetworkDetections == nil {
 		s.serverNetworkDetections = make(map[string]serverNetworkDetection)
 	}
-	s.serverNetworkDetections[id] = serverNetworkDetection{Result: detection, ConfigVersion: status.ConfigVersion, ExpiresAt: now.Add(time.Minute)}
 	s.serverNetworkDetections[id] = serverNetworkDetection{Result: detection, ConfigVersion: configVersion, ExpiresAt: now.Add(time.Minute)}
 	s.serverNetworkValidationMu.Unlock()
-	recordCandidates := make([]map[string]any, 0, len(status.Records)+1)
 	recordCandidates := make([]map[string]any, 0, len(statusRecords)+1)
 	seenRecords := make(map[string]bool)
-	for _, record := range normalizeServerNetworkRecords(status.Records) {
 	for _, record := range normalizeServerNetworkRecords(statusRecords) {
 		seenRecords[record] = true
 		recordCandidates = append(recordCandidates, map[string]any{"record": record, "source": "saved", "saved": true, "selected": true, "rejected": false})

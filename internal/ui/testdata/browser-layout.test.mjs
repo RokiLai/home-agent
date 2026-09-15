@@ -817,7 +817,6 @@ test('8. Server network resolves interface and IPv6 automatically without editab
     legacyRecordsInput: Boolean(document.getElementById('serverNetworkRecordsInput')),
     iface: document.getElementById('serverNetworkResolvedInterface').textContent,
     address: document.getElementById('serverNetworkResolvedAddress').textContent,
-    candidate: document.getElementById('serverNetworkRecordCandidates').textContent,
     endpoint: document.getElementById('serverIPv6EndpointInput') ? document.getElementById('serverIPv6EndpointInput').value : '',
     copyBtn: Boolean(document.getElementById('copyServerIPv6EndpointBtn')),
     message: document.getElementById('serverNetworkDetectionMessage').textContent
@@ -826,7 +825,6 @@ test('8. Server network resolves interface and IPv6 automatically without editab
   assert.equal(result.legacyRecordsInput, false, 'network records input must be removed');
   assert.equal(result.iface, 'en0');
   assert.equal(result.address, '240e:390:1::100');
-  assert.match(result.candidate, /home\.example\.com/);
   assert.match(result.endpoint, /\/api\/v1\/server\/ipv6$/);
   assert.equal(result.copyBtn, true);
   assert.match(result.message, /自动确定/);
