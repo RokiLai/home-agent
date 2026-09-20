@@ -28,6 +28,15 @@ func NewService(repo Repository, clock Clock) *Service {
 func (s *Service) Create(req CreateRequest) (Command, bool, error) { return s.repo.CreateOrGet(req) }
 func (s *Service) Get(id ID) (Command, error)                      { return s.repo.Get(id) }
 func (s *Service) List(f Filter) (Page, error)                     { return s.repo.List(f) }
+
+// QueuedForDevice 返回指定设备仍可恢复的任务，调用方必须再次校验 TTL 和设备连接。
+func (s *Service) QueuedForDevice(deviceID string, limit int) ([]Command, error) {
+	p, err := s.repo.List(Filter{DeviceID: deviceID, Status: StatusQueued, Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	return p.Commands, nil
+}
 func (s *Service) StartDispatch(id ID) (Command, error) {
 	c, e := s.repo.Get(id)
 	if e != nil {
@@ -54,6 +63,21 @@ func (s *Service) DispatchResult(id ID, delivered bool) (Command, error) {
 		t.ErrorMessage = "no subscriber accepted delivery"
 	}
 	return s.repo.Transition(id, c.Revision, t)
+}
+
+// Requeue 将暂时没有在线订阅者的投递重新放回 queued。
+func (s *Service) Requeue(id ID) (Command, error) {
+	c, err := s.repo.Get(id)
+	if err != nil {
+		return Command{}, err
+	}
+	if c.Status == StatusQueued {
+		return c, nil
+	}
+	if c.Status != StatusDispatching {
+		return Command{}, ErrInvalidTransition
+	}
+	return s.repo.Transition(id, c.Revision, Transition{Status: StatusQueued, At: s.clock.Now()})
 }
 func (s *Service) MarkLegacy(id ID) (Command, error) {
 	c, e := s.repo.Get(id)

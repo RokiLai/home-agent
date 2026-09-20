@@ -12,11 +12,11 @@ import (
 )
 
 func TestThreeDeviceAllowAllManagedBlocks(t *testing.T) {
-	all := []device.Device{{ID: "a", PublicKey: "ssh-ed25519 AAAA"}, {ID: "b", PublicKey: "ssh-ed25519 BBBB"}, {ID: "c", PublicKey: "ssh-ed25519 CCCC"}}
+	all := []device.Device{{ID: "a", PublicKey: "ssh-ed25519 QUFBQQ=="}, {ID: "b", PublicKey: "ssh-ed25519 QkJCQg=="}, {ID: "c", PublicKey: "ssh-ed25519 Q0NDQw=="}}
 	policy := acl.Policy{DefaultAllow: true, Devices: map[string][]string{}}
 	var expectedHash string
 	for _, target := range all {
-		keys := []Key{{DeviceID: "homeagent-admin", PublicKey: "ssh-ed25519 ADMIN"}}
+		keys := []Key{{DeviceID: "homeagent-admin", PublicKey: "ssh-ed25519 QURNSU4="}}
 		for _, allowed := range policy.Resolve(target.ID, all) {
 			keys = append(keys, Key{DeviceID: allowed.ID, PublicKey: allowed.PublicKey})
 		}
@@ -25,7 +25,7 @@ func TestThreeDeviceAllowAllManagedBlocks(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(got)
-		if !strings.Contains(text, "PERSONAL user") || !strings.Contains(text, "ADMIN homeagent-admin") {
+		if !strings.Contains(text, "PERSONAL user") || !strings.Contains(text, "QURNSU4= homeagent-admin") {
 			t.Fatalf("target %s: %s", target.ID, text)
 		}
 		if !strings.Contains(text, target.PublicKey+" "+target.ID) {

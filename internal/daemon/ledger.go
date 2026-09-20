@@ -24,6 +24,26 @@ type commandLedger struct {
 	path          string
 	SchemaVersion int                     `json:"schema_version"`
 	Records       map[string]ledgerRecord `json:"records"`
+	LastEventID   string                  `json:"last_event_id,omitempty"`
+}
+
+func (l *commandLedger) lastEventID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.LastEventID
+}
+
+func (l *commandLedger) recordEventID(id string) error {
+	if id == "" {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.LastEventID == id {
+		return nil
+	}
+	l.LastEventID = id
+	return l.writeLocked()
 }
 
 func openCommandLedger(path string) (*commandLedger, error) {

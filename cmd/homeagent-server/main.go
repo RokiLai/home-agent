@@ -124,27 +124,27 @@ func parseConfig(name string, args []string) (config, []string, error) {
 		defaultData = value
 	}
 	c := config{
-		listen:    env("HOMEAGENT_LISTEN", ":8080"),
-		publicURL: env("HOMEAGENT_PUBLIC_URL", ""),
-		dataDir:   defaultData,
-		token:     os.Getenv("HOMEAGENT_JOIN_TOKEN"),
-		adminUser:     env("HOMEAGENT_ADMIN_USERNAME", "admin"),
-		adminPass:     os.Getenv("HOMEAGENT_ADMIN_PASSWORD"),
-		storageDriver: env("HOMEAGENT_STORAGE_DRIVER", "file"),
-		mysqlDSN:      os.Getenv("HOMEAGENT_MYSQL_DSN"),
-		consulAddr:    env("HOMEAGENT_CONSUL_ADDRESS", "127.0.0.1:8500"),
-		consulService: os.Getenv("HOMEAGENT_CONSUL_MYSQL_SERVICE"),
-		downloads:          os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
-		scripts:            env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
-		githubRepo:         env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"),
-		githubMirrorPrefix: env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""),
-		githubToken:        env("HOMEAGENT_GITHUB_TOKEN", env("GITHUB_TOKEN", "")),
-		upgradeSource:      env("HOMEAGENT_UPGRADE_SOURCE", "github"),
-		timeout:            5 * time.Second,
-		sync:               true,
-		burst:              3,
-		port:               9,
-		interval:           50 * time.Millisecond,
+		listen:               env("HOMEAGENT_LISTEN", ":8080"),
+		publicURL:            env("HOMEAGENT_PUBLIC_URL", ""),
+		dataDir:              defaultData,
+		token:                os.Getenv("HOMEAGENT_JOIN_TOKEN"),
+		adminUser:            env("HOMEAGENT_ADMIN_USERNAME", "admin"),
+		adminPass:            os.Getenv("HOMEAGENT_ADMIN_PASSWORD"),
+		storageDriver:        env("HOMEAGENT_STORAGE_DRIVER", "file"),
+		mysqlDSN:             os.Getenv("HOMEAGENT_MYSQL_DSN"),
+		consulAddr:           env("HOMEAGENT_CONSUL_ADDRESS", "127.0.0.1:8500"),
+		consulService:        os.Getenv("HOMEAGENT_CONSUL_MYSQL_SERVICE"),
+		downloads:            os.Getenv("HOMEAGENT_DOWNLOADS_DIR"),
+		scripts:              env("HOMEAGENT_SCRIPTS_DIR", "scripts"),
+		githubRepo:           env("HOMEAGENT_GITHUB_REPO", "RokiLai/home-agent"),
+		githubMirrorPrefix:   env("HOMEAGENT_GITHUB_MIRROR_PREFIX", ""),
+		githubToken:          env("HOMEAGENT_GITHUB_TOKEN", env("GITHUB_TOKEN", "")),
+		upgradeSource:        env("HOMEAGENT_UPGRADE_SOURCE", "github"),
+		timeout:              5 * time.Second,
+		sync:                 true,
+		burst:                3,
+		port:                 9,
+		interval:             50 * time.Millisecond,
 		serverIPv6SelfUpdate: boolEnv("HOMEAGENT_SERVER_IPV6_SELF_UPDATE", false),
 		serverIPv6Interface:  env("HOMEAGENT_SERVER_IPV6_INTERFACE", ""),
 		serverDDNSRecords:    env("HOMEAGENT_SERVER_DDNS_RECORDS", ""),
@@ -270,6 +270,10 @@ func serve(c config) error {
 		return fmt.Errorf("init command repository: %w", err)
 	}
 	commandService := command.NewService(commandRepo, nil)
+	deliveryRepo, err := commandfile.OpenDeliveryRepository(filepath.Join(c.dataDir, "deliveries.json"))
+	if err != nil {
+		return fmt.Errorf("init delivery repository: %w", err)
+	}
 	fileShareService, fileShareErr := fileshare.Open(filepath.Join(c.dataDir, "files"), fileshare.Options{})
 	if fileShareErr != nil {
 		logger.Error("fileshare_initialization_failed", "error", fileShareErr)
@@ -485,14 +489,14 @@ func serve(c config) error {
 
 	// 初始化健康评估子系统
 	adapters := &serverHealthAdapters{
-		reg:         r,
-		broker:      eventBroker,
-		syncer:      syncer,
-		adminPub:    pub,
-		devState:    devStateSvc,
-		prefixState: prefixStateSvc,
-		ddnsSvc:     ddnsSvc,
-		cmdRepo:     commandRepo,
+		reg:           r,
+		broker:        eventBroker,
+		syncer:        syncer,
+		adminPub:      pub,
+		devState:      devStateSvc,
+		prefixState:   prefixStateSvc,
+		ddnsSvc:       ddnsSvc,
+		cmdRepo:       commandRepo,
 		versionStatus: versionStatusSvc,
 	}
 
@@ -560,6 +564,7 @@ func serve(c config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go runCommandExpiryLoop(ctx, commandService, logger)
 
 	var serverUpgradeRunner func(context.Context, string) error
 	if checkServerSupervised() {
@@ -580,28 +585,29 @@ func serve(c config) error {
 	}
 
 	handler := (&api.Server{
-		Registry:           r,
-		Broker:             eventBroker,
-		SessionManager:     sessionMgr,
-		EnrollmentManager:  enrollmentMgr,
-		RateLimiter:        rateLimiter,
-		ACLPath:            filepath.Join(c.dataDir, "acl.yaml"),
-		Token:              c.token,
-		AdminPublicKey:     pub,
-		Sync:               syncer,
-		GitHubSyncService:  ghSvc,
-		Log:                logger,
-		DownloadsDir:       c.downloads,
-		ScriptsDir:         c.scripts,
-		PublicURL:          c.publicURL,
-		DeviceStateService: devStateSvc,
-		PrefixStateService: prefixStateSvc,
-		DDNSService:        ddnsSvc,
-		Commands:           commandService,
-		CommandTimeouts:    commandTimeouts,
-		Health:             healthSvc,
-		Alerting:           alertingSvc,
-		AuditLogger:        auditLogger,
+		Registry:                 r,
+		Broker:                   eventBroker,
+		SessionManager:           sessionMgr,
+		EnrollmentManager:        enrollmentMgr,
+		RateLimiter:              rateLimiter,
+		ACLPath:                  filepath.Join(c.dataDir, "acl.yaml"),
+		Token:                    c.token,
+		AdminPublicKey:           pub,
+		Sync:                     syncer,
+		GitHubSyncService:        ghSvc,
+		Log:                      logger,
+		DownloadsDir:             c.downloads,
+		ScriptsDir:               c.scripts,
+		PublicURL:                c.publicURL,
+		DeviceStateService:       devStateSvc,
+		PrefixStateService:       prefixStateSvc,
+		DDNSService:              ddnsSvc,
+		Commands:                 commandService,
+		DeliveryRepo:             deliveryRepo,
+		CommandTimeouts:          commandTimeouts,
+		Health:                   healthSvc,
+		Alerting:                 alertingSvc,
+		AuditLogger:              auditLogger,
 		UpgradeSource:            c.upgradeSource,
 		GitHubRepo:               c.githubRepo,
 		GitHubMirrorPrefix:       c.githubMirrorPrefix,
@@ -698,6 +704,27 @@ func serve(c config) error {
 		return nil
 	}
 	return err
+}
+
+func runCommandExpiryLoop(ctx context.Context, service *command.Service, logger *slog.Logger) {
+	if service == nil {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			count, err := service.Expire(128)
+			if err != nil {
+				logger.Error("command_expiry_sweep_failed", "error", err)
+			} else if count > 0 {
+				logger.Info("command_expiry_sweep_completed", "expired", count)
+			}
+		}
+	}
 }
 
 // list 在终端以表格格式打印所有已注册设备的状态概览。

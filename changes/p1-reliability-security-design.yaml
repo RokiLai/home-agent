@@ -1,0 +1,29 @@
+task: p1-reliability-security-design
+description: 实施 P1 阶段 A 的离线任务 Delivery 状态模型与安全投递判定，保留现有 Command/ACK 公共契约。
+allowed_paths:
+  - changes/p1-reliability-security-design.yaml
+  - docs/planning/P1可靠控制平面与SSH安全加固方案.md
+  - internal/command/delivery.go
+  - internal/command/delivery_test.go
+  - internal/command/file/delivery_repository.go
+  - internal/command/file/delivery_repository_test.go
+  - internal/broker/broker.go
+  - internal/broker/broker_test.go
+  - internal/api/api.go
+  - internal/api/api_test.go
+  - cmd/homeagent-server/main.go
+  - internal/command/service.go
+  - internal/command/service_test.go
+  - internal/command/file/repository.go
+  - internal/command/file/repository_test.go
+  - internal/sshsync/managed.go
+  - internal/sshsync/managed_test.go
+  - internal/sshsync/integration_test.go
+  - internal/sshsync/file.go
+  - internal/sshsync/file_test.go
+  - internal/daemon/client.go
+  - internal/daemon/ledger.go
+  - internal/daemon/ledger_test.go
+  - internal/daemon/daemon_test.go
+  - internal/daemon/daemon_integration_test.go
+  - cmd/homeagent-agent/main.go

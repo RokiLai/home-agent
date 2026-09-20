@@ -2,6 +2,7 @@
 package broker
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -19,12 +20,18 @@ type Event struct {
 type Broker struct {
 	mu          sync.RWMutex
 	subscribers map[string]map[chan Event]struct{}
+	history     map[string][]Event
+	sequence    map[string]uint64
+	historySize int
 }
 
 // New 创建并初始化事件分发 Broker 实例。
 func New() *Broker {
 	return &Broker{
 		subscribers: make(map[string]map[chan Event]struct{}),
+		history:     make(map[string][]Event),
+		sequence:    make(map[string]uint64),
+		historySize: 64,
 	}
 }
 
@@ -62,11 +69,19 @@ func (b *Broker) Subscribe(deviceID string) (<-chan Event, func()) {
 // Publish 向指定设备的所有活跃连接推送单播事件。
 // 返回成功加入队列的订阅者数量。
 func (b *Broker) Publish(deviceID string, event Event) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	if event.Timestamp == 0 {
 		event.Timestamp = time.Now().Unix()
+	}
+	if event.ID == "" {
+		b.sequence[deviceID]++
+		event.ID = deviceID + ":" + fmt.Sprintf("%020d", b.sequence[deviceID])
+	}
+	b.history[deviceID] = append(b.history[deviceID], event)
+	if len(b.history[deviceID]) > b.historySize {
+		b.history[deviceID] = b.history[deviceID][len(b.history[deviceID])-b.historySize:]
 	}
 
 	subs, ok := b.subscribers[deviceID]
@@ -84,6 +99,23 @@ func (b *Broker) Publish(deviceID string, event Event) int {
 		}
 	}
 	return count
+}
+
+// Replay 返回 lastEventID 之后的事件。第二个返回值为 false 表示无法安全补发，调用方必须全量同步。
+func (b *Broker) Replay(deviceID, lastEventID string) ([]Event, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	h := b.history[deviceID]
+	if lastEventID == "" {
+		return nil, false
+	}
+	for i, ev := range h {
+		if ev.ID == lastEventID {
+			out := append([]Event(nil), h[i+1:]...)
+			return out, true
+		}
+	}
+	return nil, false
 }
 
 // Broadcast 向所有已连接的在线设备广播事件。
@@ -157,4 +189,3 @@ func (b *Broker) CloseClient(deviceID string) {
 		delete(b.subscribers, deviceID)
 	}
 }
-

@@ -4,20 +4,20 @@
 
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
-| 设计 | 评审通过 | 方案定案并获用户明确授权实施 |
-| 实施 | 实施完成 | 测试模式 Bcrypt 代价解耦、前端 Node 契约测试并发化、多目标并发构建升级与客户端版本联动已实施完毕 |
-| 验收 | 本地通过 | 本地质量门禁全部通过：全量 -race 回归耗时降至 33.7s，Diff Coverage 83.3%（5/6）；待 PR 合并至 main 触发真实 Release 工作流最终验收 |
+| 设计 | 已有评审与授权记录，缓存细节待闭环 | 测试钩子与构建并发参数已落地；第 4.4 节仍列有缓存隔离候选方案，尚未收敛为已实施决策 |
+| 实施 | 部分完成 | Bcrypt 测试代价解耦、前端测试并发与多目标并发构建已落地；三个 Job 仍共用 `setup-go` 缓存配置，缓存隔离未完成 |
+| 验收 | 历史本地通过记录，整体验收待完成 | 原记录为全量 -race 33.7s、Diff Coverage 83.3%（5/6）；本次未重跑，缺少优化后真实 Release 冷/热缓存运行记录，不能据此确认端到端提速达标 |
 
-### 1.1 设计审查待决项
+### 1.1 决策与实施核对（2026-09-20）
 
-1. **测试环境 Bcrypt Cost 切换机制**：确定采用显式测试包钩子（`internal/auth.SetBcryptCostForTest`），确保生产环境不受影响且契约安全。
-2. **构建并发控制度**：确定 `build-server`（7 目标）与 `build-agent`（9 目标）在 GitHub Actions 标准 2 vCPU Runner 上的并发度参数（推荐 `-P 2`），兼顾内存安全与吞吐提速。
-3. **缓存锁冲突消除与隔离策略**：针对并行 Job 抢占同一 `setup-go` Cache Key 导致的缓存保存失败问题，明确跨 Job 缓存隔离或显式缓存恢复机制。
-4. **工作流契约兼容性**：确保 `.github/workflows/release.yml` 的修改严格通过 `internal/qualitygate/releaseworkflow_test.go` 的契约断言，不引入破坏性变更。
+1. **测试代价解耦已实施**：[hash.go](../../internal/auth/hash.go) 提供 `SetBcryptCostForTest`，[auth_test.go](../../internal/auth/auth_test.go) 与 [api_test.go](../../internal/api/api_test.go) 在测试初始化时设置低代价；生产初始值仍为 12。
+2. **并发已实施**：[前端测试](../../internal/ui/embed_test.go) 已使用 `t.Parallel()`；[发布工作流](../../.github/workflows/release.yml) 中 7 个 Server 目标与 9 个 Agent 目标均使用 `xargs -n 4 -P 2`。真实 Runner 上的资源与耗时目标仍待验收。
+3. **缓存隔离未实施**：上述工作流的 `test`、`build-server`、`build-agent` 均为 `cache: true`、`cache-dependency-path: go.sum`，没有独立缓存键配置。第 4.4 节仍属于待落实范围。
+4. **验收仍有缺口**：[工作流契约测试](../../internal/qualitygate/releaseworkflow_test.go) 已存在；现有生产代价测试直接调用 `bcrypt.GenerateFromPassword`，尚不能替代第 6 节要求的“不调用测试钩子，经生产初始化与 `HashPassword` 路径验证 Cost 12”。本次仅核对代码，不生成新的测试通过结论。
 
 ## 2. 背景与问题定义
 
-在 GitHub Actions 工作流运行记录 [Run #34734225374](https://github.com/RokiLai/home-agent/actions/runs/34734225374) 中，PR 触发的 Create Release 流程总耗时为 **2分41秒**。当前工作流拓扑结构如下：
+原方案引用 GitHub Actions 工作流记录 [Run #34734225374](https://github.com/RokiLai/home-agent/actions/runs/34734225374)，记载 PR 触发的 Create Release 流程总耗时为 **2分41秒**。本节为优化前历史基线，本次未重新获取远端日志；当前实施状态以第 1 节为准。基线拓扑如下：
 
 ```text
        prepare (5s)
@@ -266,6 +266,8 @@ test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 14
 
 ### 4.4 核心优化四：构建缓存隔离与锁冲突消除
 
+**实施状态：未完成。** 本节保留优化目标与候选方案，不代表当前工作流已采用独立缓存键；具体策略仍须收敛并验证。
+
 #### 4.4.1 锁冲突机理与解决策略
 在现有工作流中，`test`、`build-server` 与 `build-agent` 同时使用：
 ```yaml
@@ -302,6 +304,8 @@ test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 14
 | **流水线总计 (客户端发布)** | *~2分 45秒* | *~1分 20秒* | *~55秒 - 1分钟* | *~65% ⬇️* | **全流程质量零妥协** |
 
 ## 6. 验证与验收策略
+
+以下为待完成的验收要求；第 5 节数值为预估，不是优化后真实 CI 验收结果。完成时须附候选提交、运行链接、Runner 环境、缓存命中/保存日志、各 Job 与端到端耗时及退出结果。
 
 1. **功能与质量门禁验证**：
    - 执行 `./scripts/quality-gate.sh`，确保通过变更清单校验、架构依赖检查、全量 `-race` 回归与 Diff Coverage 门禁（≥ 60%）。
