@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -63,9 +64,9 @@ func UpdateManagedBlock(existing []byte, keys []Key) ([]byte, error) {
 	seen := map[string]bool{}
 	var block []string
 	for _, k := range keys {
-		fields := strings.Fields(k.PublicKey)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("invalid public key for %s", k.DeviceID)
+		fields, err := validatePublicKey(k.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("invalid public key for %s: %w", k.DeviceID, err)
 		}
 		identity := fields[0] + " " + fields[1]
 		if seen[identity] {
@@ -104,6 +105,35 @@ func UpdateManagedBlock(existing []byte, keys []Key) ([]byte, error) {
 		lines = append(lines, replacement...)
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
+}
+
+var allowedAlgorithms = map[string]bool{
+	"ssh-ed25519": true, "ssh-rsa": true,
+	"ecdsa-sha2-nistp256": true, "ecdsa-sha2-nistp384": true, "ecdsa-sha2-nistp521": true,
+}
+
+func validatePublicKey(raw string) ([]string, error) {
+	if strings.Contains(raw, "-----BEGIN") || strings.Contains(raw, "PRIVATE KEY-----") || strings.ContainsAny(raw, "\r\n\x00") {
+		return nil, fmt.Errorf("private key or embedded newline is not allowed")
+	}
+	fields := strings.Fields(raw)
+	if len(fields) < 2 {
+		return nil, fmt.Errorf("missing algorithm or key body")
+	}
+	algorithm := -1
+	for i, field := range fields {
+		if allowedAlgorithms[field] {
+			algorithm = i
+			break
+		}
+	}
+	if algorithm < 0 || algorithm+1 >= len(fields) {
+		return nil, fmt.Errorf("unsupported public key algorithm")
+	}
+	if _, err := base64.StdEncoding.DecodeString(fields[algorithm+1]); err != nil {
+		return nil, fmt.Errorf("invalid key body: %w", err)
+	}
+	return fields[algorithm:], nil
 }
 
 func scanLines(b []byte) []string {

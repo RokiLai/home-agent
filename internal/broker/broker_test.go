@@ -87,3 +87,16 @@ func TestBrokerConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestBrokerReplayRetainedEventsAndRequiresResyncWhenMissing(t *testing.T) {
+	b := New()
+	b.Publish("dev-1", Event{Type: "command", Data: `{"n":1}`})
+	b.Publish("dev-1", Event{Type: "command", Data: `{"n":2}`})
+	history, ok := b.Replay("dev-1", "dev-1:00000000000000000001")
+	if !ok || len(history) != 1 || history[0].Data != `{"n":2}` {
+		t.Fatalf("unexpected replay: ok=%v history=%+v", ok, history)
+	}
+	if _, ok := b.Replay("dev-1", "missing"); ok {
+		t.Fatal("missing event must require full resync")
+	}
+}

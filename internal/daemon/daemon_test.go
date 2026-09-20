@@ -76,8 +76,8 @@ func TestDaemonSSEAndACKFlow(t *testing.T) {
 				Version: 10,
 				Hash:    "mock-hash-123",
 				Keys: []sshsync.Key{
-					{DeviceID: "server", PublicKey: "ssh-ed25519 ADMIN_KEY"},
-					{DeviceID: "peer-1", PublicKey: "ssh-ed25519 PEER_KEY"},
+					{DeviceID: "server", PublicKey: "ssh-ed25519 QUFBQQ=="},
+					{DeviceID: "peer-1", PublicKey: "ssh-ed25519 QkJCQg=="},
 				},
 			}
 			b, _ := json.Marshal(payload)
@@ -132,7 +132,7 @@ func TestDaemonSSEAndACKFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read authorized_keys: %v", err)
 	}
-	if !strings.Contains(string(content), "ADMIN_KEY") || !strings.Contains(string(content), "PEER_KEY") {
+	if !strings.Contains(string(content), "QUFBQQ==") || !strings.Contains(string(content), "QkJCQg==") {
 		t.Fatalf("authorized_keys missing expected keys: %s", string(content))
 	}
 
@@ -150,7 +150,7 @@ func TestUpdateAuthorizedKeysFile(t *testing.T) {
 	authKeysPath := filepath.Join(tempDir, "authorized_keys")
 
 	keys := []sshsync.Key{
-		{DeviceID: "node1", PublicKey: "ssh-ed25519 KEY1"},
+		{DeviceID: "node1", PublicKey: "ssh-ed25519 S0VZMQ=="},
 	}
 
 	if err := updateAuthorizedKeysFile(authKeysPath, keys); err != nil {
@@ -161,7 +161,7 @@ func TestUpdateAuthorizedKeysFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), "KEY1") {
+	if !strings.Contains(string(content), "S0VZMQ==") {
 		t.Fatalf("expected KEY1 in content, got %s", string(content))
 	}
 }
@@ -315,7 +315,7 @@ func TestDaemonMultiServerFailover(t *testing.T) {
 				Version: 1,
 				Hash:    "failover-hash-1",
 				Keys: []sshsync.Key{
-					{DeviceID: "server", PublicKey: "ssh-ed25519 ADMIN_KEY"},
+					{DeviceID: "server", PublicKey: "ssh-ed25519 QUFBQQ=="},
 				},
 			}
 			b, _ := json.Marshal(payload)

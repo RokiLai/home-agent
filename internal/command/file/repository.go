@@ -114,7 +114,7 @@ func valid(from, to command.Status) bool {
 	case command.StatusQueued:
 		return to == command.StatusDispatching || to == command.StatusCanceled || to == command.StatusInterrupted
 	case command.StatusDispatching:
-		return to == command.StatusDispatched || to == command.StatusAccepted || to == command.StatusSucceeded || to == command.StatusFailed || to == command.StatusCanceled || to == command.StatusInterrupted
+		return to == command.StatusQueued || to == command.StatusDispatched || to == command.StatusAccepted || to == command.StatusSucceeded || to == command.StatusFailed || to == command.StatusCanceled || to == command.StatusInterrupted
 	case command.StatusDispatched:
 		return to == command.StatusAccepted || to == command.StatusSucceeded || to == command.StatusFailed || to == command.StatusTimedOut || to == command.StatusCanceled || to == command.StatusInterrupted || to == command.StatusLegacyUntracked
 	case command.StatusAccepted:

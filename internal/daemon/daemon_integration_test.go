@@ -35,7 +35,7 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 		Registry:       r,
 		Broker:         b,
 		Token:          "secret-token",
-		AdminPublicKey: "ssh-ed25519 ADMIN_PUB",
+		AdminPublicKey: "ssh-ed25519 QURNSU4=",
 		PingInterval:   50 * time.Millisecond,
 		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -48,7 +48,7 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 		Arch:      "amd64",
 		SSHUser:   "root",
 		SSHPort:   22,
-		PublicKey: "ssh-ed25519 NODE1_PUB",
+		PublicKey: "ssh-ed25519 Tk9ERTE=",
 		Addresses: []string{"192.168.1.101"},
 	}
 	if _, err := r.Save(node1); err != nil {
@@ -91,8 +91,8 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 
 	// Verify local authorized_keys has admin key
 	content, _ := os.ReadFile(authKeysPath)
-	if !strings.Contains(string(content), "ADMIN_PUB") {
-		t.Fatalf("expected ADMIN_PUB in %s", string(content))
+	if !strings.Contains(string(content), "QURNSU4=") {
+		t.Fatalf("expected admin key in %s", string(content))
 	}
 
 	// 4. Register node-2 and verify real-time broadcast to node-1
@@ -103,7 +103,7 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 		Arch:      "arm64",
 		SSHUser:   "user",
 		SSHPort:   22,
-		PublicKey: "ssh-ed25519 NODE2_PUB",
+		PublicKey: "ssh-ed25519 Tk9ERTI=",
 		Addresses: []string{"192.168.1.102"},
 	}
 	n2Bytes, _ := json.Marshal(node2)
@@ -116,14 +116,14 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 5. Verify node-1 receives broadcast and updates authorized_keys with NODE2_PUB
+	// 5. Verify node-1 receives broadcast and updates authorized_keys with node-2 key
 	waitForCondition(t, 2*time.Second, func() bool {
 		c, err := os.ReadFile(authKeysPath)
 		if err != nil {
 			return false
 		}
-		return strings.Contains(string(c), "NODE2_PUB")
-	}, "broadcast key update containing NODE2_PUB")
+		return strings.Contains(string(c), "Tk9ERTI=")
+	}, "broadcast key update containing node-2 key")
 
 	// 6. Delete node-2 and verify broadcast key removal
 	delReq, _ := http.NewRequest("DELETE", ts.URL+"/api/v1/devices/node-2", nil)
@@ -139,7 +139,7 @@ func TestFullControlPlaneLifecycle(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return !strings.Contains(string(c), "NODE2_PUB")
+		return !strings.Contains(string(c), "Tk9ERTI=")
 	}, "broadcast key removal after node-2 deletion")
 }
 

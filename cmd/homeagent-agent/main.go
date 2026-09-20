@@ -1281,15 +1281,8 @@ func installAdminKey(key string) error {
 	if err != nil {
 		return err
 	}
-	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	updated, err := sshsync.UpdateManagedBlock(existing, []sshsync.Key{{DeviceID: "homeagent-admin", PublicKey: key}})
-	if err != nil {
-		return err
-	}
-	return atomicWrite(path, updated)
+	_, err = sshsync.ApplyManagedFile(path, []sshsync.Key{{DeviceID: "homeagent-admin", PublicKey: key}})
+	return err
 }
 
 func applyKeys(r io.Reader) error {
@@ -1303,15 +1296,8 @@ func applyKeys(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	updated, err := sshsync.UpdateManagedBlock(existing, set.Keys)
-	if err != nil {
-		return err
-	}
-	return atomicWrite(path, updated)
+	_, err = sshsync.ApplyManagedFile(path, set.Keys)
+	return err
 }
 
 func authorizedKeysPath() (string, error) {

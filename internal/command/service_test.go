@@ -72,6 +72,52 @@ func TestAcceptDeadlineTimeout(t *testing.T) {
 	}
 }
 
+func TestRequeueWhenDeviceOffline(t *testing.T) {
+	repo, err := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := command.NewService(repo, nil)
+	c, _, err := svc.Create(command.CreateRequest{Kind: command.KindSSHKeys, DeviceID: "offline", RequestedBy: command.Actor{Type: "admin", ID: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = svc.StartDispatch(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = svc.Requeue(c.ID)
+	if err != nil || c.Status != command.StatusQueued {
+		t.Fatalf("requeue: %+v %v", c, err)
+	}
+	if _, err := svc.Finish(c.ID, command.StatusSucceeded, nil, "", ""); !errors.Is(err, command.ErrInvalidTransition) {
+		t.Fatalf("queued command must not finish, got %v", err)
+	}
+}
+
+func TestQueuedForDeviceOnlyReturnsRecoverableQueue(t *testing.T) {
+	repo, err := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := command.NewService(repo, nil)
+	queued, _, err := svc.Create(command.CreateRequest{Kind: command.KindSSHKeys, DeviceID: "dev-1", RequestedBy: command.Actor{Type: "admin", ID: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := svc.Create(command.CreateRequest{Kind: command.KindSSHKeys, DeviceID: "dev-2", RequestedBy: command.Actor{Type: "admin", ID: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Cancel(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.QueuedForDevice("dev-1", 10)
+	if err != nil || len(items) != 1 || items[0].ID != queued.ID {
+		t.Fatalf("unexpected recoverable queue: %+v %v", items, err)
+	}
+}
+
 func TestUpdateProgress(t *testing.T) {
 	repo, err := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
 	if err != nil {

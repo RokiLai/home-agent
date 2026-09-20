@@ -55,50 +55,51 @@ import (
 
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
-	Registry                 *registry.Registry
-	Authorizer               *auth.Authorizer
-	AuditLogger              auth.AuditLogger
-	Broker                   *broker.Broker
-	SessionManager           *auth.SessionManager
-	EnrollmentManager        *auth.EnrollmentManager
-	RateLimiter              *auth.RateLimiter
-	ACLPath                  string
-	Token, AdminPublicKey    string
-	Sync                     *sshsync.Controller
-	GitHubSyncService        *githubsync.Service
-	Log                      *slog.Logger
-	DownloadsDir             string
-	ScriptsDir               string
-	PublicURL                string
-	PingInterval             time.Duration
-	DeviceStateService       *devicestate.Service
-	PrefixStateService       *prefixstate.Service
-	DDNSService              *ddns.Service
-	CloudflareClient         *cloudflare.Client
-	Domain                   string
-	ZoneID                   string
-	TTL                      int
-	Proxied                  bool
-	RateLimitDuration        time.Duration
-	RecordComment            string
-	AutoDeleteStale          bool
-	StaleThreshold           time.Duration
-	Commands                 *command.Service
-	CommandTimeouts          map[command.Kind]command.TimeoutPolicy
-	Health                   *health.Service
-	Alerting                 *alerting.Service
-	UpgradePlans             *upgradeplan.Service
-	MacOSAppUpgradeV2Enabled bool
-	UpgradeSource            string
-	GitHubRepo               string
-	GitHubMirrorPrefix       string
-	GitHubReleaseClient      *githubrelease.Client
-	VersionStatus            *versionstatus.Service
-	ServerUpgradeOperations  *serverupgrade.OperationManager
-	ServerUpgradeRunner      func(context.Context, string) error
-	ServerIPv6Collector      *servernetwork.Collector
-	ServerNetworkCoordinator *servernetwork.Coordinator
-	FileShare                *fileshare.Service
+	Registry                  *registry.Registry
+	Authorizer                *auth.Authorizer
+	AuditLogger               auth.AuditLogger
+	Broker                    *broker.Broker
+	SessionManager            *auth.SessionManager
+	EnrollmentManager         *auth.EnrollmentManager
+	RateLimiter               *auth.RateLimiter
+	ACLPath                   string
+	Token, AdminPublicKey     string
+	Sync                      *sshsync.Controller
+	GitHubSyncService         *githubsync.Service
+	Log                       *slog.Logger
+	DownloadsDir              string
+	ScriptsDir                string
+	PublicURL                 string
+	PingInterval              time.Duration
+	DeviceStateService        *devicestate.Service
+	PrefixStateService        *prefixstate.Service
+	DDNSService               *ddns.Service
+	CloudflareClient          *cloudflare.Client
+	Domain                    string
+	ZoneID                    string
+	TTL                       int
+	Proxied                   bool
+	RateLimitDuration         time.Duration
+	RecordComment             string
+	AutoDeleteStale           bool
+	StaleThreshold            time.Duration
+	Commands                  *command.Service
+	DeliveryRepo              command.DeliveryRepository
+	CommandTimeouts           map[command.Kind]command.TimeoutPolicy
+	Health                    *health.Service
+	Alerting                  *alerting.Service
+	UpgradePlans              *upgradeplan.Service
+	MacOSAppUpgradeV2Enabled  bool
+	UpgradeSource             string
+	GitHubRepo                string
+	GitHubMirrorPrefix        string
+	GitHubReleaseClient       *githubrelease.Client
+	VersionStatus             *versionstatus.Service
+	ServerUpgradeOperations   *serverupgrade.OperationManager
+	ServerUpgradeRunner       func(context.Context, string) error
+	ServerIPv6Collector       *servernetwork.Collector
+	ServerNetworkCoordinator  *servernetwork.Coordinator
+	FileShare                 *fileshare.Service
 	serverNetworkValidationMu sync.Mutex
 	serverNetworkDetections   map[string]serverNetworkDetection
 	serverNetworkTokens       map[string]serverNetworkValidationToken
@@ -334,24 +335,24 @@ func (s *Server) Handler() http.Handler {
 }
 
 type deviceFactsReq struct {
-	Hostname                string                `json:"hostname"`
-	MAC                     string                `json:"mac,omitempty"`
-	AgentVersion            string                `json:"agent_version,omitempty"`
-	OS                      string                `json:"os"`
-	Arch                    string                `json:"arch"`
-	SSHUser                 string                `json:"ssh_user"`
-	SSHPort                 int                   `json:"ssh_port"`
-	Addresses               []string              `json:"addresses"`
-	ControlProtocols        *[]int                `json:"control_protocols,omitempty"`
-	UpgradeTransactionID    string                `json:"upgrade_transaction_id,omitempty"`
-	UpgradeFenceRevision    *uint64               `json:"upgrade_fence_revision,omitempty"`
-	UpgradeFenceToken       string                `json:"upgrade_fence_token,omitempty"`
-	UpgradeReleaseSequence  *uint64               `json:"upgrade_release_sequence,omitempty"`
-	ConfirmedManifestDigest string                `json:"confirmed_manifest_digest,omitempty"`
-	RunningBundleDigest     string                `json:"running_bundle_digest,omitempty"`
-	UpgradeSecurityMode     string                `json:"upgrade_security_mode,omitempty"`
-	CommandID               string                `json:"command_id,omitempty"`
-	Runtime                 *device.RuntimeFacts  `json:"runtime,omitempty"`
+	Hostname                string               `json:"hostname"`
+	MAC                     string               `json:"mac,omitempty"`
+	AgentVersion            string               `json:"agent_version,omitempty"`
+	OS                      string               `json:"os"`
+	Arch                    string               `json:"arch"`
+	SSHUser                 string               `json:"ssh_user"`
+	SSHPort                 int                  `json:"ssh_port"`
+	Addresses               []string             `json:"addresses"`
+	ControlProtocols        *[]int               `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string               `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    *uint64              `json:"upgrade_fence_revision,omitempty"`
+	UpgradeFenceToken       string               `json:"upgrade_fence_token,omitempty"`
+	UpgradeReleaseSequence  *uint64              `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string               `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string               `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string               `json:"upgrade_security_mode,omitempty"`
+	CommandID               string               `json:"command_id,omitempty"`
+	Runtime                 *device.RuntimeFacts `json:"runtime,omitempty"`
 }
 
 // putDeviceFacts refreshes mutable host facts using the device's own credential.
@@ -873,6 +874,34 @@ func (s *Server) commandTimeout(kind command.Kind, finish time.Duration) command
 	return command.TimeoutPolicy{Accept: 15 * time.Second, Finish: finish}
 }
 func (s *Server) finishDispatch(c command.Command, listeners int) (command.Command, error) {
+	if listeners == 0 {
+		return s.Commands.Requeue(c.ID)
+	}
+	if listeners > 0 && s.DeliveryRepo != nil {
+		now := time.Now().UTC()
+		d := command.Delivery{ID: string(c.ID) + ":1", CommandID: c.ID, DeviceID: c.DeviceID, Status: command.DeliveryPending}
+		if err := s.DeliveryRepo.Create(d); err != nil {
+			return c, err
+		}
+		stored, err := s.DeliveryRepo.Get(d.ID)
+		if err != nil {
+			return c, err
+		}
+		leased, err := stored.RenewLease(now, c.TimeoutPolicy.Accept)
+		if err != nil {
+			return c, err
+		}
+		if err := s.DeliveryRepo.Save(leased, stored.Revision); err != nil {
+			return c, err
+		}
+		sent, err := leased.MarkSent(now, string(c.ID))
+		if err != nil {
+			return c, err
+		}
+		if err := s.DeliveryRepo.Save(sent, leased.Revision); err != nil {
+			return c, err
+		}
+	}
 	updated, err := s.Commands.DispatchResult(c.ID, listeners > 0)
 	if err != nil {
 		return updated, err
@@ -1177,9 +1206,9 @@ func (s *Server) ResolveUpgradePayload(d device.Device, req UpgradeRequest, r *h
 			}
 			return 0
 		}(),
-		URL:           url,
-		SHA256:        sha,
-		Force:         req.Force,
+		URL:    url,
+		SHA256: sha,
+		Force:  req.Force,
 	}, nil
 }
 
@@ -1276,8 +1305,13 @@ func (s *Server) upgradeDevice(w http.ResponseWriter, r *http.Request) {
 			listeners = s.Broker.Publish(deviceID, broker.Event{Type: "upgrade", Data: string(dataBytes), ID: string(cmd.ID)})
 			if s.Commands != nil {
 				cmd, _ = s.finishDispatch(cmd, listeners)
-				if plan != nil && cmd.Status == command.StatusFailed {
-					_, _ = s.UpgradePlans.TransitionStage(plan.PlanID, plan.Revision, upgradeplan.StageFailed, cmd.ErrorCode)
+				if plan != nil {
+					if listeners == 0 {
+						_, _ = s.Commands.Cancel(cmd.ID)
+						_, _ = s.UpgradePlans.TransitionStage(plan.PlanID, plan.Revision, upgradeplan.StageFailed, "delivery_unavailable")
+					} else if cmd.Status == command.StatusFailed {
+						_, _ = s.UpgradePlans.TransitionStage(plan.PlanID, plan.Revision, upgradeplan.StageFailed, cmd.ErrorCode)
+					}
 				}
 			}
 		}
@@ -1572,13 +1606,28 @@ func (s *Server) deviceEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch, unsubscribe := s.Broker.Subscribe(deviceID)
 	defer unsubscribe()
+	s.recoverQueuedCommands(deviceID)
 
-	// 1. Immediately send full snapshot to newly connected device
-	payload, err := s.resolveDeviceKeySyncPayload(deviceID)
-	if err == nil {
-		dataBytes, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: key_sync\ndata: %s\n\n", dataBytes)
+	// 1. Replay retained events when Last-Event-ID is known; otherwise send a full snapshot.
+	lastEventID := r.Header.Get("Last-Event-ID")
+	if replay, ok := s.Broker.Replay(deviceID, lastEventID); ok {
+		for _, ev := range replay {
+			if ev.Type != "" {
+				fmt.Fprintf(w, "event: %s\n", ev.Type)
+			}
+			if ev.ID != "" {
+				fmt.Fprintf(w, "id: %s\n", ev.ID)
+			}
+			fmt.Fprintf(w, "data: %s\n\n", ev.Data)
+		}
 		flusher.Flush()
+	} else {
+		payload, err := s.resolveDeviceKeySyncPayload(deviceID)
+		if err == nil {
+			dataBytes, _ := json.Marshal(payload)
+			fmt.Fprintf(w, "event: key_sync\ndata: %s\n\n", dataBytes)
+			flusher.Flush()
+		}
 	}
 
 	// 2. If device has GitHub sync enabled and GitHub is connected, send github_credentials_sync
@@ -1626,6 +1675,44 @@ func (s *Server) deviceEvents(w http.ResponseWriter, r *http.Request) {
 			pingData, _ := json.Marshal(map[string]int64{"timestamp": t.Unix()})
 			fmt.Fprintf(w, "event: ping\ndata: %s\n\n", pingData)
 			flusher.Flush()
+		}
+	}
+}
+
+// recoverQueuedCommands 在设备重连后重新投递仍处于 queued 的任务。
+// Command 仍是事实来源，Broker 只负责当前连接的传输。
+func (s *Server) recoverQueuedCommands(deviceID string) {
+	if s.Commands == nil || s.Broker == nil || !s.Broker.IsConnected(deviceID) {
+		return
+	}
+	items, err := s.Commands.QueuedForDevice(deviceID, 32)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Error("queued_command_recovery_list_failed", "device_id", deviceID, "error", err)
+		}
+		return
+	}
+	for _, item := range items {
+		started, err := s.Commands.StartDispatch(item.ID)
+		if err != nil {
+			continue
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(started.Request, &envelope); err != nil {
+			_, _ = s.Commands.Requeue(started.ID)
+			continue
+		}
+		envelope["command_id"] = started.ID
+		envelope["protocol"] = started.Protocol
+		envelope["ack_mode"] = "two_phase"
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			_, _ = s.Commands.Requeue(started.ID)
+			continue
+		}
+		listeners := s.Broker.Publish(deviceID, broker.Event{Type: string(started.Kind), Data: string(data), ID: string(started.ID)})
+		if _, err := s.finishDispatch(started, listeners); err != nil && listeners == 0 {
+			_, _ = s.Commands.Requeue(started.ID)
 		}
 	}
 }

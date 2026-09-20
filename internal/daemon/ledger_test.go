@@ -89,3 +89,21 @@ func TestV1AckUsesCanonicalStatusAndCommandID(t *testing.T) {
 		t.Fatalf("unexpected v1 ACK: %v", received)
 	}
 }
+
+func TestCommandLedgerPersistsLastEventID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	l, err := openCommandLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.recordEventID("dev-1:00000000000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openCommandLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.lastEventID(); got != "dev-1:00000000000000000001" {
+		t.Fatalf("last event id %q", got)
+	}
+}

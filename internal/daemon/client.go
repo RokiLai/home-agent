@@ -263,6 +263,9 @@ func (d *Daemon) connectAndListen(ctx context.Context) error {
 		}
 		req.Header.Set("Authorization", "Bearer "+d.cfg.Token)
 		req.Header.Set("Accept", "text/event-stream")
+		if lastEventID := d.ledger.lastEventID(); lastEventID != "" {
+			req.Header.Set("Last-Event-ID", lastEventID)
+		}
 
 		resp, err := d.cfg.HTTPClient.Do(req)
 		if err != nil {
@@ -309,6 +312,11 @@ func (d *Daemon) readStream(ctx context.Context, body io.ReadCloser) error {
 		if line == "" {
 			// Empty line indicates dispatch of event
 			if currentEvent != "" || currentData != "" {
+				if currentID != "" {
+					if err := d.ledger.recordEventID(currentID); err != nil {
+						d.log.Error("sse_event_cursor_persist_failed", "event_id", currentID, "error", err)
+					}
+				}
 				eventCtx := ctx
 				if currentID != "" {
 					eventCtx = context.WithValue(ctx, commandIDContextKey{}, currentID)
@@ -770,15 +778,8 @@ func (d *Daemon) calculateJitter(base time.Duration) time.Duration {
 }
 
 func updateAuthorizedKeysFile(path string, keys []sshsync.Key) error {
-	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	updated, err := sshsync.UpdateManagedBlock(existing, keys)
-	if err != nil {
-		return err
-	}
-	return AtomicWrite(path, updated)
+	_, err := sshsync.ApplyManagedFile(path, keys)
+	return err
 }
 
 // DefaultAuthorizedKeysPath 返回平台特定的默认 authorized_keys 文件路径。
