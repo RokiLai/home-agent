@@ -234,6 +234,30 @@ func TestBrowserLayoutAndAccessibility(t *testing.T) {
 						},
 					},
 				},
+				{
+					"id":            "dev-test-3",
+					"hostname":      "Offline-Backup",
+					"alias":         "离线备份机",
+					"mac":           "02:00:00:00:00:03",
+					"agent_version": "v0.7.0",
+					"os":            "linux",
+					"arch":          "amd64",
+					"ssh_user":      "backup",
+					"ssh_port":      22,
+					"addresses":     []string{"192.168.1.250"},
+					"sync_status":   "pending",
+					"connected":     false,
+					"health": map[string]interface{}{
+						"status": "offline",
+						"reasons": []map[string]interface{}{
+							{
+								"code":     "heartbeat_stale",
+								"severity": "critical",
+								"summary":  "设备心跳超时",
+							},
+						},
+					},
+				},
 			},
 		}
 		_ = json.NewEncoder(w).Encode(mockDevices)
@@ -395,22 +419,22 @@ func TestGetIndexHTML(t *testing.T) {
 		}
 	}
 
-	// 验证设备列表筛选 Pill 契约：仅保留 all, healthy, degraded, synced, pending
+	// 验证设备列表健康筛选 Pill 契约：仅保留 all, healthy, degraded, offline。
 	for _, expectedFilter := range []string{
 		`data-filter="all"`,
 		`data-filter="healthy"`,
 		`data-filter="degraded"`,
-		`data-filter="synced"`,
-		`data-filter="pending"`,
+		`data-filter="offline"`,
 	} {
 		if !strings.Contains(html, expectedFilter) {
 			t.Errorf("GetIndexHTML expected filter pill %s to be present", expectedFilter)
 		}
 	}
 
-	// 负例断言：不得包含已移除的瞬时连接态筛选按钮
+	// 负例断言：不得包含同步状态或已移除的在线连接态筛选按钮。
 	for _, disallowedFilter := range []string{
-		`data-filter="offline"`,
+		`data-filter="synced"`,
+		`data-filter="pending"`,
 		`data-filter="online"`,
 	} {
 		if strings.Contains(html, disallowedFilter) {
