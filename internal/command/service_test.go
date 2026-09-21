@@ -72,6 +72,28 @@ func TestAcceptDeadlineTimeout(t *testing.T) {
 	}
 }
 
+func TestDispatchingAcceptDeadlineTimeout(t *testing.T) {
+	repo, _ := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
+	clock := &fixedClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	svc := command.NewService(repo, clock)
+	c, _, err := svc.Create(command.CreateRequest{Kind: command.KindSSHKeys, DeviceID: "dev", RequestedBy: command.Actor{Type: "admin", ID: "a"}, TimeoutPolicy: command.TimeoutPolicy{Accept: time.Second, Finish: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.StartDispatch(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = clock.now.Add(2 * time.Second)
+	n, err := svc.Expire(10)
+	if err != nil || n != 1 {
+		t.Fatalf("expire: %d %v", n, err)
+	}
+	c, _ = svc.Get(c.ID)
+	if c.Status != command.StatusTimedOut {
+		t.Fatalf("status %s", c.Status)
+	}
+}
+
 func TestRequeueWhenDeviceOffline(t *testing.T) {
 	repo, err := commandfile.Open(filepath.Join(t.TempDir(), "commands.json"))
 	if err != nil {
