@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -677,6 +678,9 @@ func (sm *SessionManager) ListUsers() []*User {
 		uCopy.PasswordHash = ""
 		list = append(list, &uCopy)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ID < list[j].ID
+	})
 	return list
 }
 
