@@ -27,3 +27,5 @@ allowed_paths:
   - internal/daemon/daemon_test.go
   - internal/daemon/daemon_integration_test.go
   - cmd/homeagent-agent/main.go
+  - internal/version/version.go
+  - internal/version/version_test.go

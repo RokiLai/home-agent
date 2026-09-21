@@ -42,6 +42,55 @@ func init() {
 	auth.SetBcryptCostForTest(bcrypt.MinCost)
 }
 
+func TestFinishDispatchPersistsSentDeliveryAfterLease(t *testing.T) {
+	tempDir := t.TempDir()
+	commandRepo, err := commandfile.Open(filepath.Join(tempDir, "commands.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveryRepo, err := commandfile.OpenDeliveryRepository(filepath.Join(tempDir, "deliveries.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := command.NewService(commandRepo, nil)
+	devices, err := registry.Open(filepath.Join(tempDir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = devices.Save(device.Device{ID: "device-1", Hostname: "device-1", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA", ControlProtocols: []int{1}}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := commands.Create(command.CreateRequest{
+		Kind:          command.KindSSHKeys,
+		DeviceID:      "device-1",
+		RequestedBy:   command.Actor{Type: "admin", ID: "admin-1"},
+		TimeoutPolicy: command.TimeoutPolicy{Accept: time.Minute, Finish: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = commands.StartDispatch(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{Registry: devices, Commands: commands, DeliveryRepo: deliveryRepo}
+	updated, err := s.finishDispatch(c, 1)
+	if err != nil {
+		t.Fatalf("finish dispatch: %v", err)
+	}
+	if updated.Status != command.StatusDispatched {
+		t.Fatalf("command status = %q, want %q", updated.Status, command.StatusDispatched)
+	}
+	delivery, err := deliveryRepo.Get(string(c.ID) + ":1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.Status != command.DeliverySent || delivery.SentAt == nil {
+		t.Fatalf("delivery = %+v, want sent delivery", delivery)
+	}
+}
+
 func TestRegisterListDelete(t *testing.T) {
 	r, _ := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
 	b := broker.New()
