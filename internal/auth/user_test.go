@@ -55,6 +55,33 @@ func TestUsernameNormalizationAndValidation(t *testing.T) {
 	}
 }
 
+func TestSessionManagerListUsersReturnsUsersInIDOrder(t *testing.T) {
+	sm, err := NewSessionManager("")
+	if err != nil {
+		t.Fatalf("NewSessionManager: %v", err)
+	}
+	sm.users = map[string]*User{
+		"usr_c": {ID: "usr_c", Username: "charlie", PasswordHash: "hash-c"},
+		"usr_a": {ID: "usr_a", Username: "alice", PasswordHash: "hash-a"},
+		"usr_b": {ID: "usr_b", Username: "bravo", PasswordHash: "hash-b"},
+	}
+
+	for attempt := 0; attempt < 10; attempt++ {
+		users := sm.ListUsers()
+		if len(users) != 3 {
+			t.Fatalf("ListUsers length = %d, want 3", len(users))
+		}
+		for index, wantID := range []string{"usr_a", "usr_b", "usr_c"} {
+			if users[index].ID != wantID {
+				t.Fatalf("ListUsers attempt %d user[%d].ID = %q, want %q", attempt, index, users[index].ID, wantID)
+			}
+			if users[index].PasswordHash != "" {
+				t.Fatalf("ListUsers exposed password hash for %q", users[index].ID)
+			}
+		}
+	}
+}
+
 func TestUserManager_MultiUserCRUDAndInvariants(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "multi_user_auth.json")

@@ -1,0 +1,9 @@
+task: user-list-id-order
+description: 固定用户列表 API 按用户 ID 升序返回，消除 map 遍历导致的展示顺序抖动。
+allowed_paths:
+  - changes/user-list-id-order.yaml
+  - docs/fixes/用户列表ID稳定排序修复设计.md
+  - internal/auth/session.go
+  - internal/auth/user_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
