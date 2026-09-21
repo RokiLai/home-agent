@@ -148,7 +148,7 @@ test('createDeviceCardHTML omits online-badge and retains health badge and sync 
   assert.match(htmlOffline, />\s*OFFLINE\s*</, 'Health status OFFLINE text must be rendered in health badge');
 });
 
-test('renderDevices normalizes invalid or legacy filter values (online/offline/unknown) to all', async () => {
+test('renderDevices filters by health state and normalizes retired sync or invalid filters to all', async () => {
   const { renderDevices } = await import('../static/js/devices/render.js');
   const { state } = await import('../static/js/state.js');
 
@@ -169,8 +169,7 @@ test('renderDevices normalizes invalid or legacy filter values (online/offline/u
     makePill('all', true),
     makePill('healthy', false),
     makePill('degraded', false),
-    makePill('synced', false),
-    makePill('pending', false)
+    makePill('offline', false)
   ];
 
   const container = element();
@@ -192,7 +191,10 @@ test('renderDevices normalizes invalid or legacy filter values (online/offline/u
 
   state.devices = [
     { id: 'd1', hostname: 'host-1', connected: true, health: { status: 'healthy' } },
-    { id: 'd2', hostname: 'host-2', connected: false, health: { status: 'degraded' } }
+    { id: 'd2', hostname: 'host-2', connected: false, health: { status: 'degraded' } },
+    { id: 'd3', hostname: 'host-3', connected: false, health: { status: 'offline' } },
+    { id: 'd4', hostname: 'host-4', connected: true, health: { status: 'unknown' } },
+    { id: 'd5', hostname: 'host-5', connected: true }
   ];
 
   // Test legacy 'online' filter normalization
@@ -208,8 +210,29 @@ test('renderDevices normalizes invalid or legacy filter values (online/offline/u
   assert.match(container.innerHTML, /host-1/);
   assert.match(container.innerHTML, /host-2/);
 
-  // Test legacy 'offline' filter normalization
+  state.currentFilter = 'healthy';
+  renderDevices();
+  assert.match(container.innerHTML, /host-1/);
+  assert.doesNotMatch(container.innerHTML, /host-[2-5]/);
+
+  state.currentFilter = 'degraded';
+  renderDevices();
+  assert.match(container.innerHTML, /host-2/);
+  assert.doesNotMatch(container.innerHTML, /host-[1,3-5]/);
+
   state.currentFilter = 'offline';
+  renderDevices();
+  assert.equal(state.currentFilter, 'offline');
+  assert.match(container.innerHTML, /host-3/);
+  assert.doesNotMatch(container.innerHTML, /host-[1-2,4-5]/);
+
+  // Retired sync filters must not leave the UI in an unreachable state.
+  state.currentFilter = 'synced';
+  renderDevices();
+  assert.equal(state.currentFilter, 'all');
+  assert.match(container.innerHTML, /host-[1-5]/);
+
+  state.currentFilter = 'pending';
   renderDevices();
   assert.equal(state.currentFilter, 'all');
 

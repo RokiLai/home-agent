@@ -894,6 +894,7 @@ func (s *Server) finishDispatch(c command.Command, listeners int) (command.Comma
 		if err := s.DeliveryRepo.Save(leased, stored.Revision); err != nil {
 			return c, err
 		}
+		leased.Revision = stored.Revision + 1
 		sent, err := leased.MarkSent(now, string(c.ID))
 		if err != nil {
 			return c, err

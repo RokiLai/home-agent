@@ -11,7 +11,7 @@ export const state = {
   publicUrl: '',
   activeOSTab: 'darwin',
   isFetching: false,
-  currentFilter: 'all', // all, healthy, degraded, synced, pending
+  currentFilter: 'all', // all, healthy, degraded, offline
   currentPage: 'dashboard',
   currentClaimToken: '',
   claimTokenExpiresAt: null,

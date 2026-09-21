@@ -183,7 +183,7 @@ export function renderDevices() {
   const searchInput = document.getElementById('deviceSearchInput');
   if (!deviceContainer) return;
 
-  const validFilters = ['all', 'healthy', 'degraded', 'synced', 'pending'];
+  const validFilters = ['all', 'healthy', 'degraded', 'offline'];
   if (!validFilters.includes(state.currentFilter)) {
     state.currentFilter = 'all';
     const filterPills = document.querySelectorAll('#deviceFilterPills .filter-pill, .filter-pill');
@@ -204,10 +204,8 @@ export function renderDevices() {
     filtered = filtered.filter(d => d.health && d.health.status === 'healthy');
   } else if (state.currentFilter === 'degraded') {
     filtered = filtered.filter(d => d.health && d.health.status === 'degraded');
-  } else if (state.currentFilter === 'synced') {
-    filtered = filtered.filter(d => isDeviceSynced(d));
-  } else if (state.currentFilter === 'pending') {
-    filtered = filtered.filter(d => !isDeviceSynced(d));
+  } else if (state.currentFilter === 'offline') {
+    filtered = filtered.filter(d => d.health && d.health.status === 'offline');
   }
 
   // Apply Search

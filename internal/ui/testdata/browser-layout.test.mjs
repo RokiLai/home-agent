@@ -723,7 +723,7 @@ test('6. Device card header layout and health detail click hit across viewports 
       `);
 
       assert.equal(cardCheck.onlineBadgesCount, 0, `No .online-badge should exist in DOM on ${vp.name} (scale: ${scale}x)`);
-      assert.equal(cardCheck.hasOfflinePill, false, `Filter pill data-filter="offline" must NOT exist on ${vp.name}`);
+      assert.equal(cardCheck.hasOfflinePill, true, `Health filter pill data-filter="offline" must exist on ${vp.name}`);
       assert.equal(cardCheck.hasOnlinePill, false, `Filter pill data-filter="online" must NOT exist on ${vp.name}`);
       assert.ok(cardCheck.containerScrollW <= cardCheck.containerClientW + 1, `Device container must not overflow on ${vp.name} (scale: ${scale}x)`);
       assert.ok(cardCheck.cardCount > 0, `At least one device card should be present on ${vp.name}`);
@@ -742,6 +742,28 @@ test('6. Device card header layout and health detail click hit across viewports 
   // Reset scale
   await cdp.send('Emulation.setEmulatedOSTextScale', { scale: 1 }, targetSessionId);
   await setViewport(360, 640, true);
+
+  // Health-filter interaction must use the actual API-rendered device list.
+  await evalJS(`document.querySelector('[data-filter="offline"]').click();`);
+  await new Promise(r => setTimeout(r, 50));
+  const offlineFilterCheck = await evalJS(`
+    (() => {
+      const offlinePill = document.querySelector('[data-filter="offline"]');
+      const cards = Array.from(document.querySelectorAll('.device-card'));
+      return {
+        active: offlinePill?.classList.contains('active') || false,
+        cardCount: cards.length,
+        cardText: cards.map(card => card.innerText).join(' ')
+      };
+    })()
+  `);
+  assert.equal(offlineFilterCheck.active, true, 'clicking the offline filter must activate it');
+  assert.equal(offlineFilterCheck.cardCount, 1, 'offline filter must exclude healthy and degraded devices');
+  assert.match(offlineFilterCheck.cardText, /离线备份机|Offline-Backup/, 'offline filter must retain the offline device from the API response');
+
+  // Restore the fixture ordering expected by the following health-detail checks.
+  await evalJS(`document.querySelector('[data-filter="all"]').click();`);
+  await new Promise(r => setTimeout(r, 50));
 
   // Test Health Detail Modal click hit and dismiss
   await evalJS(`

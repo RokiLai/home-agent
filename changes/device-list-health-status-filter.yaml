@@ -1,0 +1,13 @@
+task: device-list-health-status-filter
+description: 将设备矩阵的互斥筛选项收敛为全部、健康、异常、离线，并移除配置同步状态筛选。
+allowed_paths:
+  - changes/device-list-health-status-filter.yaml
+  - docs/ui/设备列表健康状态筛选调整方案.md
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/ui/static/index.html
+  - internal/ui/static/js/state.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/embed_test.go
+  - internal/ui/testdata/device-rendering.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
