@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUsernameNormalizationAndValidation(t *testing.T) {
@@ -79,6 +80,53 @@ func TestSessionManagerListUsersReturnsUsersInIDOrder(t *testing.T) {
 				t.Fatalf("ListUsers exposed password hash for %q", users[index].ID)
 			}
 		}
+	}
+}
+
+func TestCreateUserSessionRecordsLastSuccessfulLogin(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "auth.json")
+	sm, err := NewSessionManager(storePath)
+	if err != nil {
+		t.Fatalf("NewSessionManager: %v", err)
+	}
+	if _, err := sm.InitAdminBootstrap("owner", "OwnerPassword123!"); err != nil {
+		t.Fatalf("InitAdminBootstrap: %v", err)
+	}
+	user, err := sm.AuthenticateUser("owner", "OwnerPassword123!")
+	if err != nil {
+		t.Fatalf("AuthenticateUser: %v", err)
+	}
+	if user.LastLoginAt != nil {
+		t.Fatalf("last_login_at before session = %v, want nil", user.LastLoginAt)
+	}
+	if _, err := sm.AuthenticateUser("owner", "wrong-password"); err != ErrUnauthorized {
+		t.Fatalf("AuthenticateUser with wrong password = %v, want ErrUnauthorized", err)
+	}
+	unchanged, err := sm.GetUser(user.ID)
+	if err != nil || unchanged.LastLoginAt != nil {
+		t.Fatalf("failed login changed last_login_at to %v, err = %v", unchanged.LastLoginAt, err)
+	}
+
+	before := time.Now().UTC()
+	if _, _, err := sm.CreateUserSession(user.ID, false); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+	after := time.Now().UTC()
+	updated, err := sm.GetUser(user.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if updated.LastLoginAt == nil || updated.LastLoginAt.Before(before) || updated.LastLoginAt.After(after) {
+		t.Fatalf("last_login_at = %v, want within [%v, %v]", updated.LastLoginAt, before, after)
+	}
+
+	reopened, err := NewSessionManager(storePath)
+	if err != nil {
+		t.Fatalf("reopen session manager: %v", err)
+	}
+	persisted, err := reopened.GetUser(user.ID)
+	if err != nil || persisted.LastLoginAt == nil || !persisted.LastLoginAt.Equal(*updated.LastLoginAt) {
+		t.Fatalf("persisted last_login_at = %v, err = %v, want %v", persisted.LastLoginAt, err, updated.LastLoginAt)
 	}
 }
 

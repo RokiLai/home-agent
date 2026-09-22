@@ -270,7 +270,11 @@ func (sm *SessionManager) CreateUserSession(userID string, rememberMe bool) (str
 
 	sm.cleanExpiredLocked()
 	sm.sessions[tokenHash] = session
+	previousLastLoginAt := u.LastLoginAt
+	u.LastLoginAt = &now
 	if err := sm.saveLocked(); err != nil {
+		delete(sm.sessions, tokenHash)
+		u.LastLoginAt = previousLastLoginAt
 		return "", nil, err
 	}
 

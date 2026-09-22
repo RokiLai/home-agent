@@ -98,6 +98,7 @@ type User struct {
 	CreatedBy      string     `json:"created_by,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+	LastLoginAt    *time.Time `json:"last_login_at"`
 	DisabledAt     *time.Time `json:"disabled_at,omitempty"`
 	Revision       uint64     `json:"revision"`
 }

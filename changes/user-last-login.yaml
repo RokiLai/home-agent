@@ -1,0 +1,11 @@
+task: user-last-login
+description: 持久化用户最后一次成功登录时间，并通过用户列表 API 返回该字段。
+allowed_paths:
+  - changes/user-last-login.yaml
+  - docs/fixes/用户最后登录时间修复设计.md
+  - internal/auth/user.go
+  - internal/auth/session.go
+  - internal/auth/user_test.go
+  - internal/api/auth_api_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go

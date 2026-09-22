@@ -90,7 +90,25 @@ func TestAdminAuthFlow_LoginMeLogout(t *testing.T) {
 		t.Fatal("session cookie must have HttpOnly set")
 	}
 
-	// 3. 携带 Cookie 访问 /api/v1/auth/me -> 200 OK
+	// 3. 用户列表返回本次成功登录写入的最后登录时间。
+	req = httptest.NewRequest("GET", "/api/v1/users", nil)
+	req.AddCookie(sessionCookie)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /users expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var usersResponse struct {
+		Users []auth.User `json:"users"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &usersResponse); err != nil {
+		t.Fatalf("decode users response: %v", err)
+	}
+	if len(usersResponse.Users) != 1 || usersResponse.Users[0].LastLoginAt == nil {
+		t.Fatalf("users response last_login_at = %+v, want non-null timestamp", usersResponse.Users)
+	}
+
+	// 4. 携带 Cookie 访问 /api/v1/auth/me -> 200 OK
 	req = httptest.NewRequest("GET", "/api/v1/auth/me", nil)
 	req.AddCookie(sessionCookie)
 	w = httptest.NewRecorder()
