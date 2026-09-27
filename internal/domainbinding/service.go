@@ -4,19 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"homeagent/internal/store"
 )
 
 type Service struct {
-	control *store.ControlPlaneService
-	now     func() time.Time
+	control  *store.ControlPlaneService
+	now      func() time.Time
+	provider Provider
 }
 
 type CreateCommand struct {
 	SourceType       SourceType
 	SourceID         string
+	OwnerUserID      string
 	FQDN             string
 	ExpectedRevision uint64
 	ExistingRecord   bool
@@ -38,11 +41,47 @@ func NewService(control *store.ControlPlaneService, now func() time.Time) *Servi
 	return &Service{control: control, now: now}
 }
 
+func (service *Service) AttachProvider(provider Provider) { service.provider = provider }
+
+type PreflightResult struct {
+	FQDN        string            `json:"fqdn"`
+	Available   bool              `json:"available"`
+	Observation RecordObservation `json:"observation"`
+}
+
+func (service *Service) Preflight(ctx context.Context, fqdn string) (PreflightResult, error) {
+	normalized, err := NormalizeFQDN(fqdn, ManagedSuffix)
+	if err != nil {
+		return PreflightResult{}, err
+	}
+	bindings, err := service.List(ctx, "", "")
+	if err != nil {
+		return PreflightResult{}, err
+	}
+	for _, binding := range bindings {
+		if binding.FQDN == normalized {
+			return PreflightResult{FQDN: normalized}, nil
+		}
+	}
+	result := PreflightResult{FQDN: normalized, Available: true}
+	if service.provider != nil {
+		result.Observation, err = service.provider.Observe(ctx, ObserveRequest{FQDN: normalized})
+		if err != nil {
+			return PreflightResult{}, err
+		}
+	}
+	return result, nil
+}
+
 func (service *Service) Create(ctx context.Context, command CreateCommand) (Binding, error) {
-	fqdn, err := NormalizeFQDN(command.FQDN, ManagedSuffix)
+	preflight, err := service.Preflight(ctx, command.FQDN)
 	if err != nil {
 		return Binding{}, err
 	}
+	if !preflight.Available {
+		return Binding{}, ErrFQDNConflict
+	}
+	fqdn := preflight.FQDN
 	if command.SourceType == SourceServer && command.SourceID != LocalServerSourceID {
 		return Binding{}, errors.New("invalid server source")
 	}
@@ -50,10 +89,14 @@ func (service *Service) Create(ctx context.Context, command CreateCommand) (Bind
 		return Binding{}, errors.New("invalid source type")
 	}
 	state := ConfigEnabled
-	if command.ExistingRecord {
+	if preflight.Observation.Exists || (service.provider == nil && command.ExistingRecord) {
 		state = ConfigObserving
 	}
-	stored := store.DomainBinding{BindingID: newBindingID(service.now()), SourceType: string(command.SourceType), SourceID: command.SourceID, FQDN: fqdn, ConfigState: string(state), RuntimeState: string(RuntimeWaitingReport), Revision: 1, ProviderRecordID: command.ProviderRecordID, TTL: command.TTL, Proxied: command.Proxied, UpdatedAt: service.now()}
+	recordID, ttl, proxied, providerIPv6 := command.ProviderRecordID, command.TTL, command.Proxied, ""
+	if service.provider != nil {
+		recordID, ttl, proxied, providerIPv6 = preflight.Observation.RecordID, preflight.Observation.TTL, preflight.Observation.Proxied, preflight.Observation.IPv6
+	}
+	stored := store.DomainBinding{BindingID: newBindingID(service.now()), SourceType: string(command.SourceType), SourceID: command.SourceID, OwnerUserID: strings.TrimSpace(command.OwnerUserID), FQDN: fqdn, ConfigState: string(state), RuntimeState: string(RuntimeWaitingReport), Revision: 1, ProviderRecordID: recordID, TTL: ttl, Proxied: proxied, ProviderIPv6: providerIPv6, UpdatedAt: service.now()}
 	result, controlRevision, err := service.control.CreateDomainBinding(ctx, command.ExpectedRevision, stored)
 	if errors.Is(err, store.ErrConflict) {
 		return Binding{}, ErrFQDNConflict
@@ -88,9 +131,58 @@ func (service *Service) Recover(ctx context.Context) ([]store.ReconcileTask, err
 	return service.control.RecoverReconcileTasks(ctx)
 }
 
+func (service *Service) RecordObservation(ctx context.Context, binding Binding, observation RecordObservation, runtime RuntimeState, lastError string) (Binding, error) {
+	item, err := service.control.UpdateDomainBindingObservation(ctx, binding.BindingID, binding.Revision, observation.RecordID, observation.IPv6, observation.TTL, observation.Proxied, string(runtime), lastError, service.now())
+	return fromStore(item, binding.ControlPlaneRevision), err
+}
+
+func (service *Service) MarkTaskSyncing(ctx context.Context, taskID string) (store.ReconcileTask, error) {
+	return service.control.MarkReconcileTaskSyncing(ctx, taskID)
+}
+
+func (service *Service) CompleteTask(ctx context.Context, taskID string, observation RecordObservation, reconcileErr error) error {
+	category, message, retryable := "", "", false
+	if reconcileErr != nil {
+		message = reconcileErr.Error()
+		var classified ClassifiedError
+		if errors.As(reconcileErr, &classified) {
+			category, retryable = classified.Category(), classified.CanRetry()
+		} else {
+			category = "internal"
+		}
+	}
+	return service.control.CompleteReconcileTask(ctx, taskID, observation.RecordID, observation.IPv6, observation.TTL, observation.Proxied, category, message, retryable, service.now())
+}
+
 func (service *Service) Enable(ctx context.Context, command EnableCommand) (Binding, error) {
 	if !command.PublisherDisabledConfirmed {
 		return Binding{}, ErrPublisherConfirmationRequired
+	}
+	if service.provider != nil {
+		bindings, err := service.List(ctx, "", "")
+		if err != nil {
+			return Binding{}, err
+		}
+		var current *Binding
+		for index := range bindings {
+			if bindings[index].BindingID == command.BindingID {
+				current = &bindings[index]
+				break
+			}
+		}
+		if current == nil {
+			return Binding{}, ErrBindingNotFound
+		}
+		if current.Revision != command.ExpectedRevision {
+			return Binding{}, ErrBindingRevisionConflict
+		}
+		observation, err := service.provider.Observe(ctx, ObserveRequest{FQDN: current.FQDN, ProviderRecordID: current.ProviderRecordID})
+		if err != nil {
+			return Binding{}, err
+		}
+		if !observation.Exists {
+			return Binding{}, errors.New("provider record disappeared before enable")
+		}
 	}
 	return service.transition(ctx, command.BindingID, command.ExpectedRevision, ConfigEnabled)
 }
@@ -117,5 +209,5 @@ func (service *Service) transition(ctx context.Context, bindingID string, expect
 func newBindingID(now time.Time) string { return fmt.Sprintf("binding-%d", now.UnixNano()) }
 
 func fromStore(item store.DomainBinding, controlRevision uint64) Binding {
-	return Binding{BindingID: item.BindingID, SourceType: SourceType(item.SourceType), SourceID: item.SourceID, FQDN: item.FQDN, ConfigState: BindingState(item.ConfigState), RuntimeState: RuntimeState(item.RuntimeState), Revision: item.Revision, ControlPlaneRevision: controlRevision, ProviderRecordID: item.ProviderRecordID, TTL: item.TTL, Proxied: item.Proxied, DesiredIPv6: item.DesiredIPv6, ProviderIPv6: item.ProviderIPv6, LastAppliedIPv6: item.LastAppliedIPv6, LastError: item.LastError, LastSyncedAt: item.LastSyncedAt, UpdatedAt: item.UpdatedAt}
+	return Binding{BindingID: item.BindingID, SourceType: SourceType(item.SourceType), SourceID: item.SourceID, OwnerUserID: item.OwnerUserID, FQDN: item.FQDN, ConfigState: BindingState(item.ConfigState), RuntimeState: RuntimeState(item.RuntimeState), Revision: item.Revision, ControlPlaneRevision: controlRevision, ProviderRecordID: item.ProviderRecordID, TTL: item.TTL, Proxied: item.Proxied, DesiredIPv6: item.DesiredIPv6, ProviderIPv6: item.ProviderIPv6, LastAppliedIPv6: item.LastAppliedIPv6, LastError: item.LastError, LastSyncedAt: item.LastSyncedAt, UpdatedAt: item.UpdatedAt}
 }

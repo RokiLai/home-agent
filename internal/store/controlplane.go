@@ -19,6 +19,7 @@ type DomainBinding struct {
 	BindingID        string     `json:"binding_id"`
 	SourceType       string     `json:"source_type"`
 	SourceID         string     `json:"source_id"`
+	OwnerUserID      string     `json:"owner_user_id,omitempty"`
 	FQDN             string     `json:"fqdn"`
 	ConfigState      string     `json:"config_state"`
 	RuntimeState     string     `json:"runtime_state"`
@@ -43,6 +44,7 @@ type ReconcileTask struct {
 	Status          string    `json:"status"`
 	Attempts        int       `json:"attempts"`
 	NextAttemptAt   time.Time `json:"next_attempt_at,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
 }
 
 type ControlPlaneSnapshot struct {

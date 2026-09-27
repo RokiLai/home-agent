@@ -280,6 +280,10 @@ func (service *ControlPlaneService) QueueReconcileTask(ctx context.Context, bind
 		}
 		for taskID, task := range snapshot.Tasks {
 			if task.BindingID == bindingID && (task.Status == "pending" || task.Status == "syncing") {
+				if task.BindingRevision == binding.Revision && task.DesiredIPv6 == desiredIPv6 {
+					queued = *task
+					return nil
+				}
 				delete(snapshot.Tasks, taskID)
 			}
 		}
@@ -291,6 +295,77 @@ func (service *ControlPlaneService) QueueReconcileTask(ctx context.Context, bind
 		return nil
 	})
 	return queued, err
+}
+
+func (service *ControlPlaneService) UpdateDomainBindingObservation(ctx context.Context, bindingID string, expectedBindingRevision uint64, providerRecordID, providerIPv6 string, ttl int, proxied bool, runtimeState, lastError string, updatedAt time.Time) (DomainBinding, error) {
+	var changed DomainBinding
+	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		binding := snapshot.Bindings[bindingID]
+		if binding == nil {
+			return ErrNotFound
+		}
+		if binding.Revision != expectedBindingRevision {
+			return ErrRevisionConflict
+		}
+		binding.ProviderRecordID, binding.ProviderIPv6, binding.TTL, binding.Proxied = providerRecordID, providerIPv6, ttl, proxied
+		binding.RuntimeState, binding.LastError, binding.UpdatedAt = runtimeState, lastError, updatedAt
+		changed = *binding
+		return nil
+	})
+	return changed, err
+}
+
+func (service *ControlPlaneService) MarkReconcileTaskSyncing(ctx context.Context, taskID string) (ReconcileTask, error) {
+	var changed ReconcileTask
+	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		task := snapshot.Tasks[taskID]
+		if task == nil {
+			return ErrNotFound
+		}
+		binding := snapshot.Bindings[task.BindingID]
+		if binding == nil || binding.Revision != task.BindingRevision || binding.ConfigState != "enabled" {
+			delete(snapshot.Tasks, taskID)
+			return ErrRevisionConflict
+		}
+		task.Status = "syncing"
+		binding.RuntimeState = "syncing"
+		changed = *task
+		return nil
+	})
+	return changed, err
+}
+
+func (service *ControlPlaneService) CompleteReconcileTask(ctx context.Context, taskID string, providerRecordID, providerIPv6 string, ttl int, proxied bool, errorCategory, errorMessage string, retryable bool, completedAt time.Time) error {
+	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		task := snapshot.Tasks[taskID]
+		if task == nil {
+			return ErrNotFound
+		}
+		binding := snapshot.Bindings[task.BindingID]
+		if binding == nil || binding.Revision != task.BindingRevision || binding.ConfigState != "enabled" || binding.DesiredIPv6 != task.DesiredIPv6 {
+			delete(snapshot.Tasks, taskID)
+			return ErrRevisionConflict
+		}
+		if errorMessage == "" {
+			binding.ProviderRecordID, binding.ProviderIPv6, binding.LastAppliedIPv6 = providerRecordID, providerIPv6, task.DesiredIPv6
+			binding.TTL, binding.Proxied, binding.RuntimeState, binding.LastError = ttl, proxied, "synced", ""
+			binding.LastSyncedAt = &completedAt
+			delete(snapshot.Tasks, taskID)
+			return nil
+		}
+		binding.RuntimeState, binding.LastError = "failed", errorCategory+": "+errorMessage
+		task.Attempts++
+		task.LastError = binding.LastError
+		if retryable && task.Attempts < 6 {
+			delay := time.Minute * time.Duration(1<<min(task.Attempts-1, 4))
+			task.Status = "pending"
+			task.NextAttemptAt = completedAt.Add(delay)
+		} else {
+			task.Status = "failed"
+		}
+		return nil
+	})
+	return err
 }
 
 func (service *ControlPlaneService) RecoverReconcileTasks(ctx context.Context) ([]ReconcileTask, error) {
@@ -305,7 +380,7 @@ func (service *ControlPlaneService) RecoverReconcileTasks(ctx context.Context) (
 			if task.Status == "syncing" {
 				task.Status = "pending"
 			}
-			if task.Status == "pending" {
+			if task.Status == "pending" && !task.NextAttemptAt.After(time.Now().UTC()) {
 				result = append(result, *task)
 			}
 		}

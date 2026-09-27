@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"messages":[],"result":{"id":"record-id-redacted","name":"host.rokilai.online","type":"AAAA","content":"2001:db8::2","proxiable":true,"proxied":false,"ttl":120,"settings":{},"meta":{},"comment":"preserved comment","tags":[]}}

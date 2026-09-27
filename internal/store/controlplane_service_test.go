@@ -175,3 +175,59 @@ func TestClaimDeviceRejectsUnsafeHardwareRecoveryWithoutConsumingToken(t *testin
 		})
 	}
 }
+
+func TestDomainBindingReconcileLifecycleAndRecovery(t *testing.T) {
+	repository := newMemoryControlPlaneRepository()
+	service := NewControlPlaneService(repository)
+	now := time.Now().UTC().Add(-time.Minute)
+	binding := DomainBinding{BindingID: "binding-1", SourceType: "server", SourceID: "local-server", OwnerUserID: "owner", FQDN: "host.rokilai.online", ConfigState: "enabled", RuntimeState: "waiting_report", Revision: 1, UpdatedAt: now}
+	created, revision, err := service.CreateDomainBinding(context.Background(), 0, binding)
+	if err != nil || created.OwnerUserID != "owner" || revision != 1 {
+		t.Fatalf("created=%+v revision=%d err=%v", created, revision, err)
+	}
+	if _, _, err := service.CreateDomainBinding(context.Background(), revision, DomainBinding{BindingID: "binding-2", FQDN: binding.FQDN, Revision: 1}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate error=%v", err)
+	}
+	bindings, listedRevision, err := service.ListDomainBindings(context.Background())
+	if err != nil || len(bindings) != 1 || listedRevision != revision {
+		t.Fatalf("bindings=%+v revision=%d err=%v", bindings, listedRevision, err)
+	}
+	task, err := service.QueueReconcileTask(context.Background(), binding.BindingID, binding.Revision, "2001:db8::1", now)
+	if err != nil || task.Status != "pending" {
+		t.Fatalf("task=%+v err=%v", task, err)
+	}
+	same, err := service.QueueReconcileTask(context.Background(), binding.BindingID, binding.Revision, "2001:db8::1", now)
+	if err != nil || same.TaskID != task.TaskID {
+		t.Fatalf("same=%+v err=%v", same, err)
+	}
+	syncing, err := service.MarkReconcileTaskSyncing(context.Background(), task.TaskID)
+	if err != nil || syncing.Status != "syncing" {
+		t.Fatalf("syncing=%+v err=%v", syncing, err)
+	}
+	if err := service.CompleteReconcileTask(context.Background(), task.TaskID, "record-1", "2001:db8::1", 120, false, "upstream", "temporary", true, now); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := service.RecoverReconcileTasks(context.Background())
+	if err != nil || len(recovered) != 1 || recovered[0].Attempts != 1 || recovered[0].Status != "pending" {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	if _, err := service.MarkReconcileTaskSyncing(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := time.Now().UTC()
+	if err := service.CompleteReconcileTask(context.Background(), task.TaskID, "record-1", "2001:db8::1", 120, false, "", "", false, completedAt); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _, err = service.ListDomainBindings(context.Background())
+	if err != nil || len(bindings) != 1 || bindings[0].RuntimeState != "synced" || bindings[0].LastAppliedIPv6 != "2001:db8::1" || bindings[0].LastSyncedAt == nil {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	observed, err := service.UpdateDomainBindingObservation(context.Background(), binding.BindingID, binding.Revision, "record-1", "2001:db8::2", 120, false, "stale", "source_unavailable", completedAt)
+	if err != nil || observed.ProviderIPv6 != "2001:db8::2" || observed.RuntimeState != "stale" {
+		t.Fatalf("observed=%+v err=%v", observed, err)
+	}
+	disabled, _, err := service.TransitionDomainBinding(context.Background(), binding.BindingID, binding.Revision, "disabled", "waiting_report", completedAt)
+	if err != nil || disabled.ConfigState != "disabled" || disabled.Revision != 2 {
+		t.Fatalf("disabled=%+v err=%v", disabled, err)
+	}
+}

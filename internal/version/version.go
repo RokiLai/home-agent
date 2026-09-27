@@ -3,8 +3,8 @@ package version
 
 import "strings"
 
-const defaultServerVersion = "v0.6.37"
-const defaultAgentVersion = "v0.6.19"
+const defaultServerVersion = "v0.6.38"
+const defaultAgentVersion = "v0.6.20"
 
 // ServerVersion 与 AgentVersion 是两个组件可独立注入的当前版本号。
 // -ldflags "-X homeagent/internal/version.ServerVersion=vX.Y.Z -X homeagent/internal/version.AgentVersion=vX.Y.Z"

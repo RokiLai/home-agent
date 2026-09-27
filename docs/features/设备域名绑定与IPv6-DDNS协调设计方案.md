@@ -3,13 +3,13 @@
 ## 1. 状态与范围
 
 - 设计状态：已完成代码库、目标 `ddns-go v6.17.5` 与 Cloudflare 直连方案审查，审查未通过；可按第 9.3 节先实施不依赖真实 Cloudflare 协议的阶段，Cloudflare 发布器及生产迁移仍受第 9.2 节门禁约束。
-- 实施状态：第一阶段已完成并以 `4dad89c` 提交；第二阶段已实现域名绑定领域、原子权限 API、严格配置解析与安全禁用、观察模式、协议无关发布边界、持久化恢复队列及服务端/设备页面，当前不装配 Cloudflare 发布器且不写 DNS。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第二阶段完整 `-race` 回归通过，Diff Coverage 为 `62.1%（236/380）`。跨版本发布、Cloudflare 真实协议及 DNS 验收未执行，不得视为发布完成。
-- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交；第三阶段已完成 Cloudflare 发布器、恢复调和、创建者权限失效停用和运行状态失败路径编码，尚未提交或部署，生产域名迁移未执行。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理。跨版本发布与存量域名迁移验收未执行，不得视为发布完成。
+- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
 
-本次仅定义设计契约，不创建页面、接口、存储、Cloudflare 凭据、`ddns-go` 配置或 DNS 记录。实施时保留既有 IPv6 上报字段和未绑定设备的语义，并新增硬件指纹上报；已安装客户端通过常规升级和后续事实同步补齐该数据，不要求重装或重新认领。
+本方案已按独立变更清单分阶段实现接口、存储、Cloudflare 发布器和调和器；不自动修改 `ddns-go` 配置或迁移生产 DNS 记录。实施保留既有 IPv6 上报字段和未绑定设备的语义，并新增硬件指纹上报；已安装客户端通过常规升级和后续事实同步补齐该数据，不要求重装或重新认领。
 
 ## 2. 背景、问题与目标
 
@@ -193,6 +193,8 @@ Cloudflare 返回 `401/403`、Zone 越界、记录 ID 不存在、同名冲突�
 
 Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online` 和最小权限 Token 验证真实 API；该门禁不阻塞不依赖 Cloudflare 响应结构的领域模型、配置解析、状态机、持久化接口和页面开发。真实验证第一阶段仅操作该 Zone 下专用临时记录 `ddns-test.rokilai.online`，验证 Token、Zone/记录查询、创建、更新、记录属性保留与权威 DNS 收敛后删除临时记录；鉴权失败、权限不足、冲突和异常响应优先通过无写入请求或基于真实证据的测试替身验证，不得为制造错误而扩大 Token 权限或破坏其他记录。第二阶段选择一个由管理员确认的低风险存量域名，先保存 Cloudflare 记录与 ddns-go 配置快照，再演练单条接管和回滚。测试替身必须基于真实响应构造并记录差异；递归缓存只用于传播观察，严禁批量写入或删除生产记录。
 
+2026-09-28 真实观察结论：新版账户 API Token 的有效性端点为 `GET /accounts/{account_id}/tokens/verify`；旧的 `GET /user/tokens/verify` 对有效账户 Token 返回 `401 / code 1000`，不得据此判定凭据无效。`GET /zones/{zone_id}`、按名称查询 AAAA、创建、按记录 ID `PATCH` 和删除均返回 `HTTP/2 200` 与 `success=true`；仅 PATCH `content` 时 TTL、`proxied` 与 `comment` 保持不变。对从未查询过的唯一临时名称，静默等待 10 分钟后，Cloudflare 两个权威服务器及 `1.1.1.1`、`8.8.8.8` 均返回更新后的 IPv6，随后删除并确认 API 记录数为零。若在记录创建前或刚创建后查询不存在的名称，权威节点可能按 SOA negative TTL（本次为 1800 秒）继续返回缓存的 `NXDOMAIN`；因此新建记录和既有记录更新均不得立即以单次权威查询判失败，首次权威校验须延迟并采用有界重试，API 成功期间保持 `syncing` 而非误报 `failed` 或 `synced`。
+
 ## 7. Web 界面契约
 
 设备详情或设备列表的管理员操作入口提供该设备的“DDNS 域名”多绑定列表；服务端 IPv6 设置页提供 `local-server` 源的多绑定列表。每个条目必须显示 FQDN、地址源类型、管理模式、状态、期望 IPv6、Cloudflare 当前 IPv6、TTL、代理状态、最近同步时间与错误原因；硬件身份仅在设备源中显示“已绑定 / 未绑定 / 冲突”和来源类型，绝不显示原始值或指纹。
@@ -256,7 +258,7 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 | Claim 顺序 | `claimDevice` 先调用 `ConsumeClaimToken`，之后才解析请求、生成凭据和保存设备 | 与“持久化失败不消耗 Claim Token、不使旧 Token 失效”冲突，需先建立原子 Claim 仓储契约 |
 | Agent 上报 | 已有启动与周期 Facts 上报、IPv6 快照 revision 持久化与冲突恢复 | 可扩展版本化硬件身份字段，但必须保持旧 Server/Agent 兼容 |
 | UI 扩展点 | 设备页面已拆分为 `internal/ui/static/js/devices` 模块，服务端 IPv6 设置已有独立区域，API 调用经 `apiFetch` | 设备源绑定属于设备模块；服务端源绑定位于服务端 IPv6 设置页的独立列表模块，不与旧的探测或手工输入控件混用 |
-| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19` | 两个组件已按仓库版本门禁分别升版；通过验收前不标记发布完成 |
+| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19`；第三阶段候选 Server `v0.6.38`，Agent `v0.6.20` | 两个组件已按仓库版本门禁分别升版；通过验收前不标记发布完成 |
 
 ### 9.2 审查未通过的阻断项
 

@@ -46,6 +46,7 @@ type Binding struct {
 	BindingID            string       `json:"binding_id"`
 	SourceType           SourceType   `json:"source_type"`
 	SourceID             string       `json:"source_id"`
+	OwnerUserID          string       `json:"owner_user_id,omitempty"`
 	FQDN                 string       `json:"fqdn"`
 	ConfigState          BindingState `json:"config_state"`
 	RuntimeState         RuntimeState `json:"runtime_state"`

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"homeagent/internal/auth"
 	"homeagent/internal/domainbinding"
 )
 
@@ -52,23 +53,12 @@ func (s *Server) preflightDomainBinding(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	fqdn, err := domainbinding.NormalizeFQDN(request.FQDN, domainbinding.ManagedSuffix)
+	preflight, err := s.DomainBindings.Preflight(r.Context(), request.FQDN)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_fqdn"})
+		writeDomainBindingError(w, err)
 		return
 	}
-	bindings, err := s.DomainBindings.List(r.Context(), "", "")
-	if err != nil {
-		statusError(w, err)
-		return
-	}
-	available := true
-	for _, binding := range bindings {
-		if binding.FQDN == fqdn {
-			available = false
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"fqdn": fqdn, "source_type": sourceType, "source_id": sourceID, "available": available, "writes_dns": false, "provider_configured": s.DomainBindingConfig.Enabled})
+	writeJSON(w, http.StatusOK, map[string]any{"fqdn": preflight.FQDN, "source_type": sourceType, "source_id": sourceID, "available": preflight.Available, "writes_dns": false, "provider_configured": s.DomainBindingConfig.Enabled, "record": preflight.Observation})
 }
 func (s *Server) createDeviceDomainBinding(w http.ResponseWriter, r *http.Request) {
 	s.createDomainBinding(w, r, domainbinding.SourceDevice, r.PathValue("id"))
@@ -81,7 +71,11 @@ func (s *Server) createDomainBinding(w http.ResponseWriter, r *http.Request, sou
 	if !ok {
 		return
 	}
-	binding, err := s.DomainBindings.Create(r.Context(), domainbinding.CreateCommand{SourceType: sourceType, SourceID: sourceID, FQDN: request.FQDN, ExpectedRevision: request.ExpectedRevision, ExistingRecord: request.ExistingRecord})
+	ownerUserID := "legacy-admin"
+	if actor := auth.GetActorFromContext(r.Context()); actor != nil && actor.UserID != "" {
+		ownerUserID = actor.UserID
+	}
+	binding, err := s.DomainBindings.Create(r.Context(), domainbinding.CreateCommand{SourceType: sourceType, SourceID: sourceID, OwnerUserID: ownerUserID, FQDN: request.FQDN, ExpectedRevision: request.ExpectedRevision, ExistingRecord: request.ExistingRecord})
 	if err != nil {
 		writeDomainBindingError(w, err)
 		return
@@ -190,6 +184,15 @@ func decodeDomainBindingTransition(w http.ResponseWriter, r *http.Request) (doma
 	return request, true
 }
 func writeDomainBindingError(w http.ResponseWriter, err error) {
+	var providerError domainbinding.ClassifiedError
+	if errors.As(err, &providerError) {
+		status := http.StatusBadGateway
+		if providerError.CanRetry() {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]any{"error": "provider_" + providerError.Category(), "retryable": providerError.CanRetry()})
+		return
+	}
 	switch {
 	case errors.Is(err, domainbinding.ErrInvalidFQDN):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_fqdn"})

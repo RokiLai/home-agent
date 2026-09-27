@@ -1,0 +1,36 @@
+task: device-domain-ddns-phase3
+description: 基于真实 Cloudflare 协议证据实现域名绑定发布器、错误分类、属性保留、权威 DNS 验证与恢复调和；不迁移存量生产域名。
+allowed_paths:
+  - changes/device-domain-ddns-phase3.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-server/domain_binding_e2e_test.go
+  - internal/api/api.go
+  - internal/api/domain_binding_handlers.go
+  - internal/api/domain_binding_handlers_test.go
+  - internal/domainbinding/model.go
+  - internal/domainbinding/model_test.go
+  - internal/domainbinding/provider.go
+  - internal/domainbinding/reconciler.go
+  - internal/domainbinding/reconciler_test.go
+  - internal/domainbinding/service.go
+  - internal/domainbinding/service_test.go
+  - internal/domainbinding/cloudflare/client.go
+  - internal/domainbinding/cloudflare/client_test.go
+  - internal/domainbinding/cloudflare/testdata/README.md
+  - internal/domainbinding/cloudflare/testdata/account-token-verify-success.json
+  - internal/domainbinding/cloudflare/testdata/zone-success.json
+  - internal/domainbinding/cloudflare/testdata/records-empty-success.json
+  - internal/domainbinding/cloudflare/testdata/record-success.json
+  - internal/domainbinding/cloudflare/testdata/error-auth.json
+  - internal/domainbinding/cloudflare/testdata/error-rate-limit.json
+  - internal/domainbinding/coordinator.go
+  - internal/domainbinding/coordinator_test.go
+  - internal/store/controlplane.go
+  - internal/store/controlplane_service.go
+  - internal/store/controlplane_service_test.go
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/settings.js
+  - internal/ui/testdata/domain-binding.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go
