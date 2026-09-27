@@ -3,11 +3,32 @@ package prefixstate
 import (
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"homeagent/internal/networkaddr"
 )
+
+func TestFileStoreRecoversPrefixRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "router-prefix-state.json")
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := RouterPrefixState{RouterDeviceID: "router-1", NetworkID: "home", Revision: 9}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reopened.GetByNetwork("home")
+	if err != nil || got.Revision != want.Revision || got.RouterDeviceID != want.RouterDeviceID {
+		t.Fatalf("state=%+v err=%v", got, err)
+	}
+}
 
 func TestPrefixNormalizationAndIntersection(t *testing.T) {
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)

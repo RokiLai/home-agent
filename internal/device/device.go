@@ -2,7 +2,10 @@
 package device
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -15,40 +18,80 @@ import (
 // Device 表示已接入 HomeAgent 管理的主机设备模型，
 // 包含其唯一身份标识、网络地址列表、SSH 凭据、状态同步记录以及 GitHub 集成属性。
 type Device struct {
-	ID                string    `json:"id"`
-	OwnerUserID       string    `json:"owner_user_id,omitempty"`
-	Hostname          string    `json:"hostname"`
-	Alias             string    `json:"alias,omitempty"`
-	MAC               string    `json:"mac,omitempty"`
-	AgentVersion      string    `json:"agent_version,omitempty"`
-	OS                string    `json:"os"`
-	Arch              string    `json:"arch"`
-	SSHUser           string    `json:"ssh_user"`
-	SSHPort           int       `json:"ssh_port"`
-	PublicKey         string    `json:"public_key"`
-	Addresses         []string  `json:"addresses"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	LastSeenAt        time.Time `json:"last_seen_at"`
-	SyncStatus        string    `json:"sync_status,omitempty"`
-	AppliedVersion    int64     `json:"applied_version,omitempty"`
-	AppliedHash       string    `json:"applied_hash,omitempty"`
-	SyncError         string    `json:"sync_error,omitempty"`
-	SyncUpdatedAt     time.Time `json:"sync_updated_at,omitempty"`
-	GitHubSyncEnabled bool      `json:"github_sync_enabled"`
-	GitHubStatus      string    `json:"github_status,omitempty"`
-	GitHubKeyID       int64     `json:"github_key_id,omitempty"`
-	GitHubFingerprint string    `json:"github_fingerprint,omitempty"`
-	GitHubUpdatedAt   time.Time `json:"github_updated_at,omitempty"`
-	DeviceTokenHash        string        `json:"device_token_hash,omitempty"`
-	ControlProtocols       []int         `json:"control_protocols,omitempty"`
-	UpgradeTransactionID   string        `json:"upgrade_transaction_id,omitempty"`
-	UpgradeFenceRevision   uint64        `json:"upgrade_fence_revision,omitempty"`
-	UpgradeReleaseSequence uint64        `json:"upgrade_release_sequence,omitempty"`
-	ConfirmedManifestDigest string       `json:"confirmed_manifest_digest,omitempty"`
-	RunningBundleDigest    string        `json:"running_bundle_digest,omitempty"`
-	UpgradeSecurityMode    string        `json:"upgrade_security_mode,omitempty"`
-	RuntimeFacts           *RuntimeFacts `json:"runtime,omitempty"`
+	ID                      string               `json:"id"`
+	OwnerUserID             string               `json:"owner_user_id,omitempty"`
+	Hostname                string               `json:"hostname"`
+	Alias                   string               `json:"alias,omitempty"`
+	MAC                     string               `json:"mac,omitempty"`
+	AgentVersion            string               `json:"agent_version,omitempty"`
+	OS                      string               `json:"os"`
+	Arch                    string               `json:"arch"`
+	SSHUser                 string               `json:"ssh_user"`
+	SSHPort                 int                  `json:"ssh_port"`
+	PublicKey               string               `json:"public_key"`
+	Addresses               []string             `json:"addresses"`
+	CreatedAt               time.Time            `json:"created_at"`
+	UpdatedAt               time.Time            `json:"updated_at"`
+	LastSeenAt              time.Time            `json:"last_seen_at"`
+	SyncStatus              string               `json:"sync_status,omitempty"`
+	AppliedVersion          int64                `json:"applied_version,omitempty"`
+	AppliedHash             string               `json:"applied_hash,omitempty"`
+	SyncError               string               `json:"sync_error,omitempty"`
+	SyncUpdatedAt           time.Time            `json:"sync_updated_at,omitempty"`
+	GitHubSyncEnabled       bool                 `json:"github_sync_enabled"`
+	GitHubStatus            string               `json:"github_status,omitempty"`
+	GitHubKeyID             int64                `json:"github_key_id,omitempty"`
+	GitHubFingerprint       string               `json:"github_fingerprint,omitempty"`
+	GitHubUpdatedAt         time.Time            `json:"github_updated_at,omitempty"`
+	DeviceTokenHash         string               `json:"device_token_hash,omitempty"`
+	ControlProtocols        []int                `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string               `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    uint64               `json:"upgrade_fence_revision,omitempty"`
+	UpgradeReleaseSequence  uint64               `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string               `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string               `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string               `json:"upgrade_security_mode,omitempty"`
+	RuntimeFacts            *RuntimeFacts        `json:"runtime,omitempty"`
+	HardwareIdentity        *HardwareFingerprint `json:"hardware_identity,omitempty"`
+}
+
+type HardwareIdentityReport struct {
+	Version int    `json:"version"`
+	Source  string `json:"source"`
+	Value   string `json:"value"`
+}
+
+type HardwareFingerprint struct {
+	Version        int       `json:"version"`
+	Source         string    `json:"source"`
+	Fingerprint    string    `json:"fingerprint"`
+	LastObservedAt time.Time `json:"last_observed_at"`
+}
+
+func FingerprintHardwareIdentity(key []byte, report HardwareIdentityReport) (*HardwareFingerprint, error) {
+	value := strings.ToLower(strings.TrimSpace(report.Value))
+	if len(key) < 32 || report.Version != 1 || !validHardwareSource(report.Source) || invalidHardwareIdentityValue(value) {
+		return nil, errors.New("invalid hardware identity")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("homeagent-hardware-v1\x00" + report.Source + "\x00" + value))
+	return &HardwareFingerprint{Version: report.Version, Source: report.Source, Fingerprint: hex.EncodeToString(mac.Sum(nil)), LastObservedAt: time.Now().UTC()}, nil
+}
+
+func validHardwareSource(source string) bool {
+	return source == "io_platform_uuid" || source == "win32_computer_system_product_uuid" || source == "dmi_product_uuid"
+}
+
+func invalidHardwareIdentityValue(value string) bool {
+	if value == "" || value == "00000000-0000-0000-0000-000000000000" || value == "ffffffff-ffff-ffff-ffff-ffffffffffff" {
+		return true
+	}
+	parts := strings.Split(value, "-")
+	if len(parts) != 5 || len(parts[0]) != 8 || len(parts[1]) != 4 || len(parts[2]) != 4 || len(parts[3]) != 4 || len(parts[4]) != 12 {
+		return true
+	}
+	_, err := hex.DecodeString(strings.Join(parts, ""))
+	return err != nil
 }
 
 // RuntimeFacts 包含 Agent 上报的系统运行指标快照。

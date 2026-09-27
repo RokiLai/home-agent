@@ -224,7 +224,8 @@ func claim(args []string) error {
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	claimReqBody := map[string]any{
-		"device": d,
+		"device":            d,
+		"hardware_identity": collectHardwareIdentity(),
 	}
 	b, _ := json.Marshal(claimReqBody)
 
@@ -468,22 +469,23 @@ func envOrDefault(key, fallback string) string {
 }
 
 type deviceFactsPayload struct {
-	Hostname                string                `json:"hostname"`
-	MAC                     string                `json:"mac,omitempty"`
-	AgentVersion            string                `json:"agent_version,omitempty"`
-	OS                      string                `json:"os"`
-	Arch                    string                `json:"arch"`
-	SSHUser                 string                `json:"ssh_user"`
-	SSHPort                 int                   `json:"ssh_port"`
-	Addresses               []string              `json:"addresses"`
-	ControlProtocols        []int                 `json:"control_protocols,omitempty"`
-	UpgradeTransactionID    string                `json:"upgrade_transaction_id,omitempty"`
-	UpgradeFenceRevision    uint64                `json:"upgrade_fence_revision,omitempty"`
-	UpgradeReleaseSequence  uint64                `json:"upgrade_release_sequence,omitempty"`
-	ConfirmedManifestDigest string                `json:"confirmed_manifest_digest,omitempty"`
-	RunningBundleDigest     string                `json:"running_bundle_digest,omitempty"`
-	UpgradeSecurityMode     string                `json:"upgrade_security_mode,omitempty"`
-	Runtime                 *device.RuntimeFacts  `json:"runtime,omitempty"`
+	Hostname                string                         `json:"hostname"`
+	MAC                     string                         `json:"mac,omitempty"`
+	AgentVersion            string                         `json:"agent_version,omitempty"`
+	OS                      string                         `json:"os"`
+	Arch                    string                         `json:"arch"`
+	SSHUser                 string                         `json:"ssh_user"`
+	SSHPort                 int                            `json:"ssh_port"`
+	Addresses               []string                       `json:"addresses"`
+	ControlProtocols        []int                          `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string                         `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    uint64                         `json:"upgrade_fence_revision,omitempty"`
+	UpgradeReleaseSequence  uint64                         `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string                         `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string                         `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string                         `json:"upgrade_security_mode,omitempty"`
+	Runtime                 *device.RuntimeFacts           `json:"runtime,omitempty"`
+	HardwareIdentity        *device.HardwareIdentityReport `json:"hardware_identity,omitempty"`
 }
 
 func collectDeviceFacts(sshUser string, port int) (deviceFactsPayload, error) {
@@ -497,6 +499,7 @@ func collectDeviceFacts(sshUser string, port int) (deviceFactsPayload, error) {
 		Addresses:        d.Addresses,
 		ControlProtocols: []int{1, 2},
 		Runtime:          getSystemRuntimeFacts(),
+		HardwareIdentity: collectHardwareIdentity(),
 	}, nil
 }
 
@@ -564,6 +567,10 @@ func sendDeviceFactsWithStatus(ctx context.Context, client *http.Client, serverU
 				legacyFacts.Runtime = nil
 				modified = true
 			}
+			if facts.HardwareIdentity != nil {
+				legacyFacts.HardwareIdentity = nil
+				modified = true
+			}
 			if modified {
 				legacyBody, _ := json.Marshal(legacyFacts)
 				legacyReq, legacyErr := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(legacyBody))
@@ -615,6 +622,7 @@ func startDeviceFactsReporter(ctx context.Context, serverURLs []string, getActiv
 			if legacyServerMode && !force {
 				facts.Runtime = nil
 				facts.ControlProtocols = nil
+				facts.HardwareIdentity = nil
 			}
 			current, _ := json.Marshal(facts)
 			if !force && bytes.Equal(current, lastSuccessful) {

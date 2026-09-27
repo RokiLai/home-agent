@@ -533,6 +533,12 @@ func TestP1_RealBinaryUpgrade_v063_ToCandidate(t *testing.T) {
 	testP1RealBinaryUpgradeToCandidate(t, "cf3932b", "v0.6.3")
 }
 
+// TestP1_RealBinaryUpgrade_v0617_ToCandidate freezes the device-domain DDNS
+// phase-one formal Agent baseline at commit 7c1fa6f / v0.6.17.
+func TestP1_RealBinaryUpgrade_v0617_ToCandidate(t *testing.T) {
+	testP1RealBinaryUpgradeToCandidate(t, "7c1fa6f", "v0.6.17")
+}
+
 // testP1RealBinaryUpgradeToCandidate runs a real baseline process, dispatches
 // the public upgrade command over HTTP, verifies atomic replacement, and then
 // starts the candidate process to observe its autonomous Facts report.
@@ -540,7 +546,7 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 	if testing.Short() {
 		t.Skip("skipping real binary upgrade test in short mode")
 	}
-	candidateVersion := version.GetServer()
+	candidateVersion := version.GetAgent()
 
 	tempDir := t.TempDir()
 	srcDir := filepath.Join(tempDir, baselineVersion+"-src")
@@ -658,11 +664,12 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 		FactsPort: adapters,
 	})
 	apiServer := &api.Server{
-		Registry: reg,
-		Broker:   b,
-		Token:    "admin-token",
-		Commands: cmdSvc,
-		Health:   healthSvc,
+		Registry:               reg,
+		Broker:                 b,
+		Token:                  "admin-token",
+		Commands:               cmdSvc,
+		Health:                 healthSvc,
+		HardwareFingerprintKey: bytes.Repeat([]byte{7}, 32),
 	}
 	server := httptest.NewServer(apiServer.Handler())
 	defer server.Close()
@@ -689,6 +696,9 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 		"--authorized-keys="+authKeysPath,
 		"--ipv6-report=false",
 	)
+	var baselineOutput bytes.Buffer
+	agentCmd1.Stdout = &baselineOutput
+	agentCmd1.Stderr = &baselineOutput
 	if err := agentCmd1.Start(); err != nil {
 		t.Fatalf("start %s agent daemon failed: %v", baselineVersion, err)
 	}
@@ -737,7 +747,9 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 			t.Logf("agent %s process exited: %v", baselineVersion, err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatalf("timed out waiting for %s agent to finish self-upgrade and exit", baselineVersion)
+		cancel1()
+		<-doneChan
+		t.Fatalf("timed out waiting for %s agent to finish self-upgrade and exit; output=%s", baselineVersion, baselineOutput.String())
 	}
 
 	// 7. 验证磁盘上的 targetExe 文件已完成原子就地替换，执行 info 验证版本跃迁为当前候选版本
@@ -795,9 +807,9 @@ func testP1RealBinaryUpgradeToCandidate(t *testing.T, baselineCommit, baselineVe
 	}
 }
 
-// 4. 根因回归链：旧行为 (无持久化重启 -> 409 -> LastSeenAt 不刷新 -> 16m 后 ddns_prefix_stale)
-//    新行为 (持久化递增 -> 200 -> LastSeenAt 刷新 -> 保持 Healthy)
-//    恢复行为 (本地回退 -> 409 结构化恢复 -> 有界追赶成功 -> 保持 Healthy)
+//  4. 根因回归链：旧行为 (无持久化重启 -> 409 -> LastSeenAt 不刷新 -> 16m 后 ddns_prefix_stale)
+//     新行为 (持久化递增 -> 200 -> LastSeenAt 刷新 -> 保持 Healthy)
+//     恢复行为 (本地回退 -> 409 结构化恢复 -> 有界追赶成功 -> 保持 Healthy)
 func TestP1_RootCauseRegression_PersistentRevisionsAndDDNSHealth(t *testing.T) {
 	tempDir := t.TempDir()
 	reg, err := registry.Open(filepath.Join(tempDir, "devices.json"))

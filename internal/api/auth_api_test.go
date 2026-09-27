@@ -52,6 +52,30 @@ func setupTestServerWithAuth(t *testing.T) (*Server, *auth.SessionManager, *auth
 	return s, sm, em, r, b
 }
 
+func TestClaimInvalidRequestDoesNotConsumeClaimToken(t *testing.T) {
+	server, _, enrollment, _, _ := setupTestServerWithAuth(t)
+	rawToken, _, err := enrollment.CreateClaimTokenForOwner(time.Minute, 1, "retry", "owner", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	badRequest := httptest.NewRequest(http.MethodPost, "/api/v1/devices/claim", strings.NewReader("{"))
+	badRequest.Header.Set("Authorization", "Bearer "+rawToken)
+	badResponse := httptest.NewRecorder()
+	handler.ServeHTTP(badResponse, badRequest)
+	if badResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid request status=%d body=%s", badResponse.Code, badResponse.Body.String())
+	}
+	validBody := `{"hostname":"host","os":"linux","arch":"amd64","ssh_user":"root","ssh_port":22,"public_key":"ssh-ed25519 AAAA"}`
+	validRequest := httptest.NewRequest(http.MethodPost, "/api/v1/devices/claim", strings.NewReader(validBody))
+	validRequest.Header.Set("Authorization", "Bearer "+rawToken)
+	validResponse := httptest.NewRecorder()
+	handler.ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("valid retry status=%d body=%s", validResponse.Code, validResponse.Body.String())
+	}
+}
+
 func TestAdminAuthFlow_LoginMeLogout(t *testing.T) {
 	s, _, _, _, _ := setupTestServerWithAuth(t)
 	h := s.Handler()

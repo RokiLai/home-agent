@@ -2,6 +2,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"homeagent/internal/auth"
 	"homeagent/internal/device"
+	"homeagent/internal/store"
 	"homeagent/internal/wol"
 )
 
@@ -34,6 +36,7 @@ type Registry struct {
 	userGrants      map[string]map[string]*device.DeviceGrant // userID -> deviceID -> DeviceGrant
 	defaultOwnerID  string
 	legacyJoinToken string
+	controlPlane    *store.ControlPlaneService
 }
 
 // Open 从指定的 JSON 文件路径加载设备与授权注册表；若文件不存在则初始化空注册表。
@@ -184,6 +187,49 @@ func (r *Registry) List() []device.Device {
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
 	return list
+}
+
+func (r *Registry) ReplaceDevicesFromControlPlane(devices []device.Device) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.devices = make(map[string]device.Device, len(devices))
+	for _, item := range devices {
+		r.devices[item.ID] = item
+	}
+}
+
+func (r *Registry) AttachControlPlane(service *store.ControlPlaneService, devices []device.Device, grants []device.DeviceGrant) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.controlPlane = service
+	r.devices = make(map[string]device.Device, len(devices))
+	r.grants = make(map[string]map[string]*device.DeviceGrant)
+	r.userGrants = make(map[string]map[string]*device.DeviceGrant)
+	for _, item := range devices {
+		r.devices[item.ID] = item
+	}
+	for index := range grants {
+		copy := grants[index]
+		r.addGrantIndexLocked(&copy)
+	}
+}
+
+func (r *Registry) AllGrants() []device.DeviceGrant {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := []device.DeviceGrant{}
+	for _, grants := range r.grants {
+		for _, grant := range grants {
+			result = append(result, *grant)
+		}
+	}
+	return result
+}
+
+func (r *Registry) ApplyCommittedDevice(item device.Device) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.devices[item.ID] = item
 }
 
 // FilterDevicesForUser 返回对指定用户可见的所有设备列表快照
@@ -691,6 +737,19 @@ func (r *Registry) UpdateSyncStatus(id string, status string, version int64, has
 }
 
 func (r *Registry) writeLocked() error {
+	if r.controlPlane != nil {
+		devices := make([]device.Device, 0, len(r.devices))
+		for _, item := range r.devices {
+			devices = append(devices, item)
+		}
+		grants := make([]device.DeviceGrant, 0)
+		for _, deviceGrants := range r.grants {
+			for _, grant := range deviceGrants {
+				grants = append(grants, *grant)
+			}
+		}
+		return r.controlPlane.ReplaceRegistryState(context.Background(), devices, grants)
+	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0700); err != nil {
 		return err
 	}

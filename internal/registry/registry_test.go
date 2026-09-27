@@ -1,13 +1,51 @@
 package registry
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
 
 	"homeagent/internal/auth"
 	"homeagent/internal/device"
+	"homeagent/internal/store"
+	"homeagent/internal/store/filestore"
 )
+
+func TestAttachedControlPlaneIsAuthoritativeForRegistryWrites(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "devices.json")
+	registry, err := Open(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := filestore.OpenControlPlane(filepath.Join(dir, "control-plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := store.NewControlPlaneService(repository)
+	registry.AttachControlPlane(service, nil, nil)
+	if _, err := registry.Save(sample("device-1", "AAAA")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetGrant("device-1", "user-2", device.GrantLevelRead, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	devices, grants, err := service.RegistryState(context.Background())
+	if err != nil || len(devices) != 1 || len(grants) != 1 {
+		t.Fatalf("devices=%+v grants=%+v err=%v", devices, grants, err)
+	}
+	if _, err := Open(legacyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Delete("device-1"); err != nil {
+		t.Fatal(err)
+	}
+	devices, grants, err = service.RegistryState(context.Background())
+	if err != nil || len(devices) != 0 || len(grants) != 0 {
+		t.Fatalf("after delete devices=%+v grants=%+v err=%v", devices, grants, err)
+	}
+}
 
 func sample(id, key string) device.Device {
 	return device.Device{ID: id, Hostname: id, OS: "linux", Arch: "amd64", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 " + key, Addresses: []string{"192.168.1.2"}}

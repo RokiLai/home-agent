@@ -17,7 +17,7 @@ type createEnrollmentTokenReq struct {
 }
 
 func (s *Server) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
-	if s.EnrollmentManager == nil {
+	if s.ControlPlane == nil && s.EnrollmentManager == nil {
 		http.Error(w, `{"error":"server_error","message":"Enrollment manager not initialized"}`, http.StatusInternalServerError)
 		return
 	}
@@ -47,7 +47,14 @@ func (s *Server) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ttl := time.Duration(req.TTLSeconds) * time.Second
-	rawToken, tokenInfo, err := s.EnrollmentManager.CreateClaimTokenForOwner(ttl, req.MaxUses, req.Description, actorID, ownerUserID)
+	var rawToken string
+	var tokenInfo *auth.ClaimToken
+	var err error
+	if s.ControlPlane != nil {
+		rawToken, tokenInfo, err = s.ControlPlane.CreateClaimToken(r.Context(), ttl, req.MaxUses, req.Description, actorID, ownerUserID)
+	} else {
+		rawToken, tokenInfo, err = s.EnrollmentManager.CreateClaimTokenForOwner(ttl, req.MaxUses, req.Description, actorID, ownerUserID)
+	}
 	if err != nil {
 		if s.Log != nil {
 			s.Log.Error("create_claim_token_failed", "error", err)
@@ -71,13 +78,18 @@ func (s *Server) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
-	if s.EnrollmentManager == nil {
+	if s.ControlPlane == nil && s.EnrollmentManager == nil {
 		http.Error(w, `{"error":"server_error","message":"Enrollment manager not initialized"}`, http.StatusInternalServerError)
 		return
 	}
 
 	actor := auth.GetActorFromContext(r.Context())
-	tokens := s.EnrollmentManager.ListActiveTokens()
+	var tokens []*auth.ClaimToken
+	if s.ControlPlane != nil {
+		tokens, _ = s.ControlPlane.ListClaimTokens(r.Context())
+	} else {
+		tokens = s.EnrollmentManager.ListActiveTokens()
+	}
 	if tokens == nil {
 		tokens = []*auth.ClaimToken{}
 	}
@@ -95,7 +107,7 @@ func (s *Server) listEnrollmentTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteEnrollmentToken(w http.ResponseWriter, r *http.Request) {
-	if s.EnrollmentManager == nil {
+	if s.ControlPlane == nil && s.EnrollmentManager == nil {
 		http.Error(w, `{"error":"server_error","message":"Enrollment manager not initialized"}`, http.StatusInternalServerError)
 		return
 	}
@@ -106,7 +118,11 @@ func (s *Server) deleteEnrollmentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.EnrollmentManager.RevokeToken(tokenID)
+	if s.ControlPlane != nil {
+		_ = s.ControlPlane.RevokeClaimToken(r.Context(), tokenID)
+	} else {
+		_ = s.EnrollmentManager.RevokeToken(tokenID)
+	}
 	if s.Log != nil {
 		s.Log.Info("claim_token_revoked", "id", tokenID)
 	}

@@ -2,15 +2,99 @@
 package devicestate
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"homeagent/internal/networkaddr"
 )
+
+type FileStore struct {
+	mu     sync.RWMutex
+	path   string
+	states map[string]DeviceIPv6State
+}
+
+func OpenFileStore(path string) (*FileStore, error) {
+	store := &FileStore{path: path, states: map[string]DeviceIPv6State{}}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return store, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		SchemaVersion int                        `json:"schema_version"`
+		States        map[string]DeviceIPv6State `json:"states"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("decode device network state: %w", err)
+	}
+	if payload.SchemaVersion != 1 || payload.States == nil {
+		return nil, errors.New("unsupported device network state schema")
+	}
+	store.states = payload.States
+	return store, nil
+}
+
+func (s *FileStore) Get(deviceID string) (*DeviceIPv6State, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.states[deviceID]
+	if !ok {
+		return nil, ErrDeviceNotFound
+	}
+	copy := state
+	return &copy, nil
+}
+
+func (s *FileStore) Save(state DeviceIPv6State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.states[state.DeviceID]
+	s.states[state.DeviceID] = state
+	if err := writeStateFile(s.path, map[string]any{"schema_version": 1, "states": s.states}); err != nil {
+		if existed {
+			s.states[state.DeviceID] = previous
+		} else {
+			delete(s.states, state.DeviceID)
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *FileStore) List() ([]DeviceIPv6State, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	states := make([]DeviceIPv6State, 0, len(s.states))
+	for _, state := range s.states {
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+func writeStateFile(path string, payload any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
+}
 
 var (
 	// ErrRevisionConflict 当接收到的上报版本号小于当前已保存版本时返回此错误。

@@ -46,6 +46,7 @@ import (
 	"homeagent/internal/servernetwork"
 	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
+	"homeagent/internal/store"
 	"homeagent/internal/ui"
 	"homeagent/internal/upgradeplan"
 	"homeagent/internal/version"
@@ -61,6 +62,7 @@ type Server struct {
 	Broker                    *broker.Broker
 	SessionManager            *auth.SessionManager
 	EnrollmentManager         *auth.EnrollmentManager
+	ControlPlane              *store.ControlPlaneService
 	RateLimiter               *auth.RateLimiter
 	ACLPath                   string
 	Token, AdminPublicKey     string
@@ -100,6 +102,7 @@ type Server struct {
 	ServerIPv6Collector       *servernetwork.Collector
 	ServerNetworkCoordinator  *servernetwork.Coordinator
 	FileShare                 *fileshare.Service
+	HardwareFingerprintKey    []byte
 	serverNetworkValidationMu sync.Mutex
 	serverNetworkDetections   map[string]serverNetworkDetection
 	serverNetworkTokens       map[string]serverNetworkValidationToken
@@ -335,24 +338,25 @@ func (s *Server) Handler() http.Handler {
 }
 
 type deviceFactsReq struct {
-	Hostname                string               `json:"hostname"`
-	MAC                     string               `json:"mac,omitempty"`
-	AgentVersion            string               `json:"agent_version,omitempty"`
-	OS                      string               `json:"os"`
-	Arch                    string               `json:"arch"`
-	SSHUser                 string               `json:"ssh_user"`
-	SSHPort                 int                  `json:"ssh_port"`
-	Addresses               []string             `json:"addresses"`
-	ControlProtocols        *[]int               `json:"control_protocols,omitempty"`
-	UpgradeTransactionID    string               `json:"upgrade_transaction_id,omitempty"`
-	UpgradeFenceRevision    *uint64              `json:"upgrade_fence_revision,omitempty"`
-	UpgradeFenceToken       string               `json:"upgrade_fence_token,omitempty"`
-	UpgradeReleaseSequence  *uint64              `json:"upgrade_release_sequence,omitempty"`
-	ConfirmedManifestDigest string               `json:"confirmed_manifest_digest,omitempty"`
-	RunningBundleDigest     string               `json:"running_bundle_digest,omitempty"`
-	UpgradeSecurityMode     string               `json:"upgrade_security_mode,omitempty"`
-	CommandID               string               `json:"command_id,omitempty"`
-	Runtime                 *device.RuntimeFacts `json:"runtime,omitempty"`
+	Hostname                string                         `json:"hostname"`
+	MAC                     string                         `json:"mac,omitempty"`
+	AgentVersion            string                         `json:"agent_version,omitempty"`
+	OS                      string                         `json:"os"`
+	Arch                    string                         `json:"arch"`
+	SSHUser                 string                         `json:"ssh_user"`
+	SSHPort                 int                            `json:"ssh_port"`
+	Addresses               []string                       `json:"addresses"`
+	ControlProtocols        *[]int                         `json:"control_protocols,omitempty"`
+	UpgradeTransactionID    string                         `json:"upgrade_transaction_id,omitempty"`
+	UpgradeFenceRevision    *uint64                        `json:"upgrade_fence_revision,omitempty"`
+	UpgradeFenceToken       string                         `json:"upgrade_fence_token,omitempty"`
+	UpgradeReleaseSequence  *uint64                        `json:"upgrade_release_sequence,omitempty"`
+	ConfirmedManifestDigest string                         `json:"confirmed_manifest_digest,omitempty"`
+	RunningBundleDigest     string                         `json:"running_bundle_digest,omitempty"`
+	UpgradeSecurityMode     string                         `json:"upgrade_security_mode,omitempty"`
+	CommandID               string                         `json:"command_id,omitempty"`
+	Runtime                 *device.RuntimeFacts           `json:"runtime,omitempty"`
+	HardwareIdentity        *device.HardwareIdentityReport `json:"hardware_identity,omitempty"`
 }
 
 // putDeviceFacts refreshes mutable host facts using the device's own credential.
@@ -434,6 +438,14 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// 当本次上报未附带 runtime 时，不能沿用旧值，必须置空
 		d.RuntimeFacts = nil
+	}
+	if req.HardwareIdentity != nil {
+		fingerprint, err := device.FingerprintHardwareIdentity(s.HardwareFingerprintKey, *req.HardwareIdentity)
+		if err != nil {
+			http.Error(w, "invalid hardware identity", http.StatusBadRequest)
+			return
+		}
+		d.HardwareIdentity = fingerprint
 	}
 
 	saved, err := s.Registry.Save(d)
@@ -2372,9 +2384,6 @@ func (s *Server) getDeviceIPv6Text(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := strings.TrimSpace(st.DesiredAddress)
-	if ip == "" && len(st.ReportedAddresses) > 0 {
-		ip = st.ReportedAddresses[0].Address
-	}
 
 	if ip == "" {
 		http.Error(w, "no valid IPv6 address found", http.StatusNotFound)

@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"homeagent/internal/auth"
 	"homeagent/internal/device"
+	"homeagent/internal/store"
 )
 
 type claimDeviceReq struct {
-	Device *device.Device `json:"device,omitempty"`
+	Device           *device.Device                 `json:"device,omitempty"`
+	HardwareIdentity *device.HardwareIdentityReport `json:"hardware_identity,omitempty"`
 
 	// 平铺字段兼容旧客户端格式
 	Hostname  string   `json:"hostname,omitempty"`
@@ -29,34 +32,6 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{
 			"error":   "unauthorized",
 			"message": "Authorization: Bearer <claim_token> required in header",
-		})
-		return
-	}
-
-	// 1. 优先通过 EnrollmentManager 原子校验与扣减 Claim Token 并提取冻结的所有者
-	var tokenOwnerID string
-	authorized := false
-	if s.EnrollmentManager != nil {
-		if tokenMeta, err := s.EnrollmentManager.ConsumeClaimToken(rawClaimToken); err == nil {
-			authorized = true
-			tokenOwnerID = tokenMeta.OwnerUserID
-		}
-	}
-
-	// 2. 若 Claim Token 校验未通过，检查是否为旧版 HOMEAGENT_JOIN_TOKEN（平滑迁移兼容）
-	if !authorized && s.Token != "" {
-		if auth.SecureCompareHash(auth.HashToken(s.Token), auth.HashToken(rawClaimToken)) {
-			authorized = true
-			if s.Log != nil {
-				s.Log.Info("legacy_join_token_used_for_claim_migration", "remote", r.RemoteAddr)
-			}
-		}
-	}
-
-	if !authorized {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{
-			"error":   "unauthorized",
-			"message": "Invalid, expired, or exhausted claim token",
 		})
 		return
 	}
@@ -89,11 +64,6 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 	// 确保 device_id 由服务端统一生成
 	d.ID = device.GenerateRandomID()
 
-	// 绑定 Token 冻结的所有权（不信任请求体提交的所有者）
-	if tokenOwnerID != "" {
-		d.OwnerUserID = tokenOwnerID
-	}
-
 	// 生成独立的 64 字符 Device Token，并仅将哈希存储在服务端
 	rawDeviceToken, err := auth.GenerateSecureToken("dev_", 32)
 	if err != nil {
@@ -105,6 +75,63 @@ func (s *Server) claimDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d.DeviceTokenHash = auth.HashToken(rawDeviceToken)
+	if req.HardwareIdentity != nil {
+		fingerprint, fingerprintErr := device.FingerprintHardwareIdentity(s.HardwareFingerprintKey, *req.HardwareIdentity)
+		if fingerprintErr != nil {
+			http.Error(w, `{"error":"bad_request","message":"Invalid hardware identity"}`, http.StatusBadRequest)
+			return
+		}
+		d.HardwareIdentity = fingerprint
+	}
+	if s.ControlPlane != nil {
+		saved, claimErr := s.ControlPlane.ClaimDevice(r.Context(), rawClaimToken, rawDeviceToken, d)
+		if claimErr != nil {
+			if errors.Is(claimErr, auth.ErrClaimTokenNotFound) {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized", "message": "Invalid, expired, or exhausted claim token"})
+				return
+			}
+			if errors.Is(claimErr, store.ErrHardwareOwnerMismatch) || errors.Is(claimErr, store.ErrHardwareDeviceOnline) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "hardware_conflict", "message": "Hardware identity requires administrator review"})
+				return
+			}
+			statusError(w, claimErr)
+			return
+		}
+		s.Registry.ApplyCommittedDevice(saved)
+		if s.Broker != nil {
+			s.broadcastKeySync()
+		}
+		if s.Sync != nil {
+			go s.Sync.SyncAll(context.Background())
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "device_id": saved.ID, "device_token": rawDeviceToken, "admin_public_key": s.AdminPublicKey})
+		return
+	}
+
+	var tokenOwnerID string
+	authorized := false
+	if s.EnrollmentManager != nil {
+		if tokenMeta, consumeErr := s.EnrollmentManager.ConsumeClaimToken(rawClaimToken); consumeErr == nil {
+			authorized = true
+			tokenOwnerID = tokenMeta.OwnerUserID
+		}
+	}
+	if !authorized && s.Token != "" && auth.SecureCompareHash(auth.HashToken(s.Token), auth.HashToken(rawClaimToken)) {
+		authorized = true
+		if s.Log != nil {
+			s.Log.Info("legacy_join_token_used_for_claim_migration", "remote", r.RemoteAddr)
+		}
+	}
+	if !authorized {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error":   "unauthorized",
+			"message": "Invalid, expired, or exhausted claim token",
+		})
+		return
+	}
+	if tokenOwnerID != "" {
+		d.OwnerUserID = tokenOwnerID
+	}
 
 	saved, err := s.Registry.Save(d)
 	if err != nil {

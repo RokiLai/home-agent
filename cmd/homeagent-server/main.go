@@ -375,11 +375,44 @@ func serve(c config) error {
 	if err != nil {
 		return fmt.Errorf("init enrollment manager: %w", err)
 	}
+	var controlPlaneRepository store.ControlPlaneRepository
+	if ms != nil {
+		controlPlaneRepository = ms.ControlPlaneRepository()
+	} else {
+		controlPlaneRepository, err = filestore.OpenControlPlane(filepath.Join(c.dataDir, "control-plane.json"))
+		if err != nil {
+			return fmt.Errorf("initialize control plane: %w", err)
+		}
+	}
+	controlPlane := store.NewControlPlaneService(controlPlaneRepository)
+	if err := controlPlane.ImportLegacy(context.Background(), r.List(), r.AllGrants(), enrollmentMgr.ExportActiveTokens()); err != nil {
+		return fmt.Errorf("migrate legacy control plane state: %w", err)
+	}
+	controlPlaneDevices, controlPlaneGrants, err := controlPlane.RegistryState(context.Background())
+	if err != nil {
+		return fmt.Errorf("load control plane devices: %w", err)
+	}
+	r.AttachControlPlane(controlPlane, controlPlaneDevices, controlPlaneGrants)
+	if err := finalizeControlPlaneMigration(c.dataDir); err != nil {
+		return fmt.Errorf("finalize control plane migration: %w", err)
+	}
 
 	rateLimiter := auth.NewRateLimiter(5, 15*time.Minute)
+	hardwareFingerprintKey, err := loadOrCreateHardwareFingerprintKey(c.dataDir)
+	if err != nil {
+		return fmt.Errorf("initialize hardware fingerprint key: %w", err)
+	}
 
-	devStateSvc := devicestate.NewService(nil)
-	prefixStateSvc := prefixstate.NewService(nil)
+	deviceStateStore, err := devicestate.OpenFileStore(filepath.Join(c.dataDir, "device-network-state.json"))
+	if err != nil {
+		return fmt.Errorf("initialize device network state: %w", err)
+	}
+	prefixStateStore, err := prefixstate.OpenFileStore(filepath.Join(c.dataDir, "router-prefix-state.json"))
+	if err != nil {
+		return fmt.Errorf("initialize router prefix state: %w", err)
+	}
+	devStateSvc := devicestate.NewService(deviceStateStore)
+	prefixStateSvc := prefixstate.NewService(prefixStateStore)
 
 	var ddnsSvc *ddns.Service
 	var cfClient *cloudflare.Client
@@ -589,7 +622,9 @@ func serve(c config) error {
 		Broker:                   eventBroker,
 		SessionManager:           sessionMgr,
 		EnrollmentManager:        enrollmentMgr,
+		ControlPlane:             controlPlane,
 		RateLimiter:              rateLimiter,
+		HardwareFingerprintKey:   hardwareFingerprintKey,
 		ACLPath:                  filepath.Join(c.dataDir, "acl.yaml"),
 		Token:                    c.token,
 		AdminPublicKey:           pub,

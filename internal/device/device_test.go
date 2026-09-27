@@ -1,6 +1,34 @@
 package device
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestFingerprintHardwareIdentityDoesNotPersistRawValue(t *testing.T) {
+	raw := "11111111-2222-3333-4444-555555555555"
+	got, err := FingerprintHardwareIdentity(bytes.Repeat([]byte{7}, 32), HardwareIdentityReport{Version: 1, Source: "io_platform_uuid", Value: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), raw) || len(got.Fingerprint) != 64 {
+		t.Fatalf("raw identity persisted or digest invalid: %s", encoded)
+	}
+}
+
+func TestFingerprintHardwareIdentityRejectsUnsafeValues(t *testing.T) {
+	for _, value := range []string{"", "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
+		if _, err := FingerprintHardwareIdentity(bytes.Repeat([]byte{7}, 32), HardwareIdentityReport{Version: 1, Source: "dmi_product_uuid", Value: value}); err == nil {
+			t.Fatalf("value %q accepted", value)
+		}
+	}
+}
 
 func TestGenerateIDStable(t *testing.T) {
 	a := GenerateID("Example Laptop", "machine-1")

@@ -409,6 +409,34 @@ func TestPutDeviceFactsUpdatesDynamicFactsAndPreservesMACWhenMissing(t *testing.
 	}
 }
 
+func TestPutDeviceFactsPersistsOnlyHardwareFingerprint(t *testing.T) {
+	r, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := device.Device{ID: "dev-hardware", Hostname: "host", OS: "darwin", Arch: "arm64", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"}
+	if _, err := r.Save(original); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Registry: r, Token: "device-token", HardwareFingerprintKey: bytes.Repeat([]byte{9}, 32)}
+	body := `{"hostname":"host","os":"darwin","arch":"arm64","ssh_user":"user","ssh_port":22,"addresses":[],"hardware_identity":{"version":1,"source":"io_platform_uuid","value":"11111111-2222-3333-4444-555555555555"}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/devices/dev-hardware/facts", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer device-token")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got, err := r.Get("dev-hardware")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(got)
+	if got.HardwareIdentity == nil || strings.Contains(string(encoded), "11111111-2222-3333-4444-555555555555") {
+		t.Fatalf("raw hardware identity persisted: %s", encoded)
+	}
+}
+
 func TestPutDeviceFactsSSHUserProtection(t *testing.T) {
 	r, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,6 +289,14 @@ func TestDeviceIPv6TextEndpoint_LoopbackAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to update addresses: %v", err)
 	}
+	state, err := devStateSvc.Get("dev-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.DesiredAddress = "2001:db8:1::100"
+	if err := devStateSvc.Save(*state); err != nil {
+		t.Fatal(err)
+	}
 
 	server := &Server{
 		Token:              "admin-token",
@@ -327,6 +336,25 @@ func TestDeviceIPv6TextEndpoint_LoopbackAndToken(t *testing.T) {
 	}
 	if body := wExtToken.Body.String(); body != "2001:db8:1::100\n" {
 		t.Fatalf("expected 2001:db8:1::100\\n, got %q", body)
+	}
+}
+
+func TestDeviceIPv6TextEndpointDoesNotFallbackToUnadjudicatedReport(t *testing.T) {
+	devStateSvc := devicestate.NewService(nil)
+	_, _, err := devStateSvc.UpdateReportedAddresses("dev-no-prefix", "home", 1, time.Now().UTC(), []networkaddr.ReportedIPv6Address{{Address: "2001:db8:1::100"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := (&Server{Token: "admin-token", DeviceStateService: devStateSvc}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/devices/dev-no-prefix/ipv6", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "2001:db8:1::100") {
+		t.Fatalf("unadjudicated address leaked in response: %q", rec.Body.String())
 	}
 }
 
