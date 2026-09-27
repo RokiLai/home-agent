@@ -2,9 +2,9 @@
 
 ## 1. 状态与范围
 
-- 设计状态：已完成代码库、目标 `ddns-go v6.17.5` 与 Cloudflare 直连方案审查，审查未通过；可按第 9.3 节先实施不依赖真实 Cloudflare 协议的阶段，Cloudflare 发布器及生产迁移仍受第 9.2 节门禁约束。
-- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交；第三阶段已完成 Cloudflare 发布器、恢复调和、创建者权限失效停用和运行状态失败路径编码，尚未提交或部署，生产域名迁移未执行。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理。跨版本发布与存量域名迁移验收未执行，不得视为发布完成。
+- 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；存量生产域名迁移仍受第 8、9.2 和 10 节门禁约束。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`，生产域名迁移未执行。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限与安全启用状态验证通过。Agent `v0.6.20` 跨平台部署及存量域名迁移/回滚验收未执行，不得视为全部发布完成。
 - 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
@@ -161,7 +161,7 @@ HomeAgent 为每个受管 `binding_id` 持久化最后调和 revision、最后�
 
 - 仅支持 Cloudflare API Token，不接受 Global API Key、账号密码或会话 Cookie。
 - Token 仅授予目标 Zone 的 `Zone:Read` 与 `DNS:Edit`，资源范围必须限制到明确 Zone；若真实 API 验证表明读取记录不需要 `Zone:Read`，实施时进一步缩减权限。
-- Token 以明文 Secret 写入 `${HOMEAGENT_DATA_DIR}/cloudflare-ddns.json`，方式与当前 ddns-go 的受限配置文件相同；生产部署当前 `HOMEAGENT_DATA_DIR` 为 `/var/lib/homeagent/data` 时，对应路径为 `/var/lib/homeagent/data/cloudflare-ddns.json`。该文件不得提交 Git，所有者必须是 HomeAgent 运行用户，权限必须严格为 `0600`，部署备份与故障采集均须按 Secret 处理。页面、API、日志、审计事件与错误信息均不得回显明文。
+- Token 以明文 Secret 写入 `${HOMEAGENT_DATA_DIR}/cloudflare-ddns.json`，方式与当前 ddns-go 的受限配置文件相同；Linux 生产部署的 `HOMEAGENT_DATA_DIR` 为 `/var/lib/homeagent/data` 时，对应路径为 `/var/lib/homeagent/data/cloudflare-ddns.json`，当前 macOS 宿主机实际路径为 `~/Library/Application Support/HomeAgent/data/cloudflare-ddns.json`。该文件不得提交 Git，所有者必须是 HomeAgent 运行用户，权限必须严格为 `0600`，部署备份与故障采集均须按 Secret 处理。页面、API、日志、审计事件与错误信息均不得回显明文。
 - 配置文件格式固定为 JSON，顶层字段为 `api_token`、`zone_id` 和 `managed_suffix`；`managed_suffix` 必须等于 `rokilai.online`。仓库内如提供示例，只能使用明显占位符，不得包含真实 Token、Zone ID 或可用凭据。
 - 真实 Token 后置到生产协议验证和部署阶段提供，不阻塞领域模块、配置解析器、Cloudflare 测试替身及页面状态的编码。配置文件不存在或 `api_token` 为空时，服务其他功能正常启动，Cloudflare DDNS 保持禁用并显示“未配置”，不得创建调和任务或访问 Cloudflare。
 - 配置 JSON 无效、必填字段缺失、后缀不匹配、文件所有者错误或权限宽于 `0600` 时，Cloudflare DDNS 必须安全禁用并给出不含 Secret 的诊断；不得影响设备管理等无关功能，也不得回退到 ddns-go 配置、环境变量或数据库读取 Token。
