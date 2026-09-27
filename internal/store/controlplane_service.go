@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -200,6 +201,117 @@ func (service *ControlPlaneService) Devices(ctx context.Context) ([]device.Devic
 		result = append(result, *item)
 	}
 	return result, nil
+}
+
+func (service *ControlPlaneService) CreateDomainBinding(ctx context.Context, expectedControlRevision uint64, binding DomainBinding) (DomainBinding, uint64, error) {
+	snapshot, err := service.repository.Load(ctx)
+	if err != nil {
+		return DomainBinding{}, 0, err
+	}
+	if snapshot.Revision != expectedControlRevision {
+		return DomainBinding{}, snapshot.Revision, ErrRevisionConflict
+	}
+	for _, existing := range snapshot.Bindings {
+		if existing.FQDN == binding.FQDN && existing.ConfigState != "deleted" {
+			return DomainBinding{}, snapshot.Revision, ErrConflict
+		}
+	}
+	copy := binding
+	snapshot.Bindings[binding.BindingID] = &copy
+	committed, err := service.repository.Commit(ctx, snapshot.Revision, snapshot)
+	if err != nil {
+		return DomainBinding{}, snapshot.Revision, err
+	}
+	return copy, committed.Revision, nil
+}
+
+func (service *ControlPlaneService) ListDomainBindings(ctx context.Context) ([]DomainBinding, uint64, error) {
+	snapshot, err := service.repository.Load(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	result := make([]DomainBinding, 0, len(snapshot.Bindings))
+	for _, binding := range snapshot.Bindings {
+		result = append(result, *binding)
+	}
+	return result, snapshot.Revision, nil
+}
+
+func (service *ControlPlaneService) TransitionDomainBinding(ctx context.Context, bindingID string, expectedBindingRevision uint64, configState, runtimeState string, updatedAt time.Time) (DomainBinding, uint64, error) {
+	var changed DomainBinding
+	committed, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		binding := snapshot.Bindings[bindingID]
+		if binding == nil {
+			return ErrNotFound
+		}
+		if binding.Revision != expectedBindingRevision {
+			return ErrRevisionConflict
+		}
+		binding.Revision++
+		binding.ConfigState = configState
+		binding.RuntimeState = runtimeState
+		binding.UpdatedAt = updatedAt
+		for taskID, task := range snapshot.Tasks {
+			if task.BindingID == bindingID && (task.Status == "pending" || task.Status == "syncing") {
+				delete(snapshot.Tasks, taskID)
+			}
+		}
+		changed = *binding
+		return nil
+	})
+	if err != nil {
+		return DomainBinding{}, 0, err
+	}
+	return changed, committed.Revision, nil
+}
+
+func (service *ControlPlaneService) QueueReconcileTask(ctx context.Context, bindingID string, expectedBindingRevision uint64, desiredIPv6 string, updatedAt time.Time) (ReconcileTask, error) {
+	var queued ReconcileTask
+	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		binding := snapshot.Bindings[bindingID]
+		if binding == nil {
+			return ErrNotFound
+		}
+		if binding.Revision != expectedBindingRevision {
+			return ErrRevisionConflict
+		}
+		if binding.ConfigState != "enabled" {
+			return errors.New("domain binding is not enabled")
+		}
+		for taskID, task := range snapshot.Tasks {
+			if task.BindingID == bindingID && (task.Status == "pending" || task.Status == "syncing") {
+				delete(snapshot.Tasks, taskID)
+			}
+		}
+		binding.DesiredIPv6 = desiredIPv6
+		binding.RuntimeState = "pending"
+		binding.UpdatedAt = updatedAt
+		queued = ReconcileTask{TaskID: "reconcile-" + bindingID + "-" + fmt.Sprint(binding.Revision), BindingID: bindingID, BindingRevision: binding.Revision, DesiredIPv6: desiredIPv6, TaskRevision: binding.Revision, Status: "pending", NextAttemptAt: updatedAt}
+		snapshot.Tasks[queued.TaskID] = &queued
+		return nil
+	})
+	return queued, err
+}
+
+func (service *ControlPlaneService) RecoverReconcileTasks(ctx context.Context) ([]ReconcileTask, error) {
+	result := []ReconcileTask{}
+	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		for taskID, task := range snapshot.Tasks {
+			binding := snapshot.Bindings[task.BindingID]
+			if binding == nil || binding.ConfigState != "enabled" || binding.Revision != task.BindingRevision {
+				delete(snapshot.Tasks, taskID)
+				continue
+			}
+			if task.Status == "syncing" {
+				task.Status = "pending"
+			}
+			if task.Status == "pending" {
+				result = append(result, *task)
+			}
+		}
+		return nil
+	})
+	return result, err
 }
 
 func (service *ControlPlaneService) update(ctx context.Context, mutate func(*ControlPlaneSnapshot) error) (*ControlPlaneSnapshot, error) {

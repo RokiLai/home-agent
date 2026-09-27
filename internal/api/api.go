@@ -36,6 +36,7 @@ import (
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/domainbinding"
 	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
@@ -63,6 +64,8 @@ type Server struct {
 	SessionManager            *auth.SessionManager
 	EnrollmentManager         *auth.EnrollmentManager
 	ControlPlane              *store.ControlPlaneService
+	DomainBindings            *domainbinding.Service
+	DomainBindingConfig       domainbinding.ConfigResult
 	RateLimiter               *auth.RateLimiter
 	ACLPath                   string
 	Token, AdminPublicKey     string
@@ -317,6 +320,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/v1/devices/{id}/network-state", requireAdminOrDevice(http.HandlerFunc(s.putDeviceNetworkState)))
 	mux.Handle("GET /api/v1/devices/{id}/network-state", requireAdminOrDevice(http.HandlerFunc(s.getDeviceNetworkState)))
 	mux.Handle("GET /api/v1/devices/{id}/ipv6", requireLoopbackOr(requireAdminOrDevice)(http.HandlerFunc(s.getDeviceIPv6Text)))
+	mux.Handle("GET /api/v1/devices/{id}/domain-bindings", requirePerm(auth.PermDevicesRead, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.listDeviceDomainBindings)))
+	mux.Handle("POST /api/v1/devices/{id}/domain-bindings/preflight", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.preflightDeviceDomainBinding)))
+	mux.Handle("POST /api/v1/devices/{id}/domain-bindings", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.createDeviceDomainBinding)))
+	mux.Handle("POST /api/v1/devices/{id}/domain-bindings/{binding_id}/enable", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.enableDeviceDomainBinding)))
+	mux.Handle("POST /api/v1/devices/{id}/domain-bindings/{binding_id}/disable", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.disableDeviceDomainBinding)))
+	mux.Handle("DELETE /api/v1/devices/{id}/domain-bindings/{binding_id}", requirePerm(auth.PermDevicesUpdate, auth.ResolveDeviceFromPath)(http.HandlerFunc(s.deleteDeviceDomainBinding)))
 	mux.Handle("PUT /api/v1/devices/{id}/network-prefixes", requireDevice(http.HandlerFunc(s.putRouterPrefixes)))
 	mux.Handle("GET /api/v1/networks/{id}/prefixes", requirePerm(auth.PermDevicesRead, nil)(http.HandlerFunc(s.getNetworkPrefixes)))
 
@@ -333,6 +342,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/server/network/validate", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.validateServerNetwork)))
 	mux.Handle("PUT /api/v1/server/network", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putServerNetwork)))
 	mux.Handle("GET /api/v1/server/ipv6", requireLoopbackOr(requirePerm(auth.PermInstanceSettingsRead, nil))(http.HandlerFunc(s.getServerIPv6Text)))
+	mux.Handle("GET /api/v1/server/domain-bindings", requirePerm(auth.PermInstanceSettingsRead, nil)(http.HandlerFunc(s.listServerDomainBindings)))
+	mux.Handle("POST /api/v1/server/domain-bindings/preflight", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.preflightServerDomainBinding)))
+	mux.Handle("POST /api/v1/server/domain-bindings", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.createServerDomainBinding)))
+	mux.Handle("POST /api/v1/server/domain-bindings/{binding_id}/enable", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.enableServerDomainBinding)))
+	mux.Handle("POST /api/v1/server/domain-bindings/{binding_id}/disable", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.disableServerDomainBinding)))
+	mux.Handle("DELETE /api/v1/server/domain-bindings/{binding_id}", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.deleteServerDomainBinding)))
 
 	return withCORS(mux)
 }

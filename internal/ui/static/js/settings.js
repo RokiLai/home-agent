@@ -61,6 +61,7 @@ export function switchSettingsSection(sectionName) {
   }
   if (section === 'network' || section === 'all') {
     loadServerNetworkSettings();
+	loadServerDomainBindings();
   }
   if (section === 'files' || section === 'all') {
     loadFileSettings().catch(() => {});
@@ -81,8 +82,59 @@ export function initSettingsForm() {
 
   initServerNetworkEvents();
   loadServerNetworkSettings();
+	loadServerDomainBindings();
   initVersionStatusEvents();
   loadVersionStatus();
+}
+
+function renderDomainBindingRows(bindings) {
+  if (!bindings.length) return '<div class="text-muted font-sm">暂无受管域名</div>';
+  return bindings.map(binding => `<div class="detail-row"><div><strong>${binding.fqdn}</strong><div class="text-muted font-sm">${binding.config_state} / ${binding.runtime_state}</div></div><button class="btn btn-secondary" onclick="disableServerDomainBinding('${binding.binding_id}', ${binding.revision})">禁用</button></div>`).join('');
+}
+
+export async function loadServerDomainBindings() {
+  const panel = document.getElementById('serverDomainBindings');
+  if (!panel) return;
+  try {
+    const response = await apiFetch(`${state.serverHost}/api/v1/server/domain-bindings`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    panel.dataset.revision = String(data.revision || 0);
+    const provider = document.getElementById('serverDomainBindingProvider');
+    if (provider) provider.textContent = data.provider?.diagnostic || '配置状态未知';
+    const list = document.getElementById('serverDomainBindingList');
+    if (list) list.innerHTML = renderDomainBindingRows(data.bindings || []);
+  } catch (error) {
+	const provider = document.getElementById('serverDomainBindingProvider');
+	if (provider) provider.textContent = `域名状态暂不可用：${error.message}`;
+  }
+}
+
+export async function createServerDomainBinding() {
+  const input = document.getElementById('serverDomainBindingInput');
+  const panel = document.getElementById('serverDomainBindings');
+  const fqdn = input?.value.trim();
+  if (!fqdn) return;
+  const preflightResponse = await apiFetch(`${state.serverHost}/api/v1/server/domain-bindings/preflight`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({fqdn}) });
+  const preflight = await preflightResponse.json();
+  if (!preflightResponse.ok || !preflight.available) { showToast('域名预检失败或已被占用', 'error'); return; }
+  const existingRecord = confirm(`预检通过：${preflight.fqdn}\n该域名是否已有需要迁移的 DNS 记录？`);
+  if (!confirm(`确认保存 ${preflight.fqdn}？保存不会立即写入 DNS。`)) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/server/domain-bindings`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn:preflight.fqdn, expected_revision:Number(panel?.dataset.revision || 0), existing_record:existingRecord}) });
+  if (!response.ok) { showToast('保存域名失败', 'error'); return; }
+  input.value = ''; await loadServerDomainBindings();
+}
+
+export async function disableServerDomainBinding(bindingId, revision) {
+  if (!confirm('禁用后 HomeAgent 将停止调和，但 DNS AAAA 不会自动删除。确认继续？')) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/server/domain-bindings/${encodeURIComponent(bindingId)}/disable`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision})});
+  if (!response.ok) { showToast('禁用域名失败', 'error'); return; }
+  await loadServerDomainBindings();
+}
+
+if (typeof window !== 'undefined') {
+  window.createServerDomainBinding = createServerDomainBinding;
+  window.disableServerDomainBinding = disableServerDomainBinding;
 }
 
 function versionStateText(channel) {

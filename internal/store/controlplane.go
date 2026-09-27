@@ -11,27 +11,38 @@ import (
 	"homeagent/internal/device"
 )
 
-var ErrRevisionConflict = errors.New("control plane revision conflict")
+var (
+	ErrRevisionConflict = errors.New("control plane revision conflict")
+)
 
 type DomainBinding struct {
-	BindingID        string    `json:"binding_id"`
-	SourceType       string    `json:"source_type"`
-	SourceID         string    `json:"source_id"`
-	FQDN             string    `json:"fqdn"`
-	Enabled          bool      `json:"enabled"`
-	Revision         uint64    `json:"revision"`
-	ProviderRecordID string    `json:"provider_record_id,omitempty"`
-	Status           string    `json:"status"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	BindingID        string     `json:"binding_id"`
+	SourceType       string     `json:"source_type"`
+	SourceID         string     `json:"source_id"`
+	FQDN             string     `json:"fqdn"`
+	ConfigState      string     `json:"config_state"`
+	RuntimeState     string     `json:"runtime_state"`
+	Revision         uint64     `json:"revision"`
+	ProviderRecordID string     `json:"provider_record_id,omitempty"`
+	TTL              int        `json:"ttl,omitempty"`
+	Proxied          bool       `json:"proxied"`
+	DesiredIPv6      string     `json:"desired_ipv6,omitempty"`
+	ProviderIPv6     string     `json:"provider_ipv6,omitempty"`
+	LastAppliedIPv6  string     `json:"last_applied_ipv6,omitempty"`
+	LastError        string     `json:"last_error,omitempty"`
+	LastSyncedAt     *time.Time `json:"last_synced_at,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type ReconcileTask struct {
-	TaskID          string `json:"task_id"`
-	BindingID       string `json:"binding_id"`
-	BindingRevision uint64 `json:"binding_revision"`
-	DesiredIPv6     string `json:"desired_ipv6"`
-	TaskRevision    uint64 `json:"task_revision"`
-	Status          string `json:"status"`
+	TaskID          string    `json:"task_id"`
+	BindingID       string    `json:"binding_id"`
+	BindingRevision uint64    `json:"binding_revision"`
+	DesiredIPv6     string    `json:"desired_ipv6"`
+	TaskRevision    uint64    `json:"task_revision"`
+	Status          string    `json:"status"`
+	Attempts        int       `json:"attempts"`
+	NextAttemptAt   time.Time `json:"next_attempt_at,omitempty"`
 }
 
 type ControlPlaneSnapshot struct {

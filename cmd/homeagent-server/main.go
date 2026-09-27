@@ -33,6 +33,7 @@ import (
 	"homeagent/internal/ddns"
 	"homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/domainbinding"
 	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
@@ -385,6 +386,16 @@ func serve(c config) error {
 		}
 	}
 	controlPlane := store.NewControlPlaneService(controlPlaneRepository)
+	domainBindingService := domainbinding.NewService(controlPlane, nil)
+	if recovered, recoverErr := domainBindingService.Recover(context.Background()); recoverErr != nil {
+		return fmt.Errorf("recover domain binding reconcile queue: %w", recoverErr)
+	} else if len(recovered) > 0 {
+		logger.Info("domain_binding_reconcile_queue_recovered", "tasks", len(recovered))
+	}
+	domainBindingConfig := domainbinding.LoadConfig(filepath.Join(c.dataDir, "cloudflare-ddns.json"))
+	if !domainBindingConfig.Enabled {
+		logger.Warn("cloudflare_domain_binding_disabled", "state", domainBindingConfig.State, "diagnostic", domainBindingConfig.Diagnostic)
+	}
 	if err := controlPlane.ImportLegacy(context.Background(), r.List(), r.AllGrants(), enrollmentMgr.ExportActiveTokens()); err != nil {
 		return fmt.Errorf("migrate legacy control plane state: %w", err)
 	}
@@ -623,6 +634,8 @@ func serve(c config) error {
 		SessionManager:           sessionMgr,
 		EnrollmentManager:        enrollmentMgr,
 		ControlPlane:             controlPlane,
+		DomainBindings:           domainBindingService,
+		DomainBindingConfig:      domainBindingConfig,
 		RateLimiter:              rateLimiter,
 		HardwareFingerprintKey:   hardwareFingerprintKey,
 		ACLPath:                  filepath.Join(c.dataDir, "acl.yaml"),

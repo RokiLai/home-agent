@@ -998,6 +998,43 @@ export async function handleDetailSync(deviceId, hostname) {
   }
 }
 
+export async function loadDeviceDomainBindings(deviceId) {
+  const panel = document.getElementById('deviceDomainBindings');
+  if (!panel) return;
+  try {
+    const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    panel.dataset.revision = String(data.revision || 0);
+    const list = document.getElementById('deviceDomainBindingList');
+    if (list) list.innerHTML = (data.bindings || []).map(binding => `<div class="detail-row"><div><strong>${binding.fqdn}</strong><div class="text-muted font-sm">${binding.config_state} / ${binding.runtime_state}</div></div>${binding.config_state === 'observing' ? `<button class="btn btn-primary" onclick="enableDeviceDomainBinding('${deviceId}', '${binding.binding_id}', ${binding.revision})">确认接管</button>` : ''}</div>`).join('') || '<div class="text-muted font-sm">暂无受管域名</div>';
+  } catch (error) {
+	const list = document.getElementById('deviceDomainBindingList');
+	if (list) list.textContent = `域名状态暂不可用：${error.message}`;
+  }
+}
+
+export async function createDeviceDomainBinding(deviceId) {
+  const input = document.getElementById('deviceDomainBindingInput');
+  const panel = document.getElementById('deviceDomainBindings');
+  const fqdn = input?.value.trim(); if (!fqdn) return;
+  const preflightResponse = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/preflight`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn})});
+  const preflight = await preflightResponse.json();
+  if (!preflightResponse.ok || !preflight.available) { showToast('域名预检失败或已被占用', 'error'); return; }
+  const existingRecord = confirm(`预检通过：${preflight.fqdn}\n该域名是否已有需要迁移的 DNS 记录？`);
+  if (!confirm(`确认保存 ${preflight.fqdn}？保存不会立即写入 DNS。`)) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn:preflight.fqdn, expected_revision:Number(panel?.dataset.revision || 0), existing_record:existingRecord})});
+  if (!response.ok) { showToast('保存设备域名失败', 'error'); return; }
+  input.value = ''; await loadDeviceDomainBindings(deviceId);
+}
+
+export async function enableDeviceDomainBinding(deviceId, bindingId, revision) {
+  if (!confirm('确认 ddns-go 或其他发布者已停止管理该域名，并由 HomeAgent 接管？')) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/${encodeURIComponent(bindingId)}/enable`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision, publisher_disabled_confirmed:true})});
+  if (!response.ok) { showToast('启用域名失败', 'error'); return; }
+  await loadDeviceDomainBindings(deviceId);
+}
+
 // 暴露给全局 window 供 HTML inline 事件调用
 if (typeof window !== 'undefined') {
   window.openDeviceShareModal = openDeviceShareModal;
@@ -1010,4 +1047,7 @@ if (typeof window !== 'undefined') {
   window.handleDetailShutdown = handleDetailShutdown;
   window.handleDetailRemove = handleDetailRemove;
   window.handleDetailSync = handleDetailSync;
+	window.loadDeviceDomainBindings = loadDeviceDomainBindings;
+	window.createDeviceDomainBinding = createDeviceDomainBinding;
+	window.enableDeviceDomainBinding = enableDeviceDomainBinding;
 }

@@ -3,9 +3,9 @@
 ## 1. 状态与范围
 
 - 设计状态：已完成代码库、目标 `ddns-go v6.17.5` 与 Cloudflare 直连方案审查，审查未通过；可按第 9.3 节先实施不依赖真实 Cloudflare 协议的阶段，Cloudflare 发布器及生产迁移仍受第 9.2 节门禁约束。
-- 实施状态：第一阶段实施中；已完成 IPv6 安全失败、硬件身份上报、设备网络/路由前缀状态重启恢复、新设备认领、同所有者离线设备恢复、Registry 控制面单提交及旧文件迁移备份；尚未完成阶段验收与本地提交。
-- 验收状态：仅完成设计审查证据采集，代码、外部协议写入、升级与真实 DNS 验收均未执行。
-- 变更清单：`changes/device-domain-ddns-design.yaml`。
+- 实施状态：第一阶段已完成并以 `4dad89c` 提交；第二阶段已实现域名绑定领域、原子权限 API、严格配置解析与安全禁用、观察模式、协议无关发布边界、持久化恢复队列及服务端/设备页面，当前不装配 Cloudflare 发布器且不写 DNS。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第二阶段完整 `-race` 回归通过，Diff Coverage 为 `62.1%（236/380）`。跨版本发布、Cloudflare 真实协议及 DNS 验收未执行，不得视为发布完成。
+- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
 
@@ -256,7 +256,7 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 | Claim 顺序 | `claimDevice` 先调用 `ConsumeClaimToken`，之后才解析请求、生成凭据和保存设备 | 与“持久化失败不消耗 Claim Token、不使旧 Token 失效”冲突，需先建立原子 Claim 仓储契约 |
 | Agent 上报 | 已有启动与周期 Facts 上报、IPv6 快照 revision 持久化与冲突恢复 | 可扩展版本化硬件身份字段，但必须保持旧 Server/Agent 兼容 |
 | UI 扩展点 | 设备页面已拆分为 `internal/ui/static/js/devices` 模块，服务端 IPv6 设置已有独立区域，API 调用经 `apiFetch` | 设备源绑定属于设备模块；服务端源绑定位于服务端 IPv6 设置页的独立列表模块，不与旧的探测或手工输入控件混用 |
-| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18` | 本阶段同时修改 Server 与 Agent，两个组件已分别升版；通过验收前不标记发布完成 |
+| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19` | 两个组件已按仓库版本门禁分别升版；通过验收前不标记发布完成 |
 
 ### 9.2 审查未通过的阻断项
 
