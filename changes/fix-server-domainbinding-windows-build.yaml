@@ -1,0 +1,12 @@
+task: fix-server-domainbinding-windows-build
+description: 修复 domainbinding 配置权限检查在 Windows 平台编译失败的问题，解耦 POSIX 与 Windows 权限契约。
+allowed_paths:
+  - changes/fix-server-domainbinding-windows-build.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - internal/domainbinding/config.go
+  - internal/domainbinding/config_unix.go
+  - internal/domainbinding/config_windows.go
+  - internal/domainbinding/config_test.go
+  - internal/domainbinding/config_windows_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
