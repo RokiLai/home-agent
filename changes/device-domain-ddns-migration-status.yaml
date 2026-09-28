@@ -1,0 +1,5 @@
+task: device-domain-ddns-migration-status
+description: 根据首个生产域名迁移、回滚、重新接管及后续发布结果，修正设备域名绑定与 IPv6 DDNS 设计文档中的迁移基线、演练域名和剩余阻断项。
+allowed_paths:
+  - changes/device-domain-ddns-migration-status.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md

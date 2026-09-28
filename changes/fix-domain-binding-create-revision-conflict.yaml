@@ -1,0 +1,10 @@
+task: fix-domain-binding-create-revision-conflict
+description: 修复创建域名绑定时控制面 revision 冲突未映射为领域冲突、API 错误返回 500 的问题，并记录生产迁移证据。
+allowed_paths:
+  - changes/fix-domain-binding-create-revision-conflict.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - internal/api/domain_binding_handlers_test.go
+  - internal/domainbinding/service.go
+  - internal/domainbinding/service_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
