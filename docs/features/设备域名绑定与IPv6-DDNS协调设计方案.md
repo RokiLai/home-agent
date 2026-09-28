@@ -2,10 +2,10 @@
 
 ## 1. 状态与范围
 
-- 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；存量生产域名迁移仍受第 8、9.2 和 10 节门禁约束。
+- 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；首个生产域名迁移闭环已通过，其余存量域名迁移与设备源生产验收仍受第 8、9.2 和 10 节门禁约束。
 - 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；重新启用调和修复已以 `db99700` 提交；Windows 跨平台构建与发布修复已实施。本机 Server 已从 `v0.6.35` 分阶段部署至 `v0.6.39`（版本推进至 `v0.6.40`），首个存量域名 `clash.rokilai.online` 当前由 `server/local-server` 绑定接管，ddns-go 不再管理该域名。
 - 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过；重新启用修复的同类门禁全部通过，Diff Coverage 为 `100%`。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 Server `v0.6.39` 的 LaunchAgent、`/health`、配置权限和启动日志验证通过，`clash.rokilai.online` 已完成“HomeAgent 接管 → 禁用并恢复 ddns-go → 移除 ddns-go 并以相同 IPv6 再次接管”的生产闭环，最终为 `enabled/synced` revision `8`。Windows 交叉编译与权限解耦已完成覆盖验证。Agent `v0.6.20` 跨平台部署及其余存量域名迁移仍未执行，不得视为全部发布完成。
-- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`；重新启用调和修复为 `changes/domain-ddns-reenable-reconcile.yaml`；Windows 跨平台构建修复为 `changes/fix-server-domainbinding-windows-build.yaml`。
+- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`；重新启用调和修复为 `changes/domain-ddns-reenable-reconcile.yaml`；Windows 跨平台构建修复为 `changes/fix-server-domainbinding-windows-build.yaml`；迁移状态修正为 `changes/device-domain-ddns-migration-status.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
 
@@ -222,19 +222,19 @@ Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online`
 
 2026-09-24 从本机运行中的 `ddns-go v6.17.5` 配置只读提取到以下域名；未记录凭据或 URL 查询参数。该列表仅证明当前配置存在，不证明最终地址源归属：
 
-| 当前配置分组 | FQDN | 迁移前待确认地址源 |
-| --- | --- | --- |
-| MacMini IPv6 | `clash.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `direct-manga.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `files.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `homeagent.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `mac.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `manga.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `renthub-api.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `renthub.rokilai.online` | `server/local-server`（已确认） |
-| MacMini IPv6 | `rokilai.online` | `server/local-server`（已确认） |
-| MacBookPro IPv6 | `mbp.rokilai.online` | `device/macbook-pro-8-local-0e93c101`（已确认） |
-| WindowsPC IPv6 | `win.rokilai.online` | `device/rokilai-914dcd5c`（已确认） |
+| 当前配置分组 | FQDN | 已确认地址源 | 迁移状态 |
+| --- | --- | --- | --- |
+| MacMini IPv6 | `clash.rokilai.online` | `server/local-server` | 已完成接管、回滚和相同地址再次接管；当前由 HomeAgent 管理 |
+| MacMini IPv6 | `direct-manga.rokilai.online` | `server/local-server` | 实际为 CNAME，不适用 AAAA 接管流程，等待单独决策 |
+| MacMini IPv6 | `files.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `homeagent.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `mac.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `manga.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `renthub-api.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `renthub.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacBookPro IPv6 | `mbp.rokilai.online` | `device/macbook-pro-8-local-0e93c101` | 待 Agent 部署、跨重启身份验证及逐条迁移 |
+| WindowsPC IPv6 | `win.rokilai.online` | `device/rokilai-914dcd5c` | 待 Agent 部署、跨重启身份验证及逐条迁移 |
 
 MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`；该结论不得因主机名、当前 IPv6 或后续设备认领自动改变。`mbp.rokilai.online` 已归属 `device/macbook-pro-8-local-0e93c101`，`win.rokilai.online` 已归属 `device/rokilai-914dcd5c`。所有存量域名还须逐条补齐：Cloudflare Zone ID、记录 ID、原 AAAA、TTL、`proxied`、当前唯一发布者、迁移操作者、迁移时间与回滚配置快照。
 
@@ -247,7 +247,7 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 5. 在 HomeAgent 再次执行排他预检后启用绑定，立即调和一次并验证 Cloudflare API 与权威 DNS 均已收敛。
 6. 单条成功后记录证据再迁移下一条；失败时禁用 HomeAgent 绑定、保持 DNS 当前记录并恢复该域名的原 ddns-go 配置。
 
-首个低风险迁移与回滚演练域名固定为 `direct-manga.rokilai.online`。演练前必须再次确认它不是当时唯一关键入口，并完整保存其 Cloudflare 记录与 ddns-go 配置；若运行时业务重要性已变化，停止演练并重新完成设计确认，不得现场替换为其他域名。
+首个低风险迁移与回滚演练原候选 `direct-manga.rokilai.online` 在真实预检中确认为 CNAME，不符合单条 AAAA 接管契约，因而未进入写入阶段；经管理员重新确认后改用 `clash.rokilai.online`，其完整接管、回滚和相同地址再次接管证据见第 6.5 节。后续迁移不得沿用该现场替换作为通用做法，必须从上表“待逐条预检与迁移”的域名中逐个执行本节步骤；`direct-manga.rokilai.online` 在形成独立 CNAME 管理决策前继续由现有发布链路管理。
 
 ## 9. 设计审查结论与实施门禁
 
@@ -264,13 +264,14 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 | UI 扩展点 | 设备页面已拆分为 `internal/ui/static/js/devices` 模块，服务端 IPv6 设置已有独立区域，API 调用经 `apiFetch` | 设备源绑定属于设备模块；服务端源绑定位于服务端 IPv6 设置页的独立列表模块，不与旧的探测或手工输入控件混用 |
 | 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19`；第三阶段 Server `v0.6.38`，Agent `v0.6.20`；重新启用调和缺陷候选 Server `v0.6.39` | 两个组件按变更分别升版；通过验收前不标记发布完成 |
 
-### 9.2 审查未通过的阻断项
+### 9.2 剩余迁移与生产验收阻断项
 
-运行时 Secret 的配置契约已经确定：真实 Token 后置到生产协议验证和部署阶段，不再作为编码启动条件；进入真实验收前仍须完成第 6.1 节规定的宿主机权限、读取、轮换回滚、备份排除与日志脱敏验证。
+Cloudflare 真实协议、最小权限 Token、宿主机 `0600` 配置读取、日志脱敏、记录属性保留、权威 DNS 与公共递归 DNS 收敛均已完成验证；这些项目不再作为后续逐域名迁移的未决设计项。剩余阻断如下：
 
-1. **Cloudflare 发布器实施门禁**：生产 Zone `rokilai.online`、临时记录 `ddns-test.rokilai.online` 和最小权限 Token 已选定，但仍须在 Cloudflare 发布器编码前实际执行第 6.5 节协议链，并据此定义错误映射、属性保留与测试替身；不阻塞第 9.3 节第一、二阶段中不依赖真实协议的工作。
-2. **存量唯一发布者尚未确认**：受管后缀、保留规则及全部 11 个存量域名的目标地址源均已确定；实际迁移前仍须逐条确认当前唯一发布者并证明同一 FQDN 不会由 ddns-go、旧 HomeAgent 发布路径与新 Cloudflare 发布器双写。
-3. **其余验收参数未定案**：生产 Zone、临时 FQDN、低风险存量演练域名 `direct-manga.rokilai.online` 及三平台当前运行周期的硬件身份读取结果已确定，但权威 DNS 查询入口、TTL/收敛超时、DNSSEC 判定、macOS/Windows UUID 跨重启稳定性与上一正式版本升级验收入口仍需明确。
+1. **其余存量域名的唯一发布者待逐条确认**：`clash.rokilai.online` 已完成排他迁移；其余 10 个域名在各自迁移前仍须保存 Cloudflare 与 ddns-go 快照、确认记录类型和当前唯一发布者，并证明不会由 ddns-go、旧 HomeAgent 发布路径与新 Cloudflare 发布器双写。
+2. **CNAME 域名需独立决策**：`direct-manga.rokilai.online` 当前为 CNAME，不能套用 AAAA 记录 ID、地址更新和属性保留契约；在明确继续保留 CNAME、改为 AAAA 或新增独立 CNAME 管理能力前，不得交由本模块接管。
+3. **设备源生产验收未完成**：Agent `v0.6.20` 尚未在目标 MacBook Pro、Windows 和 Linux/OpenWrt 设备完成生产部署；macOS/Windows UUID 跨重启稳定性、无可信硬件指纹设备的稳定降级，以及 `mbp.rokilai.online`、`win.rokilai.online` 的真实接管与回滚仍须执行。
+4. **完整跨版本入口验收未完成**：仍须使用上一正式版本经真实用户升级入口完成 Server 与三平台 Agent 的升级冒烟，并按第 10 节验证 `server/device` 两类地址源、多域名、地址变化和无地址安全失败。
 
 ### 9.3 解阻后的实施分期
 
