@@ -65,6 +65,17 @@ func TestEnableRequiresExplicitPublisherExclusionAndCurrentRevision(t *testing.T
 	}
 }
 
+func TestCreateMapsControlPlaneRevisionConflict(t *testing.T) {
+	service, _ := newTestService(t)
+	if _, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "first.rokilai.online", ExpectedRevision: 0, ExistingRecord: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "second.rokilai.online", ExpectedRevision: 0, ExistingRecord: true})
+	if !errors.Is(err, ErrBindingRevisionConflict) {
+		t.Fatalf("create error=%v, want ErrBindingRevisionConflict", err)
+	}
+}
+
 func TestRecoveryQueueDropsStaleRevisionAndRestoresCurrentPendingTask(t *testing.T) {
 	service, _ := newTestService(t)
 	binding, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "queue.rokilai.online", ExpectedRevision: 0})

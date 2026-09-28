@@ -98,6 +98,9 @@ func (service *Service) Create(ctx context.Context, command CreateCommand) (Bind
 	}
 	stored := store.DomainBinding{BindingID: newBindingID(service.now()), SourceType: string(command.SourceType), SourceID: command.SourceID, OwnerUserID: strings.TrimSpace(command.OwnerUserID), FQDN: fqdn, ConfigState: string(state), RuntimeState: string(RuntimeWaitingReport), Revision: 1, ProviderRecordID: recordID, TTL: ttl, Proxied: proxied, ProviderIPv6: providerIPv6, UpdatedAt: service.now()}
 	result, controlRevision, err := service.control.CreateDomainBinding(ctx, command.ExpectedRevision, stored)
+	if errors.Is(err, store.ErrRevisionConflict) {
+		return Binding{}, ErrBindingRevisionConflict
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return Binding{}, ErrFQDNConflict
 	}

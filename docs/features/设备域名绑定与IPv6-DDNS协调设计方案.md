@@ -3,8 +3,8 @@
 ## 1. 状态与范围
 
 - 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；首个生产域名迁移闭环已通过，其余存量域名迁移与设备源生产验收仍受第 8、9.2 和 10 节门禁约束。
-- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；重新启用调和修复已以 `db99700` 提交；Windows 跨平台构建与发布修复已实施。本机 Server 已从 `v0.6.35` 分阶段部署至 `v0.6.39`（版本推进至 `v0.6.40`），首个存量域名 `clash.rokilai.online` 当前由 `server/local-server` 绑定接管，ddns-go 不再管理该域名。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过；重新启用修复的同类门禁全部通过，Diff Coverage 为 `100%`。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 Server `v0.6.39` 的 LaunchAgent、`/health`、配置权限和启动日志验证通过，`clash.rokilai.online` 已完成“HomeAgent 接管 → 禁用并恢复 ddns-go → 移除 ddns-go 并以相同 IPv6 再次接管”的生产闭环，最终为 `enabled/synced` revision `8`。Windows 交叉编译与权限解耦已完成覆盖验证。Agent `v0.6.20` 跨平台部署及其余存量域名迁移仍未执行，不得视为全部发布完成。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；重新启用调和修复已以 `db99700` 提交；Windows 跨平台构建与发布修复已实施。本机 Server 已从 `v0.6.35` 分阶段部署至 `v0.6.40`；`clash.rokilai.online` 与 `mac.rokilai.online` 当前由 `server/local-server` 绑定接管，ddns-go 不再管理这两个域名。创建绑定 revision 冲突错误映射修复的候选版本为 Server `v0.6.41`。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过；重新启用修复的同类门禁全部通过，Diff Coverage 为 `100%`。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；`clash.rokilai.online` 已完成“HomeAgent 接管 → 禁用并恢复 ddns-go → 移除 ddns-go 并以相同 IPv6 再次接管”的生产闭环，最终为 `enabled/synced` revision `8`；`mac.rokilai.online` 已完成单次排他迁移并达到 `enabled/synced` revision `2`。Windows 交叉编译与权限解耦已完成覆盖验证。Server `v0.6.41` 修复尚待质量门禁、部署和生产冲突重试验证；Agent `v0.6.20` 跨重启身份验收及其余存量域名迁移仍未执行，不得视为全部发布完成。
 - 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`；重新启用调和修复为 `changes/domain-ddns-reenable-reconcile.yaml`；Windows 跨平台构建修复为 `changes/fix-server-domainbinding-windows-build.yaml`；迁移状态修正为 `changes/device-domain-ddns-migration-status.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
@@ -199,6 +199,8 @@ Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online`
 
 2026-09-28 首个存量域名迁移与回滚结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。首次迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。首次回滚后的再次接管曾因期望 IPv6 等于历史 `last_applied_ipv6` 而停留 `waiting_report`，验证终止后立即禁用 HomeAgent 并恢复 ddns-go，未发生双写或 DNS 地址变化。Server `v0.6.39` 修复部署后重新执行完整闭环：首次接管达到 `enabled/synced` revision `6`；禁用至 revision `7`、恢复 ddns-go 并确认 DNS 不变；再次从 ddns-go 移除域名后，以相同 IPv6 启用并达到 `enabled/synced` revision `8`。最终 Cloudflare 记录 ID `8acbd304ece66c7efa6cbcf81d46bef9`、类型 `AAAA`、TTL `1`（自动）和 `proxied=false` 保持不变，期望、提供商和最后应用 IPv6 均为 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 返回一致。ddns-go 最终不包含该域名，临时管理员密码与会话均已清理，脱敏证据保存在宿主机受限目录 `backups/ddns-reenable-validation-clash-20260928124300`。该单域名的接管、回滚和相同地址再次接管验收通过。
 
+2026-09-28 第二个存量域名迁移结论：`mac.rokilai.online` 预检为单条 AAAA，记录 ID `989251dfcc604d896c7001c717b022ec`、TTL `1`（自动）、`proxied=false`，地址与 `server/local-server` 期望值一致。创建观察绑定前后，设备 Facts 持续写入使控制面 revision 从 `7132` 推进至 `7148`；首次创建使用旧 revision 时底层正确拒绝提交且未产生绑定，但 API 错误返回 `500 internal error`，暴露创建路径未将 `store.ErrRevisionConflict` 转换为 `ErrBindingRevisionConflict` 的错误映射缺陷。使用最新 revision 重试后创建成功，随后仅从 ddns-go 移除该域名并启用绑定，最终达到 `enabled/synced` revision `2`；Cloudflare 记录属性保持不变，两个权威服务器、`1.1.1.1` 与 `8.8.8.8` 均返回期望 IPv6。ddns-go 最终不包含该域名，临时管理员密码与会话均已清理，脱敏证据保存在 `backups/ddns-migration-mac-20260928144925`。继续迁移其他域名前，Server `v0.6.41` 必须将该冲突稳定映射为 `409 Conflict` 并通过生产重试验证。
+
 ## 7. Web 界面契约
 
 设备详情或设备列表的管理员操作入口提供该设备的“DDNS 域名”多绑定列表；服务端 IPv6 设置页提供 `local-server` 源的多绑定列表。每个条目必须显示 FQDN、地址源类型、管理模式、状态、期望 IPv6、Cloudflare 当前 IPv6、TTL、代理状态、最近同步时间与错误原因；硬件身份仅在设备源中显示“已绑定 / 未绑定 / 冲突”和来源类型，绝不显示原始值或指纹。
@@ -228,7 +230,7 @@ Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online`
 | MacMini IPv6 | `direct-manga.rokilai.online` | `server/local-server` | 实际为 CNAME，不适用 AAAA 接管流程，等待单独决策 |
 | MacMini IPv6 | `files.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
 | MacMini IPv6 | `homeagent.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
-| MacMini IPv6 | `mac.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
+| MacMini IPv6 | `mac.rokilai.online` | `server/local-server` | 已完成排他迁移；当前由 HomeAgent 管理 |
 | MacMini IPv6 | `manga.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
 | MacMini IPv6 | `renthub-api.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |
 | MacMini IPv6 | `renthub.rokilai.online` | `server/local-server` | 待逐条预检与迁移 |

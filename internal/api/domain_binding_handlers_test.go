@@ -59,6 +59,37 @@ func TestServerDomainBindingPreflightIsReadOnlyAndCreateObservesExistingRecord(t
 	}
 }
 
+func TestCreateServerDomainBindingReturnsConflictForStaleControlPlaneRevision(t *testing.T) {
+	server := newDomainBindingAPIServer(t)
+	if _, err := server.DomainBindings.Create(context.Background(), domainbinding.CreateCommand{
+		SourceType:       domainbinding.SourceServer,
+		SourceID:         domainbinding.LocalServerSourceID,
+		FQDN:             "first.rokilai.online",
+		ExpectedRevision: 0,
+		ExistingRecord:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/server/domain-bindings", bytes.NewBufferString(`{"fqdn":"second.rokilai.online","expected_revision":0,"existing_record":true}`))
+	response := httptest.NewRecorder()
+	server.createServerDomainBinding(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stale create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "conflict" {
+		t.Fatalf("stale create body=%v", body)
+	}
+	bindings, err := server.DomainBindings.List(context.Background(), domainbinding.SourceServer, domainbinding.LocalServerSourceID)
+	if err != nil || len(bindings) != 1 || bindings[0].FQDN != "first.rokilai.online" {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+}
+
 func TestScopedDomainBindingTransitionsRejectIDORAndPreserveDNSContract(t *testing.T) {
 	server := newDomainBindingAPIServer(t)
 	binding, err := server.DomainBindings.Create(context.Background(), domainbinding.CreateCommand{SourceType: domainbinding.SourceDevice, SourceID: "device-1", FQDN: "device.rokilai.online", ExpectedRevision: 0, ExistingRecord: true})
