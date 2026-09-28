@@ -1,0 +1,10 @@
+task: fix-domain-binding-deleted-fqdn-reuse
+description: 修复已删除域名绑定仍占用 FQDN 唯一性、导致设备域名无法改由有权限的所有者重建的问题，并记录批量迁移与生产验收证据。
+allowed_paths:
+  - changes/fix-domain-binding-deleted-fqdn-reuse.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - internal/store/controlplane.go
+  - internal/store/controlplane_contract_test.go
+  - internal/store/controlplane_service_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go

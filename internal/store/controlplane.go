@@ -101,10 +101,12 @@ func ValidateControlPlaneSnapshot(snapshot *ControlPlaneSnapshot) error {
 		if fqdn == "" || fqdn != binding.FQDN {
 			return fmt.Errorf("binding %q has non-normalized fqdn", id)
 		}
-		if owner, ok := fqdns[fqdn]; ok && owner != id {
-			return fmt.Errorf("%w: fqdn", ErrConflict)
+		if binding.ConfigState != "deleted" {
+			if owner, ok := fqdns[fqdn]; ok && owner != id {
+				return fmt.Errorf("%w: fqdn", ErrConflict)
+			}
+			fqdns[fqdn] = id
 		}
-		fqdns[fqdn] = id
 	}
 	for id, task := range snapshot.Tasks {
 		if task == nil || id == "" || task.TaskID != id || snapshot.Bindings[task.BindingID] == nil {
