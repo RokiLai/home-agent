@@ -3,8 +3,8 @@
 ## 1. 状态与范围
 
 - 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；存量生产域名迁移仍受第 8、9.2 和 10 节门禁约束。
-- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`，生产域名迁移未执行。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限与安全启用状态验证通过。Agent `v0.6.20` 跨平台部署及存量域名迁移/回滚验收未执行，不得视为全部发布完成。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`，首个存量域名 `clash.rokilai.online` 已从 ddns-go 迁移至 `server/local-server` 绑定。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限、安全启用状态和首个存量域名接管验证通过。Agent `v0.6.20` 跨平台部署及存量域名实际回滚演练未执行，不得视为全部发布完成。
 - 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
@@ -194,6 +194,8 @@ Cloudflare 返回 `401/403`、Zone 越界、记录 ID 不存在、同名冲突�
 Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online` 和最小权限 Token 验证真实 API；该门禁不阻塞不依赖 Cloudflare 响应结构的领域模型、配置解析、状态机、持久化接口和页面开发。真实验证第一阶段仅操作该 Zone 下专用临时记录 `ddns-test.rokilai.online`，验证 Token、Zone/记录查询、创建、更新、记录属性保留与权威 DNS 收敛后删除临时记录；鉴权失败、权限不足、冲突和异常响应优先通过无写入请求或基于真实证据的测试替身验证，不得为制造错误而扩大 Token 权限或破坏其他记录。第二阶段选择一个由管理员确认的低风险存量域名，先保存 Cloudflare 记录与 ddns-go 配置快照，再演练单条接管和回滚。测试替身必须基于真实响应构造并记录差异；递归缓存只用于传播观察，严禁批量写入或删除生产记录。
 
 2026-09-28 真实观察结论：新版账户 API Token 的有效性端点为 `GET /accounts/{account_id}/tokens/verify`；旧的 `GET /user/tokens/verify` 对有效账户 Token 返回 `401 / code 1000`，不得据此判定凭据无效。`GET /zones/{zone_id}`、按名称查询 AAAA、创建、按记录 ID `PATCH` 和删除均返回 `HTTP/2 200` 与 `success=true`；仅 PATCH `content` 时 TTL、`proxied` 与 `comment` 保持不变。对从未查询过的唯一临时名称，静默等待 10 分钟后，Cloudflare 两个权威服务器及 `1.1.1.1`、`8.8.8.8` 均返回更新后的 IPv6，随后删除并确认 API 记录数为零。若在记录创建前或刚创建后查询不存在的名称，权威节点可能按 SOA negative TTL（本次为 1800 秒）继续返回缓存的 `NXDOMAIN`；因此新建记录和既有记录更新均不得立即以单次权威查询判失败，首次权威校验须延迟并采用有界重试，API 成功期间保持 `syncing` 而非误报 `failed` 或 `synced`。
+
+2026-09-28 首个存量域名迁移结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。HomeAgent 最终状态为 `enabled/synced`，Cloudflare 记录 ID、类型、TTL `1`（自动）和 `proxied=false` 均保持不变，期望、提供商和最后应用 IPv6 一致；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 均返回 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`。回退快照保存在宿主机受限备份目录，但本次未主动制造故障或执行实际回滚，回滚验收仍为未完成项。
 
 ## 7. Web 界面契约
 
