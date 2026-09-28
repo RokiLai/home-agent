@@ -1,0 +1,10 @@
+task: consolidate-device-detail-tabs
+description: 移除设备详情页概览卡片底部的冗余操作按钮，收敛至顶部二级标签导航栏并隔离选择器事件，确保路由闭环。
+allowed_paths:
+  - changes/consolidate-device-detail-tabs.yaml
+  - docs/ui/设备详情页标签导航与操作按钮收敛设计方案.md
+  - internal/ui/static/js/app.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/testdata/console-ia-phase2.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

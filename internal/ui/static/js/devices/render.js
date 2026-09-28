@@ -763,14 +763,6 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
             <div><span class="text-muted">健康状态:</span> <span>${escapeHTML(reasonsSummary)}</span></div>
           </div>
         </div>
-        <div class="detail-actions mt-3" style="display:flex; gap:8px; flex-wrap:wrap;">
-          <a href="#/devices" class="btn btn-secondary">← 返回设备列表</a>
-          <a href="#/devices/${encodeURIComponent(device.id)}/health" class="btn btn-primary">查看健康诊断</a>
-          <a href="#/devices/${encodeURIComponent(device.id)}/ssh" class="btn btn-secondary">SSH 与访问</a>
-          <a href="#/devices/${encodeURIComponent(device.id)}/network" class="btn btn-secondary">网络详情</a>
-          <a href="#/devices/${encodeURIComponent(device.id)}/commands" class="btn btn-secondary">操作记录</a>
-          <a href="#/devices/${encodeURIComponent(device.id)}/settings" class="btn btn-secondary">设备设置</a>
-        </div>
       </div>
     `;
   }

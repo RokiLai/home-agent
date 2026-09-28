@@ -206,3 +206,94 @@ test('handleDetailShutdown and handleDetailRemove require explicit confirm, canc
   await handleDetailRemove('server-nas-01', 'NAS-Storage');
   assert.equal(fetchCalled, false, 'Canceling confirmation must NOT send any remove request');
 });
+
+// ---------------------------------------------------------------------------
+// 4. Device Detail Overview Consolidation & Tab Routing Tests
+// ---------------------------------------------------------------------------
+
+test('renderDeviceDetailView overview consolidates to top tabs with no redundant bottom buttons', async () => {
+  const { renderDeviceDetailView } = await import('../static/js/devices/render.js');
+  const { navigateDeviceDetailSection, parseRoute } = await import('../static/js/router.js');
+  const { state } = await import('../static/js/state.js');
+
+  const container = createElement({ id: 'deviceDetailContainer' });
+  const title = createElement({ id: 'deviceDetailTitle' });
+  const badge = createElement({ id: 'deviceDetailBadge' });
+
+  const tabs = ['overview', 'health', 'ssh', 'network', 'commands', 'settings'].map(sec =>
+    createElement({
+      className: 'filter-pill detail-tab' + (sec === 'overview' ? ' active' : ''),
+      dataset: { section: sec }
+    })
+  );
+
+  globalThis.document = {
+    getElementById(id) {
+      if (id === 'deviceDetailContainer') return container;
+      if (id === 'deviceDetailTitle') return title;
+      if (id === 'deviceDetailBadge') return badge;
+      return null;
+    },
+    querySelectorAll(sel) {
+      if (sel === '.detail-tab') return tabs;
+      return [];
+    }
+  };
+
+  const dev = {
+    id: 'macbook-pro-8-local-0e93c101',
+    hostname: 'MacBook-Pro-8.local',
+    alias: 'MacBook Pro',
+    os: 'darwin',
+    arch: 'amd64',
+    mac: 'ae:a0:c7:24:3e:5e',
+    ssh_user: 'rokilai',
+    ssh_port: 22,
+    addresses: ['192.168.31.174', '240e:390:9a9:c220:415:7e35:e99b:8d06'],
+    agent_version: 'v0.6.21',
+    health: { status: 'healthy', reasons: [] }
+  };
+
+  state.devices = [dev];
+  state.currentDetailDeviceId = dev.id;
+
+  // A. Render Overview Section
+  renderDeviceDetailView(dev.id, 'overview');
+
+  // Positive assertions: contains overview metadata
+  assert.match(container.innerHTML, /MacBook-Pro-8\.local/);
+  assert.match(container.innerHTML, /macbook-pro-8-local-0e93c101/);
+  assert.match(container.innerHTML, /ae:a0:c7:24:3e:5e/);
+  assert.match(container.innerHTML, /192\.168\.31\.174/);
+  assert.match(container.innerHTML, /rokilai:22/);
+  assert.match(container.innerHTML, /v0\.6\.21/);
+
+  // Negative assertions: MUST NOT contain .detail-actions or redundant bottom buttons
+  assert.doesNotMatch(container.innerHTML, /detail-actions/, 'Overview must not contain .detail-actions container');
+  assert.doesNotMatch(container.innerHTML, /返回设备列表/, 'Overview must not contain redundant 返回设备列表 button');
+  assert.doesNotMatch(container.innerHTML, /查看健康诊断/, 'Overview must not contain redundant 查看健康诊断 button');
+
+  // B. Verify Tab State Synchronization across all 6 sections
+  const sections = ['overview', 'health', 'ssh', 'network', 'commands', 'settings'];
+  for (const sec of sections) {
+    const routed = navigateDeviceDetailSection(sec);
+    assert.equal(routed, true);
+    assert.equal(window.location.hash, `#/devices/${encodeURIComponent(dev.id)}/${sec}`);
+
+    const parsed = parseRoute(window.location.hash);
+    assert.equal(parsed.page, 'deviceDetail');
+    assert.equal(parsed.deviceId, dev.id);
+    assert.equal(parsed.section, sec);
+
+    renderDeviceDetailView(dev.id, sec);
+
+    // Assert that ONLY the target tab has active class
+    tabs.forEach(tab => {
+      if (tab.dataset.section === sec) {
+        assert.equal(tab.classList.contains('active'), true, `Tab ${sec} must be active`);
+      } else {
+        assert.equal(tab.classList.contains('active'), false, `Tab ${tab.dataset.section} must NOT be active when section is ${sec}`);
+      }
+    });
+  }
+});
