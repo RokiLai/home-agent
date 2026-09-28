@@ -231,3 +231,23 @@ func TestDomainBindingReconcileLifecycleAndRecovery(t *testing.T) {
 		t.Fatalf("disabled=%+v err=%v", disabled, err)
 	}
 }
+
+func TestCreateDomainBindingReusesFQDNAfterDelete(t *testing.T) {
+	repository := newMemoryControlPlaneRepository()
+	service := NewControlPlaneService(repository)
+	now := time.Now().UTC()
+	original := DomainBinding{BindingID: "binding-1", SourceType: "device", SourceID: "device-1", OwnerUserID: "owner-1", FQDN: "host.rokilai.online", ConfigState: "observing", RuntimeState: "waiting_report", Revision: 1, UpdatedAt: now}
+	_, revision, err := service.CreateDomainBinding(context.Background(), 0, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, revision, err := service.TransitionDomainBinding(context.Background(), original.BindingID, original.Revision, "deleted", "waiting_report", now)
+	if err != nil || deleted.ConfigState != "deleted" {
+		t.Fatalf("deleted=%+v revision=%d err=%v", deleted, revision, err)
+	}
+	replacement := DomainBinding{BindingID: "binding-2", SourceType: "device", SourceID: "device-1", OwnerUserID: "owner-2", FQDN: original.FQDN, ConfigState: "observing", RuntimeState: "waiting_report", Revision: 1, UpdatedAt: now}
+	created, _, err := service.CreateDomainBinding(context.Background(), revision, replacement)
+	if err != nil || created.BindingID != replacement.BindingID || created.OwnerUserID != replacement.OwnerUserID {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+}

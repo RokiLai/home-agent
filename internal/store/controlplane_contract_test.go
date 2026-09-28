@@ -58,3 +58,12 @@ func TestValidateControlPlaneSnapshotAllowsCompletedTasksForSameBinding(t *testi
 		t.Fatal(err)
 	}
 }
+
+func TestValidateControlPlaneSnapshotAllowsDeletedBindingFQDNReuse(t *testing.T) {
+	snapshot := NewControlPlaneSnapshot()
+	snapshot.Bindings["deleted"] = &DomainBinding{BindingID: "deleted", FQDN: "host.rokilai.online", ConfigState: "deleted", Revision: 2}
+	snapshot.Bindings["replacement"] = &DomainBinding{BindingID: "replacement", FQDN: "host.rokilai.online", ConfigState: "observing", Revision: 1}
+	if err := ValidateControlPlaneSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+}
