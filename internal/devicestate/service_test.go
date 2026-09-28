@@ -2,11 +2,32 @@ package devicestate
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"homeagent/internal/networkaddr"
 )
+
+func TestFileStoreRecoversRevisionAndDesiredAddress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "device-network-state.json")
+	store, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DeviceIPv6State{DeviceID: "device-1", NetworkID: "home", Revision: 7, DesiredAddress: "2001:db8::7", SyncStatus: SyncStatusPending}
+	if err := store.Save(want); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reopened.Get("device-1")
+	if err != nil || got.Revision != want.Revision || got.DesiredAddress != want.DesiredAddress {
+		t.Fatalf("state=%+v err=%v", got, err)
+	}
+}
 
 func TestService_UpdateReportedAddresses(t *testing.T) {
 	svc := NewService(nil)

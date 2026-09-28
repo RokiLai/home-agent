@@ -165,6 +165,13 @@ var tableSchemas = []string{
 		synced_keys_json JSON NULL,
 		updated_at DATETIME(3) NOT NULL
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+
+	`CREATE TABLE IF NOT EXISTS control_plane_snapshots (
+		id TINYINT PRIMARY KEY,
+		revision BIGINT UNSIGNED NOT NULL,
+		snapshot_json JSON NOT NULL,
+		updated_at DATETIME(3) NOT NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
 }
 
 // AutoMigrate 执行 MySQL 数据表结构自动化创建与更新

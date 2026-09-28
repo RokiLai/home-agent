@@ -187,6 +187,18 @@ func (em *EnrollmentManager) ListActiveTokens() []*ClaimToken {
 	return list
 }
 
+func (em *EnrollmentManager) ExportActiveTokens() []*ClaimToken {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	em.cleanExpiredLocked()
+	result := make([]*ClaimToken, 0, len(em.tokens))
+	for _, token := range em.tokens {
+		copy := *token
+		result = append(result, &copy)
+	}
+	return result
+}
+
 // RevokeToken 根据 ID 手动作废认领凭据
 func (em *EnrollmentManager) RevokeToken(id string) error {
 	if id == "" {

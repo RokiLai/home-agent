@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,8 +32,10 @@ import (
 	"homeagent/internal/command"
 	commandfile "homeagent/internal/command/file"
 	"homeagent/internal/ddns"
-	"homeagent/internal/ddns/providers/cloudflare"
+	legacycloudflare "homeagent/internal/ddns/providers/cloudflare"
 	"homeagent/internal/devicestate"
+	"homeagent/internal/domainbinding"
+	domaincloudflare "homeagent/internal/domainbinding/cloudflare"
 	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
@@ -67,6 +70,51 @@ type config struct {
 	serverIPv6SelfUpdate                                  bool
 	serverIPv6Interface, serverDDNSRecords                string
 	serverDDNSInterval, serverDDNSDebounce                time.Duration
+}
+
+type bindingSourceResolver struct {
+	devices  *devicestate.Service
+	server   *servernetwork.Collector
+	registry *registry.Registry
+}
+
+func (resolver bindingSourceResolver) DesiredIPv6(ctx context.Context, binding domainbinding.Binding) (string, error) {
+	switch binding.SourceType {
+	case domainbinding.SourceDevice:
+		if resolver.registry == nil {
+			return "", domainbinding.ErrSourceUnauthorized
+		}
+		if _, err := resolver.registry.Get(binding.SourceID); err != nil {
+			return "", domainbinding.ErrSourceUnauthorized
+		}
+		if binding.OwnerUserID != "" && binding.OwnerUserID != "legacy-admin" && !resolver.registry.IsDeviceOwner(binding.OwnerUserID, binding.SourceID) && !resolver.registry.HasDevicePermission(binding.OwnerUserID, binding.SourceID, auth.PermDevicesUpdate) {
+			return "", domainbinding.ErrSourceUnauthorized
+		}
+		state, err := resolver.devices.Get(binding.SourceID)
+		if err != nil {
+			return "", err
+		}
+		address := strings.TrimSpace(state.DesiredAddress)
+		if address == "" {
+			return "", domainbinding.ErrNoDesiredAddress
+		}
+		parsed, err := netip.ParseAddr(address)
+		if err != nil || !parsed.Is6() || parsed.Is4In6() {
+			return "", domainbinding.ErrNoDesiredAddress
+		}
+		return parsed.String(), nil
+	case domainbinding.SourceServer:
+		if binding.SourceID != domainbinding.LocalServerSourceID {
+			return "", domainbinding.ErrNoDesiredAddress
+		}
+		address, err := resolver.server.Collect(ctx, netip.Addr{})
+		if err != nil {
+			return "", err
+		}
+		return address.String(), nil
+	default:
+		return "", domainbinding.ErrNoDesiredAddress
+	}
 }
 
 func main() {
@@ -375,19 +423,62 @@ func serve(c config) error {
 	if err != nil {
 		return fmt.Errorf("init enrollment manager: %w", err)
 	}
+	var controlPlaneRepository store.ControlPlaneRepository
+	if ms != nil {
+		controlPlaneRepository = ms.ControlPlaneRepository()
+	} else {
+		controlPlaneRepository, err = filestore.OpenControlPlane(filepath.Join(c.dataDir, "control-plane.json"))
+		if err != nil {
+			return fmt.Errorf("initialize control plane: %w", err)
+		}
+	}
+	controlPlane := store.NewControlPlaneService(controlPlaneRepository)
+	domainBindingService := domainbinding.NewService(controlPlane, nil)
+	if recovered, recoverErr := domainBindingService.Recover(context.Background()); recoverErr != nil {
+		return fmt.Errorf("recover domain binding reconcile queue: %w", recoverErr)
+	} else if len(recovered) > 0 {
+		logger.Info("domain_binding_reconcile_queue_recovered", "tasks", len(recovered))
+	}
+	domainBindingConfig := domainbinding.LoadConfig(filepath.Join(c.dataDir, "cloudflare-ddns.json"))
+	if !domainBindingConfig.Enabled {
+		logger.Warn("cloudflare_domain_binding_disabled", "state", domainBindingConfig.State, "diagnostic", domainBindingConfig.Diagnostic)
+	}
+	if err := controlPlane.ImportLegacy(context.Background(), r.List(), r.AllGrants(), enrollmentMgr.ExportActiveTokens()); err != nil {
+		return fmt.Errorf("migrate legacy control plane state: %w", err)
+	}
+	controlPlaneDevices, controlPlaneGrants, err := controlPlane.RegistryState(context.Background())
+	if err != nil {
+		return fmt.Errorf("load control plane devices: %w", err)
+	}
+	r.AttachControlPlane(controlPlane, controlPlaneDevices, controlPlaneGrants)
+	if err := finalizeControlPlaneMigration(c.dataDir); err != nil {
+		return fmt.Errorf("finalize control plane migration: %w", err)
+	}
 
 	rateLimiter := auth.NewRateLimiter(5, 15*time.Minute)
+	hardwareFingerprintKey, err := loadOrCreateHardwareFingerprintKey(c.dataDir)
+	if err != nil {
+		return fmt.Errorf("initialize hardware fingerprint key: %w", err)
+	}
 
-	devStateSvc := devicestate.NewService(nil)
-	prefixStateSvc := prefixstate.NewService(nil)
+	deviceStateStore, err := devicestate.OpenFileStore(filepath.Join(c.dataDir, "device-network-state.json"))
+	if err != nil {
+		return fmt.Errorf("initialize device network state: %w", err)
+	}
+	prefixStateStore, err := prefixstate.OpenFileStore(filepath.Join(c.dataDir, "router-prefix-state.json"))
+	if err != nil {
+		return fmt.Errorf("initialize router prefix state: %w", err)
+	}
+	devStateSvc := devicestate.NewService(deviceStateStore)
+	prefixStateSvc := prefixstate.NewService(prefixStateStore)
 
 	var ddnsSvc *ddns.Service
-	var cfClient *cloudflare.Client
+	var cfClient *legacycloudflare.Client
 	cfToken := os.Getenv("HOMEAGENT_CLOUDFLARE_TOKEN")
 	cfZoneID := os.Getenv("HOMEAGENT_CLOUDFLARE_ZONE_ID")
 	if cfToken != "" {
 		var err error
-		cfClient, err = cloudflare.NewClient(cloudflare.Config{
+		cfClient, err = legacycloudflare.NewClient(legacycloudflare.Config{
 			APIToken: cfToken,
 			ZoneID:   cfZoneID,
 		})
@@ -421,6 +512,15 @@ func serve(c config) error {
 
 	var serverNetworkCoord *servernetwork.Coordinator
 	serverIPv6Collector := servernetwork.NewAutoCollector(networkaddr.NewDefaultProvider())
+	var domainBindingCoordinator *domainbinding.Coordinator
+	if domainBindingConfig.Enabled && domainBindingConfig.Config != nil {
+		provider, providerErr := domaincloudflare.New(domaincloudflare.Config{APIToken: domainBindingConfig.Config.Token(), ZoneID: domainBindingConfig.Config.ZoneID, ManagedSuffix: domainBindingConfig.Config.ManagedSuffix})
+		if providerErr != nil {
+			return fmt.Errorf("initialize domain binding cloudflare provider: %w", providerErr)
+		}
+		domainBindingService.AttachProvider(provider)
+		domainBindingCoordinator = domainbinding.NewCoordinator(domainBindingService, provider, bindingSourceResolver{devices: devStateSvc, server: serverIPv6Collector, registry: r})
+	}
 	if cfClient != nil {
 		store := servernetwork.NewFileStateStore(c.dataDir)
 		enabled := c.serverIPv6SelfUpdate
@@ -565,6 +665,9 @@ func serve(c config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go runCommandExpiryLoop(ctx, commandService, logger)
+	if domainBindingCoordinator != nil {
+		go domainBindingCoordinator.Run(ctx, 30*time.Second)
+	}
 
 	var serverUpgradeRunner func(context.Context, string) error
 	if checkServerSupervised() {
@@ -589,7 +692,11 @@ func serve(c config) error {
 		Broker:                   eventBroker,
 		SessionManager:           sessionMgr,
 		EnrollmentManager:        enrollmentMgr,
+		ControlPlane:             controlPlane,
+		DomainBindings:           domainBindingService,
+		DomainBindingConfig:      domainBindingConfig,
 		RateLimiter:              rateLimiter,
+		HardwareFingerprintKey:   hardwareFingerprintKey,
 		ACLPath:                  filepath.Join(c.dataDir, "acl.yaml"),
 		Token:                    c.token,
 		AdminPublicKey:           pub,

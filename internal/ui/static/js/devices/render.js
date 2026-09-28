@@ -586,6 +586,15 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
             `).join('')}
           </div>
         </div>
+		<div class="card mb-3 domain-bindings-panel" id="deviceDomainBindings" data-device-id="${escapeHTML(device.id)}" data-revision="0">
+		  <div class="card-header"><strong>DDNS 域名</strong></div>
+		  <div class="card-body">
+			<div id="deviceDomainBindingList" class="domain-binding-list text-muted">读取中…</div>
+			<div style="display:flex; gap:8px; margin-top:8px;"><input id="deviceDomainBindingInput" class="form-control" placeholder="例如 mbp.rokilai.online"><button class="btn btn-primary" onclick="createDeviceDomainBinding('${escapeHTML(device.id)}')">预检并添加</button></div>
+			<p class="text-muted font-sm">禁用或移除绑定不会自动删除 DNS AAAA 记录。</p>
+		  </div>
+		</div>
+		${typeof window !== 'undefined' ? `<span style="display:none">${setTimeout(() => window.loadDeviceDomainBindings?.(device.id), 0)}</span>` : ''}
         <div class="card">
           <div class="card-header"><strong>运行指标与采样时间</strong></div>
           <div class="card-body detail-grid">

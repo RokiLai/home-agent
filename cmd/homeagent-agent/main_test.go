@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"homeagent/internal/device"
 	"homeagent/internal/version"
 )
 
@@ -527,12 +528,12 @@ func TestSendDeviceFactsFallsBackForLegacyServer(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`invalid JSON request: json: unknown field "control_protocols"`))}, nil
 		}
-		if bytes.Contains(body, []byte("control_protocols")) {
-			t.Fatalf("legacy retry retained capability: %s", body)
+		if bytes.Contains(body, []byte("control_protocols")) || bytes.Contains(body, []byte("hardware_identity")) {
+			t.Fatalf("legacy retry retained unsupported fields: %s", body)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 	})}
-	facts := deviceFactsPayload{Hostname: "host", ControlProtocols: []int{1}}
+	facts := deviceFactsPayload{Hostname: "host", ControlProtocols: []int{1}, HardwareIdentity: &device.HardwareIdentityReport{Version: 1, Source: "io_platform_uuid", Value: "11111111-2222-3333-4444-555555555555"}}
 	target, err := sendDeviceFacts(context.Background(), client, []string{"http://legacy.invalid"}, nil, "token", "dev", facts)
 	if err != nil || target != "http://legacy.invalid" || requests != 2 {
 		t.Fatalf("fallback target=%q requests=%d err=%v", target, requests, err)

@@ -527,6 +527,16 @@
               </div>
 
               <div class="settings-form" style="max-width: 600px; margin-top: 10px;">
+				<div class="form-group domain-bindings-panel" id="serverDomainBindings" data-revision="0">
+				  <label>HomeAgent 受管域名</label>
+				  <div id="serverDomainBindingProvider" class="text-muted font-sm">读取配置状态中…</div>
+				  <div id="serverDomainBindingList" class="domain-binding-list"></div>
+				  <div style="display:flex; gap:8px; margin-top:8px;">
+					<input id="serverDomainBindingInput" class="form-control" placeholder="例如 home.rokilai.online">
+					<button type="button" class="btn btn-primary" onclick="createServerDomainBinding()">预检并添加</button>
+				  </div>
+				  <p class="text-muted font-sm">禁用或移除绑定只停止 HomeAgent 调和，DNS AAAA 不会自动删除。</p>
+				</div>
                 <div class="form-group">
                   <label for="settingsServerUrlInput">服务端 API 地址 (可选自定义覆盖)</label>
                   <input type="text" id="settingsServerUrlInput" class="form-control" placeholder="http://127.0.0.1:8888" autocomplete="off">
