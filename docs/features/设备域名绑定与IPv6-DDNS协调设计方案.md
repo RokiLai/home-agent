@@ -3,9 +3,9 @@
 ## 1. 状态与范围
 
 - 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；存量生产域名迁移仍受第 8、9.2 和 10 节门禁约束。
-- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`。首个存量域名 `clash.rokilai.online` 曾完成从 ddns-go 到 `server/local-server` 的接管；回滚演练后因发现重新启用缺陷，当前已安全恢复为 HomeAgent 绑定禁用、ddns-go 单独管理。候选修复版本为 Server `v0.6.39`。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限、安全启用状态、首个存量域名接管及“禁用 HomeAgent 后恢复 ddns-go”回滚半程验证通过。回滚后的再次接管暴露相同 IPv6 重新启用时停留 `waiting_report` 的缺陷；修复、质量门禁、重新部署及完整回滚闭环尚未完成。Agent `v0.6.20` 跨平台部署仍未执行，不得视为全部发布完成。
-- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；重新启用调和修复已以 `db99700` 提交。本机 Server 已从 `v0.6.35` 分阶段部署至 `v0.6.39`，首个存量域名 `clash.rokilai.online` 当前由 `server/local-server` 绑定接管，ddns-go 不再管理该域名。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过；重新启用修复的同类门禁全部通过，Diff Coverage 为 `100%`。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 Server `v0.6.39` 的 LaunchAgent、`/health`、配置权限和启动日志验证通过，`clash.rokilai.online` 已完成“HomeAgent 接管 → 禁用并恢复 ddns-go → 移除 ddns-go 并以相同 IPv6 再次接管”的生产闭环，最终为 `enabled/synced` revision `8`。Agent `v0.6.20` 跨平台部署及其余存量域名迁移仍未执行，不得视为全部发布完成。
+- 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`；重新启用调和修复为 `changes/domain-ddns-reenable-reconcile.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
 
@@ -197,7 +197,7 @@ Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online`
 
 2026-09-28 真实观察结论：新版账户 API Token 的有效性端点为 `GET /accounts/{account_id}/tokens/verify`；旧的 `GET /user/tokens/verify` 对有效账户 Token 返回 `401 / code 1000`，不得据此判定凭据无效。`GET /zones/{zone_id}`、按名称查询 AAAA、创建、按记录 ID `PATCH` 和删除均返回 `HTTP/2 200` 与 `success=true`；仅 PATCH `content` 时 TTL、`proxied` 与 `comment` 保持不变。对从未查询过的唯一临时名称，静默等待 10 分钟后，Cloudflare 两个权威服务器及 `1.1.1.1`、`8.8.8.8` 均返回更新后的 IPv6，随后删除并确认 API 记录数为零。若在记录创建前或刚创建后查询不存在的名称，权威节点可能按 SOA negative TTL（本次为 1800 秒）继续返回缓存的 `NXDOMAIN`；因此新建记录和既有记录更新均不得立即以单次权威查询判失败，首次权威校验须延迟并采用有界重试，API 成功期间保持 `syncing` 而非误报 `failed` 或 `synced`。
 
-2026-09-28 首个存量域名迁移与回滚结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。HomeAgent 曾达到 `enabled/synced`，Cloudflare 记录 ID、类型、TTL `1`（自动）和 `proxied=false` 均保持不变，期望、提供商和最后应用 IPv6 一致；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 均返回 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`。实际回滚已验证禁用 HomeAgent、恢复 ddns-go 和保持 Cloudflare 记录不变；随后再次接管时，绑定 revision 已递增但因期望 IPv6 等于历史 `last_applied_ipv6`，调和器未创建任务并停留 `waiting_report`。验证终止后已再次禁用 HomeAgent 并恢复 ddns-go 单独管理，未发生双写或 DNS 地址变化。该缺陷须由 Server `v0.6.39` 修复并完成“接管 → 回滚 → 再接管”生产闭环后，才能将完整回滚验收标记为通过。
+2026-09-28 首个存量域名迁移与回滚结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。首次迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。首次回滚后的再次接管曾因期望 IPv6 等于历史 `last_applied_ipv6` 而停留 `waiting_report`，验证终止后立即禁用 HomeAgent 并恢复 ddns-go，未发生双写或 DNS 地址变化。Server `v0.6.39` 修复部署后重新执行完整闭环：首次接管达到 `enabled/synced` revision `6`；禁用至 revision `7`、恢复 ddns-go 并确认 DNS 不变；再次从 ddns-go 移除域名后，以相同 IPv6 启用并达到 `enabled/synced` revision `8`。最终 Cloudflare 记录 ID `8acbd304ece66c7efa6cbcf81d46bef9`、类型 `AAAA`、TTL `1`（自动）和 `proxied=false` 保持不变，期望、提供商和最后应用 IPv6 均为 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 返回一致。ddns-go 最终不包含该域名，临时管理员密码与会话均已清理，脱敏证据保存在宿主机受限目录 `backups/ddns-reenable-validation-clash-20260928124300`。该单域名的接管、回滚和相同地址再次接管验收通过。
 
 ## 7. Web 界面契约
 
