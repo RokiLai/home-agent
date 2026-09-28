@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"syscall"
 )
 
 type ConfigLoadState string
@@ -40,7 +39,7 @@ func LoadConfig(path string) ConfigResult {
 	if err != nil {
 		return ConfigResult{State: ConfigInvalid, Diagnostic: "无法读取 Cloudflare DDNS 配置"}
 	}
-	if info.Mode().Perm() != 0600 || !ownedByCurrentUser(info) {
+	if !hasSecurePermissions(info) {
 		return ConfigResult{State: ConfigInsecurePermissions, Diagnostic: "Cloudflare DDNS 配置的所有者或权限不安全"}
 	}
 	data, err := os.ReadFile(path)
@@ -57,9 +56,4 @@ func LoadConfig(path string) ConfigResult {
 	config.ZoneID = strings.TrimSpace(config.ZoneID)
 	config.ManagedSuffix = ManagedSuffix
 	return ConfigResult{Enabled: true, State: ConfigReady, Diagnostic: "Cloudflare DDNS 配置已就绪", Config: &config}
-}
-
-func ownedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Geteuid()
 }
