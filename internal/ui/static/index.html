@@ -384,12 +384,12 @@
               <div id="deviceDetailBadge"></div>
             </div>
             <div class="detail-tab-nav" style="display: flex; gap: 8px; margin: 12px 0 16px 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
-              <button class="filter-pill detail-tab active" data-section="overview" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/overview'">运行概览</button>
-              <button class="filter-pill detail-tab" data-section="health" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/health'">健康诊断</button>
-              <button class="filter-pill detail-tab" data-section="ssh" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/ssh'">SSH 与访问</button>
-              <button class="filter-pill detail-tab" data-section="network" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/network'">网络详情</button>
-              <button class="filter-pill detail-tab" data-section="commands" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/commands'">操作记录</button>
-              <button class="filter-pill detail-tab" data-section="settings" onclick="location.hash = '#/devices/' + encodeURIComponent(window.state?.currentDetailDeviceId || '') + '/settings'">设备设置</button>
+              <button class="filter-pill detail-tab active" data-section="overview" onclick="navigateDeviceDetailSection('overview')">运行概览</button>
+              <button class="filter-pill detail-tab" data-section="health" onclick="navigateDeviceDetailSection('health')">健康诊断</button>
+              <button class="filter-pill detail-tab" data-section="ssh" onclick="navigateDeviceDetailSection('ssh')">SSH 与访问</button>
+              <button class="filter-pill detail-tab" data-section="network" onclick="navigateDeviceDetailSection('network')">网络详情</button>
+              <button class="filter-pill detail-tab" data-section="commands" onclick="navigateDeviceDetailSection('commands')">操作记录</button>
+              <button class="filter-pill detail-tab" data-section="settings" onclick="navigateDeviceDetailSection('settings')">设备设置</button>
             </div>
             <div id="deviceDetailContainer">
               <!-- Dynamically populated by renderDeviceDetailView -->
