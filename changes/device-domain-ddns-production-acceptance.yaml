@@ -1,0 +1,5 @@
+task: device-domain-ddns-production-acceptance
+description: 回写删除后复用修复发布、服务端升级验收、设备域名最终迁移及剩余 Agent 升级阻断证据。
+allowed_paths:
+  - changes/device-domain-ddns-production-acceptance.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
