@@ -65,7 +65,7 @@ func (coordinator *Coordinator) RunOnce(ctx context.Context) error {
 				}
 				continue
 			}
-			if desired != binding.LastAppliedIPv6 {
+			if desired != binding.LastAppliedIPv6 || binding.RuntimeState != RuntimeSynced {
 				_, _ = coordinator.service.QueueDesiredAddress(ctx, binding.BindingID, binding.Revision, desired)
 			}
 		}

@@ -72,6 +72,41 @@ func TestCoordinatorMarksPreviouslySyncedBindingStaleWithoutWritingDNS(t *testin
 	}
 }
 
+func TestCoordinatorReconcilesSameAddressAfterBindingIsReenabled(t *testing.T) {
+	repository, err := filestore.OpenControlPlane(filepath.Join(t.TempDir(), "control-plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store.NewControlPlaneService(repository), nil)
+	provider := &coordinatorProvider{}
+	binding, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "reenable.rokilai.online", ExpectedRevision: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewCoordinator(service, provider, fixedResolver{address: "2001:db8::2"})
+	if err := coordinator.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := service.List(context.Background(), SourceServer, LocalServerSourceID)
+	if err != nil || len(bindings) != 1 || bindings[0].RuntimeState != RuntimeSynced {
+		t.Fatalf("initial bindings=%+v err=%v", bindings, err)
+	}
+	disabled, err := service.Disable(context.Background(), binding.BindingID, bindings[0].Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Enable(context.Background(), EnableCommand{BindingID: binding.BindingID, ExpectedRevision: disabled.Revision, PublisherDisabledConfirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err = service.List(context.Background(), SourceServer, LocalServerSourceID)
+	if err != nil || len(bindings) != 1 || bindings[0].RuntimeState != RuntimeSynced || bindings[0].LastAppliedIPv6 != "2001:db8::2" || provider.applies != 2 {
+		t.Fatalf("reenabled bindings=%+v applies=%d err=%v", bindings, provider.applies, err)
+	}
+}
+
 type coordinatorProvider struct{ observes, applies int }
 
 func (provider *coordinatorProvider) Observe(context.Context, ObserveRequest) (RecordObservation, error) {

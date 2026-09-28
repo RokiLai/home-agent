@@ -3,8 +3,8 @@
 ## 1. 状态与范围
 
 - 设计状态：领域模型、控制平面、Cloudflare 直连发布器和本机部署方案已完成审查与实施；存量生产域名迁移仍受第 8、9.2 和 10 节门禁约束。
-- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`，首个存量域名 `clash.rokilai.online` 已从 ddns-go 迁移至 `server/local-server` 绑定。
-- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限、安全启用状态和首个存量域名接管验证通过。Agent `v0.6.20` 跨平台部署及存量域名实际回滚演练未执行，不得视为全部发布完成。
+- 实施状态：第一阶段已以 `4dad89c` 提交，第二阶段已以 `c174d05` 提交，第三阶段已以 `1aa3141` 提交；本机 Server 已从 `v0.6.35` 部署为 `v0.6.38`。首个存量域名 `clash.rokilai.online` 曾完成从 ddns-go 到 `server/local-server` 的接管；回滚演练后因发现重新启用缺陷，当前已安全恢复为 HomeAgent 绑定禁用、ddns-go 单独管理。候选修复版本为 Server `v0.6.39`。
+- 验收状态：第一、二阶段本地质量门禁均已通过；第三阶段变更范围、架构依赖、模块测试、全量 `-race` 回归和 Diff Coverage `60.2%` 已通过。真实账户 Token 已验证 Zone/DNS 读写、PATCH 属性保留、权威 DNS 与公共递归 DNS 收敛以及临时记录清理；本机 LaunchAgent、`/health`、版本、配置权限、安全启用状态、首个存量域名接管及“禁用 HomeAgent 后恢复 ddns-go”回滚半程验证通过。回滚后的再次接管暴露相同 IPv6 重新启用时停留 `waiting_report` 的缺陷；修复、质量门禁、重新部署及完整回滚闭环尚未完成。Agent `v0.6.20` 跨平台部署仍未执行，不得视为全部发布完成。
 - 变更清单：设计为 `changes/device-domain-ddns-design.yaml`；第一阶段为 `changes/device-domain-ddns-phase1.yaml`；第二阶段为 `changes/device-domain-ddns-phase2.yaml`；第三阶段为 `changes/device-domain-ddns-phase3.yaml`。
 
 本方案为 HomeAgent 服务端自身和已认领设备建立由 Web 控制台管理员配置的受管域名。同一地址源可绑定多个 FQDN，每个绑定仍只对应一个 FQDN 和一个期望 IPv6。设备仅在正常注册、启动和周期事实同步中上报硬件指纹与当前 IPv6 地址；服务端以已保存的“地址源—域名”和“硬件—设备”绑定为准，通过最小权限 Cloudflare API Token 直接创建或更新 AAAA 记录。客户端不保存、上报或决定域名，`ddns-go` 仅继续管理尚未迁移的存量记录。
@@ -151,6 +151,8 @@ HomeAgent 为每个受管 `binding_id` 持久化最后调和 revision、最后�
 
 同一设备域名被改绑、禁用或删除时，旧任务通过绑定 revision 与 `binding_id` 联合失效。改绑遵循第 4.1 节的单一事务；在新设备产生有效报告前仅可为 `waiting_report`，不得创建 Cloudflare 写入任务。
 
+已同步绑定被禁用后再次启用时，即使当前期望 IPv6 与 `last_applied_ipv6` 相同，也必须重新创建或复用当前 revision 的调和任务，并在 Cloudflare API 与权威 DNS 再次确认后恢复为 `synced`。`last_applied_ipv6` 只表示历史成功结果，不得作为跳过重新启用调和的充分条件；重复运行由任务幂等键合并，不得产生并行写入。
+
 绑定配置状态与 DDNS 运行状态分开保存：前者为 `observing/enabled/disabled/deleted`，后者仅可为 `waiting_report/pending/syncing/synced/failed/stale`；`observing` 不得产生运行任务。设备被删除、权限撤销或绑定所有者失去管理权限时，按禁用流程立即停止 Cloudflare 调和并保留 DNS 记录，审计事件不得泄露其他用户的 FQDN 或地址。
 
 ## 6. Cloudflare 集成契约
@@ -195,7 +197,7 @@ Cloudflare 发布器编码前直接使用生产 Cloudflare Zone `rokilai.online`
 
 2026-09-28 真实观察结论：新版账户 API Token 的有效性端点为 `GET /accounts/{account_id}/tokens/verify`；旧的 `GET /user/tokens/verify` 对有效账户 Token 返回 `401 / code 1000`，不得据此判定凭据无效。`GET /zones/{zone_id}`、按名称查询 AAAA、创建、按记录 ID `PATCH` 和删除均返回 `HTTP/2 200` 与 `success=true`；仅 PATCH `content` 时 TTL、`proxied` 与 `comment` 保持不变。对从未查询过的唯一临时名称，静默等待 10 分钟后，Cloudflare 两个权威服务器及 `1.1.1.1`、`8.8.8.8` 均返回更新后的 IPv6，随后删除并确认 API 记录数为零。若在记录创建前或刚创建后查询不存在的名称，权威节点可能按 SOA negative TTL（本次为 1800 秒）继续返回缓存的 `NXDOMAIN`；因此新建记录和既有记录更新均不得立即以单次权威查询判失败，首次权威校验须延迟并采用有界重试，API 成功期间保持 `syncing` 而非误报 `failed` 或 `synced`。
 
-2026-09-28 首个存量域名迁移结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。HomeAgent 最终状态为 `enabled/synced`，Cloudflare 记录 ID、类型、TTL `1`（自动）和 `proxied=false` 均保持不变，期望、提供商和最后应用 IPv6 一致；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 均返回 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`。回退快照保存在宿主机受限备份目录，但本次未主动制造故障或执行实际回滚，回滚验收仍为未完成项。
+2026-09-28 首个存量域名迁移与回滚结论：原计划候选 `direct-manga.rokilai.online` 实际为指向根域的 `CNAME`，不符合单条 AAAA 接管契约，预检阶段即排除；改用管理员确认的 `clash.rokilai.online`。迁移前分别保存 ddns-go 配置和 Cloudflare 记录快照，仅从 ddns-go 移除该域名并重启容器，再将已观察绑定由 `observing` 启用。HomeAgent 曾达到 `enabled/synced`，Cloudflare 记录 ID、类型、TTL `1`（自动）和 `proxied=false` 均保持不变，期望、提供商和最后应用 IPv6 一致；`diana.ns.cloudflare.com`、`matt.ns.cloudflare.com`、`1.1.1.1` 与 `8.8.8.8` 均返回 `240e:390:9a9:c220:c72:59e9:1d1d:24d5`。实际回滚已验证禁用 HomeAgent、恢复 ddns-go 和保持 Cloudflare 记录不变；随后再次接管时，绑定 revision 已递增但因期望 IPv6 等于历史 `last_applied_ipv6`，调和器未创建任务并停留 `waiting_report`。验证终止后已再次禁用 HomeAgent 并恢复 ddns-go 单独管理，未发生双写或 DNS 地址变化。该缺陷须由 Server `v0.6.39` 修复并完成“接管 → 回滚 → 再接管”生产闭环后，才能将完整回滚验收标记为通过。
 
 ## 7. Web 界面契约
 
@@ -260,7 +262,7 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 | Claim 顺序 | `claimDevice` 先调用 `ConsumeClaimToken`，之后才解析请求、生成凭据和保存设备 | 与“持久化失败不消耗 Claim Token、不使旧 Token 失效”冲突，需先建立原子 Claim 仓储契约 |
 | Agent 上报 | 已有启动与周期 Facts 上报、IPv6 快照 revision 持久化与冲突恢复 | 可扩展版本化硬件身份字段，但必须保持旧 Server/Agent 兼容 |
 | UI 扩展点 | 设备页面已拆分为 `internal/ui/static/js/devices` 模块，服务端 IPv6 设置已有独立区域，API 调用经 `apiFetch` | 设备源绑定属于设备模块；服务端源绑定位于服务端 IPv6 设置页的独立列表模块，不与旧的探测或手工输入控件混用 |
-| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19`；第三阶段候选 Server `v0.6.38`，Agent `v0.6.20` | 两个组件已按仓库版本门禁分别升版；通过验收前不标记发布完成 |
+| 版本 | 第一阶段候选 Server `v0.6.36`，Agent `v0.6.18`；第二阶段候选 Server `v0.6.37`，Web 客户端门禁对应 Agent `v0.6.19`；第三阶段 Server `v0.6.38`，Agent `v0.6.20`；重新启用调和缺陷候选 Server `v0.6.39` | 两个组件按变更分别升版；通过验收前不标记发布完成 |
 
 ### 9.2 审查未通过的阻断项
 
@@ -288,8 +290,9 @@ MacMini 分组的 9 个域名已由管理员明确归属 `server/local-server`�
 4. 已认证设备首次/周期硬件指纹上报、无指纹兼容、重复指纹冲突、虚拟机克隆和原始硬件标识不落盘/不回显；发布验收须在维护窗口重启目标 macOS 与 Windows 设备，证明重启前后算法版本、来源类型和 HMAC 指纹一致，Linux/OpenWrt 无 DMI UUID 时继续稳定返回“无可信硬件指纹”；
 5. 同硬件重新认领保留原 `device_id`、域名绑定与状态并轮换 Token；不同所有者、仍在线设备、指纹变化和持久化失败不得错误继承身份或使旧 Token 失效；
 6. 改绑、禁用、删除、revision 倒退、在途 Cloudflare I/O 返回和并发上报不允许旧任务覆盖新绑定；
-7. 基于 Cloudflare 真实 HTTP 观察构造的替身测试，覆盖成功、401/403/404/429/500、超时、异常响应、无效 IPv6、重复 FQDN、多 AAAA、CNAME 冲突、记录 ID 变化、属性保留和权威 DNS 不符的反例；
-8. 使用专用测试域名执行真实 Cloudflare 端到端验收：上一正式版本升级后分别为 `server` 与 `device` 源创建多域名绑定，验证观察模式、两类地址变化、无地址安全失败、TTL/代理属性保留与 AAAA 权威记录收敛；再以单个存量域名演练 ddns-go 退出、HomeAgent 接管和回滚。若目标设备已具备明确的端口、防火墙和运营商入站前提，可另做外网访问烟测；该烟测不作为 DDNS 功能成功的证明；
-9. 变更范围、架构依赖、全量 `-race` 回归和 Diff Coverage 不低于 60%。
+7. 已同步绑定禁用后以相同 IPv6 重新启用，必须重新调和并恢复 `synced`，且仅产生一次有效发布；
+8. 基于 Cloudflare 真实 HTTP 观察构造的替身测试，覆盖成功、401/403/404/429/500、超时、异常响应、无效 IPv6、重复 FQDN、多 AAAA、CNAME 冲突、记录 ID 变化、属性保留和权威 DNS 不符的反例；
+9. 使用专用测试域名执行真实 Cloudflare 端到端验收：上一正式版本升级后分别为 `server` 与 `device` 源创建多域名绑定，验证观察模式、两类地址变化、无地址安全失败、TTL/代理属性保留与 AAAA 权威记录收敛；再以单个存量域名演练 ddns-go 退出、HomeAgent 接管、回滚和相同地址再次接管。若目标设备已具备明确的端口、防火墙和运营商入站前提，可另做外网访问烟测；该烟测不作为 DDNS 功能成功的证明；
+10. 变更范围、架构依赖、全量 `-race` 回归和 Diff Coverage 不低于 60%。
 
 验收记录必须分别列出 Cloudflare API 与权威 DNS 响应链、Token 实际权限、记录属性前后值、测试替身差异、关键反例、存量域名迁移/回滚证据和真实端到端结果；未执行的真实环境步骤不得标记为通过。

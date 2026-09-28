@@ -1,0 +1,9 @@
+task: domain-ddns-reenable-reconcile
+description: 修复域名绑定禁用后以相同 IPv6 重新启用时停留 waiting_report、未重新调和的问题。
+allowed_paths:
+  - changes/domain-ddns-reenable-reconcile.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - internal/domainbinding/coordinator.go
+  - internal/domainbinding/coordinator_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
