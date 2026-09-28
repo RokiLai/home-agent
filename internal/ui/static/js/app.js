@@ -26,7 +26,7 @@ export function bindEventListeners() {
   const refreshBtn = document.getElementById('refreshBtn');
 
   const searchInput = document.getElementById('deviceSearchInput');
-  const filterPills = document.querySelectorAll('.filter-pill');
+  const filterPills = document.querySelectorAll('#deviceFilterPills .filter-pill');
   const tabBtns = document.querySelectorAll('.tab-btn');
   const btnRefreshClaimToken = document.getElementById('btnRefreshClaimToken');
 
