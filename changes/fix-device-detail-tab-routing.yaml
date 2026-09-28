@@ -1,0 +1,9 @@
+task: fix-device-detail-tab-routing
+description: 修复设备详情页顶部标签丢失设备 ID，并补充六个标签的真实导航回归测试。
+allowed_paths:
+  - changes/fix-device-detail-tab-routing.yaml
+  - internal/ui/static/index.html
+  - internal/ui/static/js/router.js
+  - internal/ui/testdata/console-ia-phase2.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

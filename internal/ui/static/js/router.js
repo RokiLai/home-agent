@@ -43,6 +43,17 @@ export const pageMeta = {
 const validDetailSections = new Set(['overview', 'health', 'ssh', 'network', 'commands', 'settings']);
 const validSettingsSections = new Set(['all', 'general', 'version', 'network', 'files', 'users', 'github', 'about']);
 
+export function navigateDeviceDetailSection(section) {
+  const deviceId = state.currentDetailDeviceId;
+  if (!deviceId || !validDetailSections.has(section)) return false;
+  window.location.hash = `#/devices/${encodeURIComponent(deviceId)}/${section}`;
+  return true;
+}
+
+if (typeof window !== 'undefined') {
+  window.navigateDeviceDetailSection = navigateDeviceDetailSection;
+}
+
 export function parseRoute(hashString) {
   const clean = (hashString || '').replace(/^#\/?/, '').trim();
   if (!clean) return { page: 'dashboard', deviceId: null, section: null };

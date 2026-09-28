@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 // Global mocks for Node environment
 globalThis.localStorage = {
@@ -67,7 +68,8 @@ function createElement(initial = {}) {
 // ---------------------------------------------------------------------------
 
 test('router parseRoute parses all 6 device detail sections and normalizes invalid section to overview', async () => {
-  const { parseRoute } = await import('../static/js/router.js');
+  const { navigateDeviceDetailSection, parseRoute } = await import('../static/js/router.js');
+  const { state } = await import('../static/js/state.js');
 
   const validSections = ['overview', 'health', 'ssh', 'network', 'commands', 'settings'];
   for (const sec of validSections) {
@@ -75,6 +77,19 @@ test('router parseRoute parses all 6 device detail sections and normalizes inval
     assert.equal(route.page, 'deviceDetail');
     assert.equal(route.deviceId, 'dev-node-1');
     assert.equal(route.section, sec);
+  }
+
+  state.currentDetailDeviceId = 'macbook-pro-8-local-0e93c101';
+  const html = fs.readFileSync(new URL('../static/index.html', import.meta.url), 'utf8');
+  for (const sec of validSections) {
+    assert.match(html, new RegExp(`data-section="${sec}" onclick="navigateDeviceDetailSection\\('${sec}'\\)"`));
+    navigateDeviceDetailSection(sec);
+    assert.equal(window.location.hash, `#/devices/macbook-pro-8-local-0e93c101/${sec}`);
+    assert.deepEqual(parseRoute(window.location.hash), {
+      page: 'deviceDetail',
+      deviceId: 'macbook-pro-8-local-0e93c101',
+      section: sec
+    });
   }
 
   // Invalid section fallback
