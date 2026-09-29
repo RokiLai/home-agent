@@ -529,7 +529,7 @@ export function createDeviceCardHTML(d) {
   `;
 }
 
-export function renderDeviceDetailView(deviceId, section = 'overview') {
+export function renderDeviceDetailView(deviceId, section = 'overview', options = {}) {
   const container = document.getElementById('deviceDetailContainer');
   const titleEl = document.getElementById('deviceDetailTitle');
   const badgeEl = document.getElementById('deviceDetailBadge');
@@ -566,6 +566,29 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
     }
   });
 
+  // Snapshot active inputs inside container before any DOM update
+  const preservedInputs = new Map();
+  const activeEl = document.activeElement;
+  const isInputFocused = activeEl && container.contains && container.contains(activeEl) && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+
+  if (typeof container.querySelectorAll === 'function') {
+    container.querySelectorAll('input, textarea').forEach(el => {
+      if (el.id && (el.value || el === activeEl)) {
+        preservedInputs.set(el.id, {
+          value: el.value,
+          isFocused: el === activeEl,
+          selectionStart: el.selectionStart,
+          selectionEnd: el.selectionEnd
+        });
+      }
+    });
+  }
+
+  // If this render is triggered by background polling and user is actively interacting with an input:
+  if (options.isPolling && (isInputFocused || preservedInputs.size > 0)) {
+    return;
+  }
+
   if (section === 'health') {
     const reasons = (device.health && device.health.reasons) || [];
     const metrics = (device.health && device.health.metrics) || {};
@@ -594,7 +617,6 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
 			<p class="text-muted font-sm">禁用或移除绑定不会自动删除 DNS AAAA 记录。</p>
 		  </div>
 		</div>
-		${typeof window !== 'undefined' ? `<span style="display:none">${setTimeout(() => window.loadDeviceDomainBindings?.(device.id), 0)}</span>` : ''}
         <div class="card">
           <div class="card-header"><strong>运行指标与采样时间</strong></div>
           <div class="card-body detail-grid">
@@ -605,6 +627,10 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
         </div>
       </div>
     `;
+
+    if (typeof window !== 'undefined' && typeof window.loadDeviceDomainBindings === 'function') {
+      window.loadDeviceDomainBindings(device.id);
+    }
   } else if (section === 'ssh') {
     const isSynced = isDeviceSynced(device);
     const portArg = device.ssh_port && device.ssh_port !== 22 ? `-p ${device.ssh_port} ` : '';
@@ -765,5 +791,20 @@ export function renderDeviceDetailView(deviceId, section = 'overview') {
         </div>
       </div>
     `;
+  }
+
+  if (preservedInputs.size > 0) {
+    preservedInputs.forEach((saved, id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.value = saved.value;
+        if (saved.isFocused) {
+          el.focus?.();
+          if (typeof saved.selectionStart === 'number' && typeof saved.selectionEnd === 'number') {
+            el.setSelectionRange?.(saved.selectionStart, saved.selectionEnd);
+          }
+        }
+      }
+    });
   }
 }

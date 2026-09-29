@@ -111,7 +111,28 @@ export async function fetchDevices() {
     renderDashboardSummary();
     renderDevices();
     if (state.currentPage === 'deviceDetail' && state.currentDetailDeviceId) {
-      renderDeviceDetailView(state.currentDetailDeviceId, state.currentDetailSection);
+      const curDev = (state.devices || []).find(d => d.id === state.currentDetailDeviceId);
+      const curFingerprint = curDev ? JSON.stringify([
+        curDev.id,
+        curDev.hostname,
+        curDev.alias,
+        curDev.arch,
+        curDev.os,
+        curDev.mac,
+        curDev.agent_version,
+        curDev.addresses,
+        curDev.ssh_user,
+        curDev.ssh_port,
+        curDev.sync_status,
+        curDev.applied_hash,
+        curDev.ddns_domain,
+        curDev.health,
+        state.currentDetailSection
+      ]) : '';
+      if (curFingerprint !== state.lastDetailFingerprint) {
+        state.lastDetailFingerprint = curFingerprint;
+        renderDeviceDetailView(state.currentDetailDeviceId, state.currentDetailSection, { isPolling: true });
+      }
     }
     renderGitHubDeviceMatrix((id, checked) => handleToggleGitHubSync(id, checked, () => {
       fetchDevices();

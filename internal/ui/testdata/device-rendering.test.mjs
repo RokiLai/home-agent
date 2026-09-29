@@ -287,3 +287,83 @@ test('createDeviceCardHTML renders explicit Administrator and non-default SSH po
   const htmlCustom = createDeviceCardHTML(winCustomPort);
   assert.match(htmlCustom, /ssh -p 2222 Administrator@192\.168\.1\.100/, 'Must render ssh -p 2222 Administrator@192.168.1.100 for custom port');
 });
+
+test('renderDeviceDetailView preserves active input value and focus during polling refresh in health section', async () => {
+  const { renderDeviceDetailView } = await import('../static/js/devices/render.js');
+  const { state } = await import('../static/js/state.js');
+
+  const dev = {
+    id: 'macbook-pro-8-local-0e93c101',
+    hostname: 'MacBook-Pro-8.local',
+    alias: 'MacBook Pro',
+    os: 'darwin',
+    arch: 'amd64',
+    mac: 'ae:a0:c7:24:3e:5e',
+    health: { status: 'healthy', reasons: [], metrics: { cpu_usage: 12, mem_usage: 45 } }
+  };
+  state.devices = [dev];
+
+  let inputElement = null;
+  let _innerHTML = '';
+  const container = {
+    id: 'deviceDetailContainer',
+    tagName: 'DIV',
+    get innerHTML() { return _innerHTML; },
+    set innerHTML(val) {
+      _innerHTML = val;
+      // In a real browser, assigning innerHTML replaces children with fresh default nodes
+      inputElement = {
+        id: 'deviceDomainBindingInput',
+        tagName: 'INPUT',
+        value: '',
+        selectionStart: 0,
+        selectionEnd: 0,
+        _focused: false,
+        focus() { this._focused = true; },
+        setSelectionRange(s, e) { this.selectionStart = s; this.selectionEnd = e; }
+      };
+    },
+    contains(child) {
+      return child === inputElement;
+    },
+    querySelectorAll(sel) {
+      if (sel === 'input, textarea' && inputElement) return [inputElement];
+      return [];
+    }
+  };
+
+  const titleEl = { innerText: '' };
+  const badgeEl = { innerHTML: '' };
+
+  globalThis.document = {
+    getElementById(id) {
+      if (id === 'deviceDetailContainer') return container;
+      if (id === 'deviceDetailTitle') return titleEl;
+      if (id === 'deviceDetailBadge') return badgeEl;
+      if (id === 'deviceDomainBindingInput') return inputElement;
+      if (id === 'deviceDomainBindings') return { dataset: {} };
+      return null;
+    },
+    querySelectorAll() { return []; },
+    activeElement: null
+  };
+
+  // 1. Initial render of health section
+  renderDeviceDetailView(dev.id, 'health');
+  assert.match(container.innerHTML, /deviceDomainBindingInput/);
+
+  // User types into the input and focuses it
+  inputElement.value = 'mbp.rokilai.online';
+  inputElement.selectionStart = 8;
+  inputElement.selectionEnd = 8;
+  inputElement._focused = true;
+  globalThis.document.activeElement = inputElement;
+
+  // 2. Trigger periodic polling refresh while user is typing
+  renderDeviceDetailView(dev.id, 'health', { isPolling: true });
+
+  // Assert: input value must NOT be wiped out
+  assert.equal(inputElement.value, 'mbp.rokilai.online', 'Input value must be preserved during polling');
+  assert.equal(inputElement._focused, true, 'Input focus must be preserved during polling');
+  assert.equal(inputElement.selectionStart, 8, 'Cursor position must be preserved');
+});

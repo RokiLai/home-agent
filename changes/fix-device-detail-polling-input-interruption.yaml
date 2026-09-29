@@ -1,0 +1,10 @@
+task: fix-device-detail-polling-input-interruption
+description: 建立详情页轮询数据比对与活跃输入焦点保护机制，杜绝定时刷新破坏表单输入与清空内容。
+allowed_paths:
+  - changes/fix-device-detail-polling-input-interruption.yaml
+  - docs/ui/设备详情页轮询重绘与输入保护设计方案.md
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/testdata/device-rendering.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go
