@@ -111,6 +111,53 @@ func (existingRecordProvider) Apply(context.Context, ApplyRequest) (RecordObserv
 	panic("unexpected write")
 }
 
+type mutableRecordProvider struct {
+	exists bool
+}
+
+func (provider *mutableRecordProvider) Observe(context.Context, ObserveRequest) (RecordObservation, error) {
+	return RecordObservation{Exists: provider.exists, RecordID: "record-1", IPv6: "2001:db8::1", TTL: 300}, nil
+}
+
+func (*mutableRecordProvider) Apply(context.Context, ApplyRequest) (RecordObservation, error) {
+	panic("unexpected write")
+}
+
+func TestEnableDisabledBindingAllowsMissingProviderRecord(t *testing.T) {
+	service, _ := newTestService(t)
+	provider := &mutableRecordProvider{exists: false}
+	service.AttachProvider(provider)
+	binding, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "new.rokilai.online", ExpectedRevision: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := service.Disable(context.Background(), binding.BindingID, binding.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := service.Enable(context.Background(), EnableCommand{BindingID: binding.BindingID, ExpectedRevision: disabled.Revision, PublisherDisabledConfirmed: true})
+	if err != nil {
+		t.Fatalf("disabled binding without provider record must be re-enabled for later creation: %v", err)
+	}
+	if enabled.ConfigState != ConfigEnabled || enabled.RuntimeState != RuntimeWaitingReport {
+		t.Fatalf("enabled=%+v", enabled)
+	}
+}
+
+func TestEnableObservingBindingStillRequiresProviderRecord(t *testing.T) {
+	service, _ := newTestService(t)
+	provider := &mutableRecordProvider{exists: true}
+	service.AttachProvider(provider)
+	binding, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "existing.rokilai.online", ExpectedRevision: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.exists = false
+	if _, err := service.Enable(context.Background(), EnableCommand{BindingID: binding.BindingID, ExpectedRevision: binding.Revision, PublisherDisabledConfirmed: true}); err == nil {
+		t.Fatal("observing binding must reject takeover when the observed provider record disappeared")
+	}
+}
+
 func TestCreateRechecksProviderAndPersistsObservedRecordIdentity(t *testing.T) {
 	service, _ := newTestService(t)
 	service.AttachProvider(existingRecordProvider{})
