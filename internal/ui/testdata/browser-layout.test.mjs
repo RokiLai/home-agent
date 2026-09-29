@@ -1076,3 +1076,82 @@ test('12. Server binding delete click performs revision-safe request and refresh
   assert.ok(requests.filter(request => request.method === 'GET').length >= 2);
   assert.equal(runtimeErrors.length, 0, `Delete interaction must not emit runtime errors: ${runtimeErrors.join('; ')}`);
 });
+
+test('13. Device action menu keeps a shared icon/text grid and fits a short viewport', async () => {
+  await cdp.send('Page.navigate', { url: `${serverUrl}/` }, targetSessionId);
+  await waitFor('document.readyState === "complete" && document.getElementById("loginOverlay")');
+  if (await evalJS('!document.getElementById("loginOverlay").classList.contains("hidden")')) {
+    await evalJS(`(() => {
+      document.getElementById('loginUsername').value = 'admin';
+      document.getElementById('loginPassword').value = 'admin123';
+      document.getElementById('loginSubmitBtn').click();
+    })()`);
+    await waitFor('document.getElementById("loginOverlay").classList.contains("hidden")');
+  }
+  await evalJS(`window.location.hash = '#/devices';`);
+  await waitFor('document.querySelectorAll(".device-card").length === 3');
+
+  for (const viewport of [
+    { width: 1280, height: 800, mobile: false, scale: 1 },
+    { width: 360, height: 640, mobile: true, scale: 1 },
+    { width: 360, height: 480, mobile: true, scale: 2 }
+  ]) {
+    await setViewport(viewport.width, viewport.height, viewport.mobile);
+    await cdp.send('Emulation.setEmulatedOSTextScale', { scale: viewport.scale }, targetSessionId);
+    await evalJS(`(() => {
+      const button = document.querySelector('.device-card .btn-more-actions');
+      button.scrollIntoView({ block: 'end' });
+      button.click();
+    })()`);
+    await waitFor('document.querySelector(".device-card .device-dropdown-menu.is-open")');
+
+    const layout = await evalJS(`(() => {
+      const menu = document.querySelector('.device-card .device-dropdown-menu.is-open');
+      const items = [...menu.querySelectorAll('.dropdown-item')];
+      const bounds = menu.getBoundingClientRect();
+      const columns = items.map(item => ({
+        iconLeft: item.querySelector('svg').getBoundingClientRect().left,
+        textLeft: item.querySelector('span').getBoundingClientRect().left,
+        height: item.getBoundingClientRect().height,
+        justify: getComputedStyle(item).justifyContent
+      }));
+      menu.scrollTop = menu.scrollHeight;
+      const last = items.at(-1).getBoundingClientRect();
+      const hit = document.elementFromPoint(last.left + last.width / 2, last.top + last.height / 2);
+      items[0].focus({ focusVisible: true });
+      return {
+        count: items.length,
+        columns,
+        focusOutline: getComputedStyle(items[0]).outlineWidth,
+        coloredRowBackgrounds: ['.btn-menu-sync', '.btn-menu-upgrade', '.btn-menu-shutdown', '.btn-menu-del']
+          .map(selector => getComputedStyle(menu.querySelector(selector)).backgroundColor),
+        top: bounds.top,
+        bottom: bounds.bottom,
+        left: bounds.left,
+        right: bounds.right,
+        lastVisible: last.top >= bounds.top - 1 && last.bottom <= bounds.bottom + 1,
+        lastHit: hit === items.at(-1) || items.at(-1).contains(hit),
+        pageWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        expanded: document.querySelector('.device-card .btn-more-actions').getAttribute('aria-expanded')
+      };
+    })()`);
+    const context = `${viewport.width}x${viewport.height} at ${viewport.scale}x text scale`;
+    assert.equal(layout.count, 7, `all menu actions must render at ${context}`);
+    assert.equal(layout.expanded, 'true', `menu trigger must report expanded at ${context}`);
+    assert.ok(parseFloat(layout.focusOutline) >= 2, `keyboard focus must be visible at ${context}: ${layout.focusOutline}`);
+    assert.ok(layout.coloredRowBackgrounds.every(color => color === 'rgba(0, 0, 0, 0)'), `semantic rows must use a common transparent resting surface at ${context}`);
+    assert.ok(layout.columns.every(item => item.justify === 'flex-start'), `menu items must align left at ${context}`);
+    assert.ok(Math.max(...layout.columns.map(item => item.iconLeft)) - Math.min(...layout.columns.map(item => item.iconLeft)) <= 1, `icons must share a column at ${context}`);
+    assert.ok(Math.max(...layout.columns.map(item => item.textLeft)) - Math.min(...layout.columns.map(item => item.textLeft)) <= 1, `labels must share a column at ${context}`);
+    if (viewport.mobile) assert.ok(layout.columns.every(item => item.height >= 43.5), `touch targets must be at least 44px at ${context}: ${JSON.stringify(layout.columns)}`);
+    assert.ok(layout.top >= 7 && layout.left >= 7 && layout.right <= viewport.width - 7 && layout.bottom <= viewport.height - 7, `menu must fit viewport at ${context}: ${JSON.stringify(layout)}`);
+    assert.ok(layout.lastVisible && layout.lastHit, `last menu action must remain reachable at ${context}`);
+    assert.ok(layout.pageWidth <= layout.clientWidth + 1, `menu must not cause page overflow at ${context}`);
+    await evalJS(`document.querySelector('.device-card .btn-more-actions').click()`);
+  }
+  const offlineShutdownDisabled = await evalJS(`document.querySelector('#dropdown-dev-test-3 .btn-menu-shutdown').disabled`);
+  assert.equal(offlineShutdownDisabled, true, 'offline device shutdown must remain disabled');
+  await cdp.send('Emulation.setEmulatedOSTextScale', { scale: 1 }, targetSessionId);
+  assert.equal(runtimeErrors.length, 0, `menu interaction must not emit runtime errors: ${runtimeErrors.join('; ')}`);
+});

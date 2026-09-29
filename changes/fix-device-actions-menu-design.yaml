@@ -1,0 +1,9 @@
+task: fix-device-actions-menu-design
+description: 调整设备列表卡片操作菜单对齐、视觉样式及窄屏可用高度，并验证真实浏览器布局。
+allowed_paths:
+  - changes/fix-device-actions-menu-design.yaml
+  - docs/ui/设备卡片操作菜单样式与对齐调整方案.md
+  - internal/ui/static/style.css
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go
