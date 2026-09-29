@@ -233,6 +233,7 @@
 - 独立 Chrome 布局套件存在与本次变更无关的登录认证夹具失败，现象为 `loginOverlay` 未隐藏及后续数据夹具未加载。本次新增绑定交互测试全部通过，但部署前仍需通过真实页面完成按钮可见性和点击验收。
 - `v0.6.47` 部署后，`router.rokilai.online` 绑定保持 `disabled / waiting_report` revision `2`。重新启用接口在 Cloudflare 尚无同名记录时返回 `500` 且绑定状态不变。直接证据显示 `Service.Enable` 对所有状态统一要求 Provider 记录存在，而第 6.1 节契约要求禁用绑定可重新进入调和并在记录不存在时创建 AAAA；修复必须仅对 `observing` 接管路径保留记录存在检查，并增加正反例测试。
 - `v0.6.48` 部署后，绑定成功进入 `enabled / syncing` revision `3`，Cloudflare API 已创建记录 `d8595cdcb8f2d9e0040fd2a67626d62a`，AAAA 为 `240e:390:9a9:c220::1`、TTL `120`、`proxied=false`。首次权威 DNS 收敛检查失败后，Provider 返回空观察值且控制面失败分支未保存记录身份；下一次重试因 `provider_record_id` 为空误走创建并返回 `record_conflict`。修复必须在 DNS 未收敛等“写入已成功、验收未完成”的可重试错误中返回并持久化 Provider 记录身份，但不得设置 `last_applied_ipv6` 或标记 `synced`。
+- `v0.6.49` 已部署并能在后续可重试失败中保留记录身份，但生产绑定已在旧版本失败路径中丢失该字段。恢复不得删除已创建的 Cloudflare 记录；禁用绑定重新启用时若观察到唯一同名 AAAA，应采纳其记录 ID、IPv6、TTL 与代理属性后进入调和，同时保持 `last_applied_ipv6` 为空，直至权威 DNS 验证成功。
 
 ### 11.2 生产恢复步骤
 
