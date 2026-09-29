@@ -971,3 +971,108 @@ test('9. Server network resolves interface and IPv6 automatically without editab
 test('10. Runtime health: Zero uncaught exceptions and zero console errors', async () => {
   assert.equal(runtimeErrors.length, 0, `Runtime errors detected during tests: ${runtimeErrors.join('; ')}`);
 });
+
+test('11. Server domain binding actions remain visible and clickable across viewports', async () => {
+  const panel = { dataset: {} };
+  const list = { innerHTML: '' };
+  globalThis.window = { location: { origin: serverUrl } };
+  globalThis.localStorage = { getItem() { return null; } };
+  globalThis.document = { getElementById(id) { return { serverDomainBindings: panel, serverDomainBindingList: list }[id] || null; } };
+  globalThis.fetch = async () => new Response(JSON.stringify({ revision: 3, bindings: [
+    { binding_id: 'binding-1', fqdn: `${'a'.repeat(60)}.rokilai.online`, config_state: 'disabled', runtime_state: 'waiting_report', revision: 2 }
+  ] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const { loadServerDomainBindings } = await import('../static/js/settings.js');
+  await loadServerDomainBindings();
+  assert.match(list.innerHTML, /重新启用/);
+  assert.match(list.innerHTML, /删除/);
+
+  const stylesheet = fs.readFileSync(new URL('../static/style.css', import.meta.url), 'utf8');
+  const fixture = `<meta name="viewport" content="width=device-width, initial-scale=1"><style>${stylesheet}</style><main class="domain-bindings-panel" style="padding:16px"><div id="serverDomainBindingList">${list.innerHTML}</div></main><script>window.deleteServerDomainBinding=(id,revision)=>{window.clicked={id,revision}};<\/script>`;
+  await cdp.send('Page.navigate', { url: `data:text/html;charset=utf-8,${encodeURIComponent(fixture)}` }, targetSessionId);
+  await waitFor('document.readyState === "complete" && document.styleSheets.length > 0');
+
+  for (const viewport of [{ width: 1280, height: 800, mobile: false, scale: 1 }, { width: 360, height: 640, mobile: true, scale: 1 }, { width: 360, height: 640, mobile: true, scale: 2 }]) {
+    await setViewport(viewport.width, viewport.height, viewport.mobile);
+    await cdp.send('Emulation.setEmulatedOSTextScale', { scale: viewport.scale }, targetSessionId);
+    await evalJS(`document.querySelector('#serverDomainBindingList .btn-primary').focus()`);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, targetSessionId);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, targetSessionId);
+    const layout = await evalJS(`(() => {
+      const buttons = [...document.querySelectorAll('#serverDomainBindingList button')];
+      const rectangles = buttons.map(button => button.getBoundingClientRect());
+      const hits = buttons.map((button, index) => {
+        const rect = rectangles[index];
+        return document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === button;
+      });
+      return {
+        names: buttons.map(button => button.textContent),
+        types: buttons.map(button => button.type),
+        focusable: document.activeElement === buttons[1],
+        outline: getComputedStyle(buttons[1]).outlineWidth,
+        rowDisplay: getComputedStyle(document.querySelector('.detail-row')).display,
+        hits,
+        bounds: rectangles.map(rect => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })),
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+        rowScrollWidth: document.querySelector('.detail-row').scrollWidth,
+        rowClientWidth: document.querySelector('.detail-row').clientWidth
+      };
+    })()`);
+    assert.deepEqual(layout.names, ['重新启用', '删除']);
+    assert.deepEqual(layout.types, ['button', 'button']);
+    assert.equal(layout.focusable, true);
+    assert.equal(layout.rowDisplay, 'flex');
+    assert.equal(layout.outline, '2px');
+    assert.deepEqual(layout.hits, [true, true]);
+    assert.ok(layout.scrollWidth <= layout.clientWidth + 1, `page overflow at ${viewport.width}px / ${viewport.scale}x`);
+    assert.ok(layout.rowScrollWidth <= layout.rowClientWidth + 1, `binding row overflow at ${viewport.width}px / ${viewport.scale}x`);
+    assert.ok(layout.bounds.every(rect => rect.left >= 0 && rect.right <= viewport.width + 1));
+    assert.ok(layout.bounds[0].right <= layout.bounds[1].left || layout.bounds[0].bottom <= layout.bounds[1].top);
+  }
+
+  await evalJS(`document.querySelector('#serverDomainBindingList .btn-danger').click()`);
+  assert.deepEqual(await evalJS('window.clicked'), { id: 'binding-1', revision: 2 });
+  assert.equal(runtimeErrors.length, 0, `Binding layout must not emit runtime errors: ${runtimeErrors.join('; ')}`);
+});
+
+test('12. Server binding delete click performs revision-safe request and refreshes the real page', async () => {
+  await cdp.send('Page.navigate', { url: `${serverUrl}/` }, targetSessionId);
+  await waitFor('document.readyState === "complete" && document.getElementById("loginOverlay")');
+  if (await evalJS('!document.getElementById("loginOverlay").classList.contains("hidden")')) {
+    await evalJS(`(() => {
+      document.getElementById('loginUsername').value = 'admin';
+      document.getElementById('loginPassword').value = 'admin123';
+      document.getElementById('loginSubmitBtn').click();
+    })()`);
+    await waitFor('document.getElementById("loginOverlay").classList.contains("hidden")');
+  }
+
+  await evalJS(`(() => {
+    window.bindingRequests = [];
+    window.confirm = () => true;
+    const originalFetch = window.fetch;
+    let bindings = [{ binding_id: 'binding-1', fqdn: 'files.rokilai.online', config_state: 'disabled', runtime_state: 'waiting_report', revision: 4 }];
+    window.fetch = (url, options = {}) => {
+      const target = String(url);
+      if (!target.includes('/api/v1/server/domain-bindings')) return originalFetch(url, options);
+      window.bindingRequests.push({ url: target, method: options.method || 'GET', body: options.body || '' });
+      if (options.method === 'DELETE') bindings = [];
+      return Promise.resolve(new Response(JSON.stringify({ revision: 9, provider: { diagnostic: 'ready' }, bindings }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      }));
+    };
+    window.location.hash = '#/settings/network';
+  })()`);
+  await waitFor('document.querySelector("#serverDomainBindingList .btn-danger")');
+  assert.match(await evalJS('document.getElementById("serverDomainBindingList").textContent'), /files\.rokilai\.online/);
+  await evalJS(`document.querySelector('#serverDomainBindingList .btn-danger').click()`);
+  await waitFor('document.getElementById("serverDomainBindingList").textContent.includes("暂无受管域名")');
+
+  const requests = await evalJS('window.bindingRequests');
+  const deletion = requests.filter(request => request.method === 'DELETE');
+  assert.equal(deletion.length, 1);
+  assert.match(deletion[0].url, /\/api\/v1\/server\/domain-bindings\/binding-1$/);
+  assert.deepEqual(JSON.parse(deletion[0].body), { expected_revision: 4 });
+  assert.ok(requests.filter(request => request.method === 'GET').length >= 2);
+  assert.equal(runtimeErrors.length, 0, `Delete interaction must not emit runtime errors: ${runtimeErrors.join('; ')}`);
+});

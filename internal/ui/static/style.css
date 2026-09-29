@@ -910,6 +910,28 @@ body.sidebar-open {
   min-height: 24px;
 }
 
+.domain-bindings-panel .detail-row {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.domain-bindings-panel .detail-row > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.domain-bindings-panel .detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.domain-bindings-panel .detail-actions .btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .detail-label {
   color: var(--text-muted);
   font-size: 0.74rem;
