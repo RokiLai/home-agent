@@ -1,0 +1,5 @@
+task: fix-domain-binding-owner-permission-ui-design
+description: 设计 DDNS 设备源 Owner 权限一致性与设备域名绑定操作入口补全方案。
+allowed_paths:
+  - changes/fix-domain-binding-owner-permission-ui-design.yaml
+  - docs/fixes/设备域名绑定Owner权限与操作入口缺失修复设计方案.md

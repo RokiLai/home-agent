@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,11 +10,104 @@ import (
 	"testing"
 	"time"
 
+	"homeagent/internal/auth"
 	"homeagent/internal/device"
+	"homeagent/internal/devicestate"
+	"homeagent/internal/domainbinding"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
 	"homeagent/internal/versionstatus"
 )
+
+type bindingUserReaderStub struct {
+	users map[string]*auth.User
+}
+
+func (stub bindingUserReaderStub) GetUser(userID string) (*auth.User, error) {
+	user, ok := stub.users[userID]
+	if !ok {
+		return nil, auth.ErrUserNotFound
+	}
+	copy := *user
+	return &copy, nil
+}
+
+type bindingDeviceScopeStub struct {
+	exists      bool
+	ownerUserID string
+	grants      map[string]bool
+}
+
+func (stub bindingDeviceScopeStub) IsDeviceVisible(userID string, _ string) (bool, bool) {
+	return userID == stub.ownerUserID || stub.grants[userID], stub.exists
+}
+
+func (stub bindingDeviceScopeStub) IsDeviceOwner(userID string, _ string) bool {
+	return userID == stub.ownerUserID
+}
+
+func (stub bindingDeviceScopeStub) HasDevicePermission(userID string, _ string, _ auth.Permission) bool {
+	return userID == stub.ownerUserID || stub.grants[userID]
+}
+
+func TestBindingSourceResolverUsesCurrentOwnerRoleForDeviceAuthorization(t *testing.T) {
+	stateStore := devicestate.NewMemoryStore()
+	if err := stateStore.Save(devicestate.DeviceIPv6State{DeviceID: "device-1", DesiredAddress: "2001:db8::10"}); err != nil {
+		t.Fatal(err)
+	}
+	users := bindingUserReaderStub{users: map[string]*auth.User{
+		"instance-owner": {ID: "instance-owner", Role: auth.RoleOwner, Status: auth.UserStatusActive},
+		"device-owner":   {ID: "device-owner", Role: auth.RoleAdmin, Status: auth.UserStatusActive},
+		"granted-admin":  {ID: "granted-admin", Role: auth.RoleAdmin, Status: auth.UserStatusActive},
+		"plain-admin":    {ID: "plain-admin", Role: auth.RoleAdmin, Status: auth.UserStatusActive},
+		"disabled-owner": {ID: "disabled-owner", Role: auth.RoleOwner, Status: auth.UserStatusDisabled},
+		"viewer":         {ID: "viewer", Role: auth.RoleViewer, Status: auth.UserStatusActive},
+	}}
+	scope := bindingDeviceScopeStub{exists: true, ownerUserID: "device-owner", grants: map[string]bool{"granted-admin": true}}
+	resolver := bindingSourceResolver{
+		devices:    devicestate.NewService(stateStore),
+		users:      users,
+		authorizer: auth.NewAuthorizer(scope),
+	}
+
+	for _, userID := range []string{"instance-owner", "device-owner", "granted-admin"} {
+		address, err := resolver.DesiredIPv6(context.Background(), domainbinding.Binding{SourceType: domainbinding.SourceDevice, SourceID: "device-1", OwnerUserID: userID})
+		if err != nil || address != "2001:db8::10" {
+			t.Fatalf("user %s should be authorized, address=%q err=%v", userID, address, err)
+		}
+	}
+
+	for _, userID := range []string{"plain-admin", "disabled-owner", "viewer", "missing-user", ""} {
+		_, err := resolver.DesiredIPv6(context.Background(), domainbinding.Binding{SourceType: domainbinding.SourceDevice, SourceID: "device-1", OwnerUserID: userID})
+		if !errors.Is(err, domainbinding.ErrSourceUnauthorized) {
+			t.Fatalf("user %q should be rejected with ErrSourceUnauthorized, got %v", userID, err)
+		}
+	}
+}
+
+func TestBindingSourceResolverPreservesLegacyAdminCompatibility(t *testing.T) {
+	stateStore := devicestate.NewMemoryStore()
+	_ = stateStore.Save(devicestate.DeviceIPv6State{DeviceID: "device-1", DesiredAddress: "2001:db8::11"})
+	resolver := bindingSourceResolver{devices: devicestate.NewService(stateStore)}
+	address, err := resolver.DesiredIPv6(context.Background(), domainbinding.Binding{SourceType: domainbinding.SourceDevice, SourceID: "device-1", OwnerUserID: "legacy-admin"})
+	if err != nil || address != "2001:db8::11" {
+		t.Fatalf("legacy-admin compatibility failed: address=%q err=%v", address, err)
+	}
+}
+
+func TestBindingSourceResolverRejectsMissingDeviceForInstanceOwner(t *testing.T) {
+	resolver := bindingSourceResolver{
+		devices: devicestate.NewService(nil),
+		users: bindingUserReaderStub{users: map[string]*auth.User{
+			"instance-owner": {ID: "instance-owner", Role: auth.RoleOwner, Status: auth.UserStatusActive},
+		}},
+		authorizer: auth.NewAuthorizer(bindingDeviceScopeStub{exists: false}),
+	}
+	_, err := resolver.DesiredIPv6(context.Background(), domainbinding.Binding{SourceType: domainbinding.SourceDevice, SourceID: "missing-device", OwnerUserID: "instance-owner"})
+	if !errors.Is(err, domainbinding.ErrSourceUnauthorized) {
+		t.Fatalf("missing device should be rejected with ErrSourceUnauthorized, got %v", err)
+	}
+}
 
 type versionPolicyReleaseFetcher struct {
 	release *githubrelease.Release
