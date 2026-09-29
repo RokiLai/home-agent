@@ -194,10 +194,10 @@ func (client *Client) Apply(ctx context.Context, request domainbinding.ApplyRequ
 	}
 	addresses, err := client.dnsVerifier.LookupAAAA(ctx, request.FQDN)
 	if err != nil {
-		return domainbinding.RecordObservation{}, &Error{Kind: ErrorDNSNotConverged, Retryable: true, Message: "authoritative DNS query failed"}
+		return observation(reread), &Error{Kind: ErrorDNSNotConverged, Retryable: true, Message: "authoritative DNS query failed"}
 	}
 	if len(addresses) != 1 || addresses[0] != desired.String() {
-		return domainbinding.RecordObservation{}, &Error{Kind: ErrorDNSNotConverged, Retryable: true, Message: "authoritative DNS does not match desired IPv6"}
+		return observation(reread), &Error{Kind: ErrorDNSNotConverged, Retryable: true, Message: "authoritative DNS does not match desired IPv6"}
 	}
 	return observation(reread), nil
 }

@@ -105,6 +105,11 @@ func (coordinator *Coordinator) process(ctx context.Context, task store.Reconcil
 		return store.ErrRevisionConflict
 	}
 	observation, reconcileErr := NewReconciler(coordinator.provider).Reconcile(ctx, *binding)
+	if reconcileErr != nil && observation.RecordID != "" {
+		if _, err := coordinator.service.RecordObservation(ctx, *binding, observation, RuntimeFailed, safeError(reconcileErr)); err != nil {
+			return err
+		}
+	}
 	return coordinator.service.CompleteTask(ctx, task.TaskID, observation, reconcileErr)
 }
 
