@@ -1142,6 +1142,9 @@ body.sidebar-open {
   border-radius: 10px;
   padding: 6px;
   min-width: 170px;
+  max-height: min(400px, calc(100dvh - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -1301,6 +1304,50 @@ body.sidebar-open {
 .btn-upgrade-device:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Keep card action menu rows aligned despite shared standalone button styles. */
+.device-dropdown-menu .dropdown-item {
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  flex-shrink: 0;
+  justify-content: flex-start;
+}
+
+.device-dropdown-menu .dropdown-item svg {
+  width: 16px;
+  height: 16px;
+}
+
+.device-dropdown-menu .btn-menu-sync,
+.device-dropdown-menu .btn-menu-upgrade,
+.device-dropdown-menu .btn-menu-shutdown,
+.device-dropdown-menu .btn-menu-del {
+  background: transparent;
+  border-color: transparent;
+}
+
+.device-dropdown-menu .btn-menu-sync:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.device-dropdown-menu .btn-menu-upgrade:hover:not(:disabled) {
+  background: rgba(14, 165, 233, 0.15);
+}
+
+.device-dropdown-menu .btn-menu-shutdown:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.device-dropdown-menu .btn-menu-del:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.15);
+}
+
+.device-dropdown-menu .dropdown-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .btn-wake-device {
