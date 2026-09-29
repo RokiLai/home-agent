@@ -230,9 +230,12 @@ func TestClientDoesNotReportSyncedWhenAuthoritativeDNSDiffers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Apply(context.Background(), domainbinding.ApplyRequest{FQDN: "host.rokilai.online", ProviderRecordID: "record-id-redacted", DesiredIPv6: "2001:db8::2", TTL: 120})
+	result, err := client.Apply(context.Background(), domainbinding.ApplyRequest{FQDN: "host.rokilai.online", ProviderRecordID: "record-id-redacted", DesiredIPv6: "2001:db8::2", TTL: 120})
 	var providerErr *Error
 	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorDNSNotConverged {
 		t.Fatalf("err=%v", err)
+	}
+	if result.RecordID != "record-id-redacted" || result.IPv6 != "2001:db8::2" {
+		t.Fatalf("DNS convergence failure must retain applied record identity, result=%+v", result)
 	}
 }

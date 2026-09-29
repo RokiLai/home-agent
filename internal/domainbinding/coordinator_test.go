@@ -118,6 +118,41 @@ func (provider *coordinatorProvider) Apply(_ context.Context, request ApplyReque
 	return RecordObservation{Exists: true, RecordID: "record-1", IPv6: request.DesiredIPv6, TTL: 120}, nil
 }
 
+type convergencePendingProvider struct{}
+
+func (convergencePendingProvider) Observe(context.Context, ObserveRequest) (RecordObservation, error) {
+	return RecordObservation{}, nil
+}
+
+func (convergencePendingProvider) Apply(_ context.Context, request ApplyRequest) (RecordObservation, error) {
+	return RecordObservation{Exists: true, RecordID: "record-created", IPv6: request.DesiredIPv6, TTL: 120}, classifiedTestError{}
+}
+
+type classifiedTestError struct{}
+
+func (classifiedTestError) Error() string    { return "dns not converged" }
+func (classifiedTestError) Category() string { return "dns_not_converged" }
+func (classifiedTestError) CanRetry() bool   { return true }
+
+func TestCoordinatorRetainsProviderIdentityWhenDNSConvergenceIsPending(t *testing.T) {
+	repository, err := filestore.OpenControlPlane(filepath.Join(t.TempDir(), "control-plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store.NewControlPlaneService(repository), nil)
+	if _, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "pending.rokilai.online", ExpectedRevision: 0}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewCoordinator(service, convergencePendingProvider{}, fixedResolver{address: "2001:db8::2"})
+	if err := coordinator.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := service.List(context.Background(), SourceServer, LocalServerSourceID)
+	if err != nil || len(bindings) != 1 || bindings[0].ProviderRecordID != "record-created" || bindings[0].ProviderIPv6 != "2001:db8::2" || bindings[0].LastAppliedIPv6 != "" || bindings[0].RuntimeState != RuntimeFailed {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+}
+
 func TestCoordinatorObservesWithoutWritingAndReconcilesEnabledBinding(t *testing.T) {
 	repository, err := filestore.OpenControlPlane(filepath.Join(t.TempDir(), "control-plane.json"))
 	if err != nil {

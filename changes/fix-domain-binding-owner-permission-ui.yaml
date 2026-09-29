@@ -10,5 +10,9 @@ allowed_paths:
   - internal/ui/testdata/domain-binding.test.mjs
   - internal/domainbinding/service.go
   - internal/domainbinding/service_test.go
+  - internal/domainbinding/coordinator.go
+  - internal/domainbinding/coordinator_test.go
+  - internal/domainbinding/cloudflare/client.go
+  - internal/domainbinding/cloudflare/client_test.go
   - internal/version/version.go
   - internal/version/version_test.go
