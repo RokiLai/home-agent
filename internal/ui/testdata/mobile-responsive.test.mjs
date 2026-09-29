@@ -967,3 +967,23 @@ test('device card actions, health modal, and dropdowns interact properly in mobi
   closeHealthModal();
   assert.equal(isAnyModalOpen(), false);
 });
+
+test('device detail view implements mobile responsive rules (tabs scroll, stats hidden, danger zone stacked)', async () => {
+  const css = await loadCSS();
+  const html = await loadHTML();
+
+  // 1. CSS rules for detail tabs horizontal scrolling without breaking container
+  assert.match(css, /\.detail-tab-nav\s*\{[^}]*overflow-x:\s*auto/, 'detail-tab-nav must enable horizontal scroll');
+  assert.match(css, /\.detail-tab-nav\s*\{[^}]*white-space:\s*nowrap/, 'detail-tab-nav must prevent line wraps');
+  assert.match(css, /\.detail-tab\s*\{[^}]*flex-shrink:\s*0/, 'detail-tab must have flex-shrink: 0');
+
+  // 2. CSS rules for hiding global stats-grid in deviceDetail page on mobile <= 640px
+  assert.match(css, /\.admin-main\[data-page=["']?deviceDetail["']?\]\s+\.stats-grid\s*\{[^}]*display:\s*none/, 'stats-grid must be hidden on mobile in deviceDetail page');
+
+  // 3. CSS rules for danger-zone responsive stacking on mobile
+  assert.match(css, /\.danger-zone-row/, 'CSS must declare .danger-zone-row');
+  assert.match(css, /@media\s*\(\s*max-width:\s*640px\s*\)[\s\S]*\.danger-zone-row\s*\{[^}]*flex-direction:\s*column/, 'danger-zone-row must stack vertically on mobile <= 640px');
+
+  // 4. HTML verification: detail-tab-nav does not have hardcoded conflicting inline styles
+  assert.doesNotMatch(html, /<div class="detail-tab-nav" style="[^"]*display:\s*flex/, 'index.html detail-tab-nav must rely on CSS class instead of inline styles');
+});
