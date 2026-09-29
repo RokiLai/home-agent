@@ -1028,11 +1028,22 @@ export async function loadDeviceDomainBindings(deviceId) {
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     panel.dataset.revision = String(data.revision || 0);
     const list = document.getElementById('deviceDomainBindingList');
-    if (list) list.innerHTML = (data.bindings || []).map(binding => `<div class="detail-row"><div><strong>${binding.fqdn}</strong><div class="text-muted font-sm">${binding.config_state} / ${binding.runtime_state}</div></div>${binding.config_state === 'observing' ? `<button class="btn btn-primary" onclick="enableDeviceDomainBinding('${deviceId}', '${binding.binding_id}', ${binding.revision})">确认接管</button>` : ''}</div>`).join('') || '<div class="text-muted font-sm">暂无受管域名</div>';
+    if (list) list.innerHTML = renderDeviceDomainBindingRows(deviceId, data.bindings || []);
   } catch (error) {
 	const list = document.getElementById('deviceDomainBindingList');
 	if (list) list.textContent = `域名状态暂不可用：${error.message}`;
   }
+}
+
+export function renderDeviceDomainBindingRows(deviceId, bindings) {
+  if (!bindings.length) return '<div class="text-muted font-sm">暂无受管域名</div>';
+  return bindings.map(binding => {
+    const enableLabel = binding.config_state === 'observing' ? '确认接管' : '重新启用';
+    const primaryAction = binding.config_state === 'disabled' || binding.config_state === 'observing'
+      ? `<button class="btn btn-primary" onclick="enableDeviceDomainBinding('${deviceId}', '${binding.binding_id}', ${binding.revision})">${enableLabel}</button>`
+      : `<button class="btn btn-secondary" onclick="disableDeviceDomainBinding('${deviceId}', '${binding.binding_id}', ${binding.revision})">禁用</button>`;
+    return `<div class="detail-row"><div><strong>${escapeHTML(binding.fqdn)}</strong><div class="text-muted font-sm">${escapeHTML(binding.config_state)} / ${escapeHTML(binding.runtime_state)}</div></div><div class="detail-actions">${primaryAction}<button class="btn btn-danger" onclick="deleteDeviceDomainBinding('${deviceId}', '${binding.binding_id}', ${binding.revision})">删除</button></div></div>`;
+  }).join('');
 }
 
 export async function createDeviceDomainBinding(deviceId) {
@@ -1052,8 +1063,31 @@ export async function createDeviceDomainBinding(deviceId) {
 export async function enableDeviceDomainBinding(deviceId, bindingId, revision) {
   if (!confirm('确认 ddns-go 或其他发布者已停止管理该域名，并由 HomeAgent 接管？')) return;
   const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/${encodeURIComponent(bindingId)}/enable`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision, publisher_disabled_confirmed:true})});
-  if (!response.ok) { showToast('启用域名失败', 'error'); return; }
+  if (!response.ok) { showToast(await domainBindingError(response, '启用域名失败'), 'error'); return; }
   await loadDeviceDomainBindings(deviceId);
+}
+
+export async function disableDeviceDomainBinding(deviceId, bindingId, revision) {
+  if (!confirm('禁用后 HomeAgent 将停止调和，但 DNS AAAA 不会自动删除。确认继续？')) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/${encodeURIComponent(bindingId)}/disable`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision})});
+  if (!response.ok) { showToast(await domainBindingError(response, '禁用域名失败'), 'error'); return; }
+  await loadDeviceDomainBindings(deviceId);
+}
+
+export async function deleteDeviceDomainBinding(deviceId, bindingId, revision) {
+  if (!confirm('删除绑定不会删除 Cloudflare DNS AAAA 记录，并将释放该域名供重新绑定。确认继续？')) return;
+  const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/${encodeURIComponent(bindingId)}`, {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision})});
+  if (!response.ok) { showToast(await domainBindingError(response, '删除域名绑定失败'), 'error'); return; }
+  await loadDeviceDomainBindings(deviceId);
+}
+
+async function domainBindingError(response, fallback) {
+  try {
+    const data = await response.json();
+    return data.error || fallback;
+  } catch (_) {
+    return fallback;
+  }
 }
 
 // 暴露给全局 window 供 HTML inline 事件调用
@@ -1071,4 +1105,6 @@ if (typeof window !== 'undefined') {
 	window.loadDeviceDomainBindings = loadDeviceDomainBindings;
 	window.createDeviceDomainBinding = createDeviceDomainBinding;
 	window.enableDeviceDomainBinding = enableDeviceDomainBinding;
+	window.disableDeviceDomainBinding = disableDeviceDomainBinding;
+	window.deleteDeviceDomainBinding = deleteDeviceDomainBinding;
 }

@@ -73,22 +73,33 @@ type config struct {
 }
 
 type bindingSourceResolver struct {
-	devices  *devicestate.Service
-	server   *servernetwork.Collector
-	registry *registry.Registry
+	devices *devicestate.Service
+	server  *servernetwork.Collector
+	users   interface {
+		GetUser(string) (*auth.User, error)
+	}
+	authorizer *auth.Authorizer
 }
 
 func (resolver bindingSourceResolver) DesiredIPv6(ctx context.Context, binding domainbinding.Binding) (string, error) {
 	switch binding.SourceType {
 	case domainbinding.SourceDevice:
-		if resolver.registry == nil {
-			return "", domainbinding.ErrSourceUnauthorized
-		}
-		if _, err := resolver.registry.Get(binding.SourceID); err != nil {
-			return "", domainbinding.ErrSourceUnauthorized
-		}
-		if binding.OwnerUserID != "" && binding.OwnerUserID != "legacy-admin" && !resolver.registry.IsDeviceOwner(binding.OwnerUserID, binding.SourceID) && !resolver.registry.HasDevicePermission(binding.OwnerUserID, binding.SourceID, auth.PermDevicesUpdate) {
-			return "", domainbinding.ErrSourceUnauthorized
+		if binding.OwnerUserID != "legacy-admin" {
+			if resolver.users == nil || resolver.authorizer == nil {
+				return "", domainbinding.ErrSourceUnauthorized
+			}
+			user, err := resolver.users.GetUser(binding.OwnerUserID)
+			if err != nil || user.Status != auth.UserStatusActive {
+				return "", domainbinding.ErrSourceUnauthorized
+			}
+			decision := resolver.authorizer.Authorize(auth.AuthorizationRequest{
+				Actor:      auth.Actor{UserID: user.ID, Username: user.Username, Role: user.Role},
+				Permission: auth.PermDevicesUpdate,
+				Resource:   auth.DeviceResource(binding.SourceID),
+			})
+			if !decision.Allowed {
+				return "", domainbinding.ErrSourceUnauthorized
+			}
 		}
 		state, err := resolver.devices.Get(binding.SourceID)
 		if err != nil {
@@ -519,7 +530,7 @@ func serve(c config) error {
 			return fmt.Errorf("initialize domain binding cloudflare provider: %w", providerErr)
 		}
 		domainBindingService.AttachProvider(provider)
-		domainBindingCoordinator = domainbinding.NewCoordinator(domainBindingService, provider, bindingSourceResolver{devices: devStateSvc, server: serverIPv6Collector, registry: r})
+		domainBindingCoordinator = domainbinding.NewCoordinator(domainBindingService, provider, bindingSourceResolver{devices: devStateSvc, server: serverIPv6Collector, users: sessionMgr, authorizer: auth.NewAuthorizer(r)})
 	}
 	if cfClient != nil {
 		store := servernetwork.NewFileStateStore(c.dataDir)
