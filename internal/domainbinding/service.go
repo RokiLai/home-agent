@@ -186,6 +186,13 @@ func (service *Service) Enable(ctx context.Context, command EnableCommand) (Bind
 		if current.ConfigState == ConfigObserving && !observation.Exists {
 			return Binding{}, errors.New("provider record disappeared before enable")
 		}
+		if current.ConfigState == ConfigDisabled && observation.Exists {
+			adopted, err := service.RecordObservation(ctx, *current, observation, current.RuntimeState, current.LastError)
+			if err != nil {
+				return Binding{}, err
+			}
+			current = &adopted
+		}
 	}
 	return service.transition(ctx, command.BindingID, command.ExpectedRevision, ConfigEnabled)
 }
