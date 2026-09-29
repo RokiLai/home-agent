@@ -1,0 +1,12 @@
+task: mobile-device-detail-responsive
+description: 优化设备详情页移动端视口适配，解决二级标签栏横向溢出破损、全局指标卡片挤占首屏及操作按钮触控排版问题。
+allowed_paths:
+  - changes/mobile-device-detail-responsive.yaml
+  - docs/ui/设备详情页移动端响应式与视口适配设计方案.md
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router.js
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/testdata/mobile-responsive.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

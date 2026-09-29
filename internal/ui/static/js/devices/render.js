@@ -749,14 +749,14 @@ export function renderDeviceDetailView(deviceId, section = 'overview', options =
         <div class="card danger-zone" style="border: 1px solid var(--rose); background: rgba(244, 63, 94, 0.05);">
           <div class="card-header" style="color: var(--rose);"><strong>危险区域与电源管理</strong></div>
           <div class="card-body" style="display:flex; flex-direction:column; gap:12px;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="danger-zone-row">
               <div>
                 <div style="font-weight:600;">远程关闭设备</div>
                 <div class="text-muted font-sm">通过 Agent 发送系统关机信号，关机后将断开连接。</div>
               </div>
               <button class="btn btn-warning btn-detail-shutdown" onclick="handleDetailShutdown('${escapeHTML(device.id)}', '${escapeHTML(device.hostname || '')}')">远程关机</button>
             </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); padding-top:12px;">
+            <div class="danger-zone-row" style="border-top:1px solid var(--border-color); padding-top:12px;">
               <div>
                 <div style="font-weight:600; color:var(--rose);">移除此设备</div>
                 <div class="text-muted font-sm">从控制平面注销该受管节点，注销后设备凭据将失效。</div>

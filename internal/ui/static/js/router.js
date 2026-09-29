@@ -155,6 +155,16 @@ export function switchPage(pageName, routeParams = {}) {
     activeView.classList.add('active');
   }
 
+  const adminMain = (typeof document.getElementById === 'function' ? document.getElementById('adminMain') : null) ||
+    (typeof document.querySelector === 'function' ? document.querySelector('.admin-main') : null);
+  if (adminMain) {
+    if (adminMain.dataset) {
+      adminMain.dataset.page = pageName;
+    } else if (typeof adminMain.setAttribute === 'function') {
+      adminMain.setAttribute('data-page', pageName);
+    }
+  }
+
   // Update Header Title & Description
   if (currentPageTitle && pageMeta[pageName]) {
     currentPageTitle.innerText = pageMeta[pageName].title;

@@ -107,7 +107,7 @@
     </aside>
 
     <!-- Main Content Area -->
-    <div class="admin-main">
+    <div class="admin-main" id="adminMain">
       <!-- Top Header / Bar -->
       <header class="top-header">
         <div class="top-header-left">
@@ -383,7 +383,7 @@
               </div>
               <div id="deviceDetailBadge"></div>
             </div>
-            <div class="detail-tab-nav" style="display: flex; gap: 8px; margin: 12px 0 16px 0; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+            <div class="detail-tab-nav">
               <button class="filter-pill detail-tab active" data-section="overview" onclick="navigateDeviceDetailSection('overview')">运行概览</button>
               <button class="filter-pill detail-tab" data-section="health" onclick="navigateDeviceDetailSection('health')">健康诊断</button>
               <button class="filter-pill detail-tab" data-section="ssh" onclick="navigateDeviceDetailSection('ssh')">SSH 与访问</button>
