@@ -5,8 +5,8 @@
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | 设计 | 已确认 | 2026-09-29 用户确认按本文执行 |
-| 实施 | 进行中 | `v0.6.47` 已部署；生产恢复发现禁用绑定缺少 DNS 记录时无法重新启用，正在修复 |
-| 验收 | 进行中 | 本地质量门禁与 `v0.6.47` 部署通过；生产绑定恢复尚未通过 |
+| 实施 | 已完成 | 修复经 PR #44、#45、#46、#47 合并，最终版本 `v0.6.50` 已部署 |
+| 验收 | 已完成 | 本地质量门禁、发布流程、生产绑定恢复、公共 DNS 与跨周期稳定性均通过 |
 
 对应设计变更清单为 `changes/fix-domain-binding-owner-permission-ui-design.yaml`，实施变更清单为 `changes/fix-domain-binding-owner-permission-ui.yaml`。
 
@@ -234,6 +234,7 @@
 - `v0.6.47` 部署后，`router.rokilai.online` 绑定保持 `disabled / waiting_report` revision `2`。重新启用接口在 Cloudflare 尚无同名记录时返回 `500` 且绑定状态不变。直接证据显示 `Service.Enable` 对所有状态统一要求 Provider 记录存在，而第 6.1 节契约要求禁用绑定可重新进入调和并在记录不存在时创建 AAAA；修复必须仅对 `observing` 接管路径保留记录存在检查，并增加正反例测试。
 - `v0.6.48` 部署后，绑定成功进入 `enabled / syncing` revision `3`，Cloudflare API 已创建记录 `d8595cdcb8f2d9e0040fd2a67626d62a`，AAAA 为 `240e:390:9a9:c220::1`、TTL `120`、`proxied=false`。首次权威 DNS 收敛检查失败后，Provider 返回空观察值且控制面失败分支未保存记录身份；下一次重试因 `provider_record_id` 为空误走创建并返回 `record_conflict`。修复必须在 DNS 未收敛等“写入已成功、验收未完成”的可重试错误中返回并持久化 Provider 记录身份，但不得设置 `last_applied_ipv6` 或标记 `synced`。
 - `v0.6.49` 已部署并能在后续可重试失败中保留记录身份，但生产绑定已在旧版本失败路径中丢失该字段。恢复不得删除已创建的 Cloudflare 记录；禁用绑定重新启用时若观察到唯一同名 AAAA，应采纳其记录 ID、IPv6、TTL 与代理属性后进入调和，同时保持 `last_applied_ipv6` 为空，直至权威 DNS 验证成功。
+- `v0.6.50` 增加禁用绑定重新启用时的现有记录身份采纳，并通过回归测试验证只保存记录 ID、IPv6、TTL 与代理属性，不提前写入 `last_applied_ipv6`。完整 `-race` 回归及变更范围、架构依赖、格式和模块门禁通过，Diff Coverage 为 `80.0%`。
 
 ### 11.2 生产恢复步骤
 
@@ -249,6 +250,17 @@
 8. 使测试会话失效，不保留会话 Cookie 或临时凭据。
 
 若创建或同步失败，回滚为禁用 HomeAgent 绑定并保留现有 DNS；不得自动删除记录。若记录尚未创建，回滚只需删除或保持禁用绑定，不引入其他发布者，直到根因明确。
+
+### 11.3 最终生产验收证据
+
+2026-09-29 完成以下生产验收：
+
+- PR #47 合并到 `main`，GitHub Actions 发布运行 `36547048999` 成功创建并验证 `server-v0.6.50`；
+- 发布资产 `homeagent-server-darwin-arm64` 按 Release SHA-256 和随附校验文件验证一致，宿主机完成原子替换并保留 `v0.6.49` 回滚副本；
+- 宿主机二进制报告 `homeagent-server v0.6.50 (darwin/arm64)`，LaunchAgent、`http://127.0.0.1:8888/health` 与生产 HTTPS 健康检查正常；
+- `router.rokilai.online` 绑定从 revision `3` 的 `enabled / failed` 依次转为 revision `4` 的 `disabled / waiting_report`、revision `5` 的 `enabled / waiting_report`，重新启用响应立即采纳 Cloudflare 记录 ID `d8595cdcb8f2d9e0040fd2a67626d62a`，且当时 `last_applied_ipv6` 仍为空；
+- 调和完成后绑定稳定为 `enabled / synced`，`desired_ipv6`、`provider_ipv6` 与 `last_applied_ipv6` 均为 `240e:390:9a9:c220::1`，`last_error` 为空；
+- 跨两个 30 秒调和周期复核状态、revision 和记录 ID 均保持稳定；Cloudflare DoH 与 Google DoH 均返回唯一 AAAA `240e:390:9a9:c220::1`，TTL 为 `120`。
 
 ## 12. 成功标准
 
