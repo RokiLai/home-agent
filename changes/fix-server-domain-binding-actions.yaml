@@ -1,0 +1,11 @@
+task: fix-server-domain-binding-actions
+description: 补齐服务端域名绑定列表的状态相关操作和删除入口。
+allowed_paths:
+  - changes/fix-server-domain-binding-actions.yaml
+  - docs/fixes/服务端域名绑定生命周期操作入口修复设计方案.md
+  - internal/ui/static/js/settings.js
+  - internal/ui/static/style.css
+  - internal/ui/testdata/domain-binding.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

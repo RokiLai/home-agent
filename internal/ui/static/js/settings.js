@@ -1,5 +1,5 @@
 import { state, sanitizeHost } from './state.js';
-import { showToast, addLog } from './utils.js';
+import { showToast, addLog, escapeHTML } from './utils.js';
 import { updateInstallCommand } from './onboarding.js';
 import { apiFetch } from './api.js';
 import { fetchUsersList } from './users.js';
@@ -88,8 +88,16 @@ export function initSettingsForm() {
 }
 
 function renderDomainBindingRows(bindings) {
-  if (!bindings.length) return '<div class="text-muted font-sm">暂无受管域名</div>';
-  return bindings.map(binding => `<div class="detail-row"><div><strong>${binding.fqdn}</strong><div class="text-muted font-sm">${binding.config_state} / ${binding.runtime_state}</div></div><button class="btn btn-secondary" onclick="disableServerDomainBinding('${binding.binding_id}', ${binding.revision})">禁用</button></div>`).join('');
+  const visible = bindings.filter(binding => binding.config_state !== 'deleted');
+  if (!visible.length) return '<div class="text-muted font-sm">暂无受管域名</div>';
+  return visible.map(binding => {
+    const primaryAction = binding.config_state === 'observing' || binding.config_state === 'disabled'
+      ? `<button type="button" class="btn btn-primary" onclick="enableServerDomainBinding('${binding.binding_id}', ${binding.revision})">${binding.config_state === 'observing' ? '确认接管' : '重新启用'}</button>`
+      : binding.config_state === 'enabled'
+        ? `<button type="button" class="btn btn-secondary" onclick="disableServerDomainBinding('${binding.binding_id}', ${binding.revision})">禁用</button>`
+        : '';
+    return `<div class="detail-row"><div><strong>${escapeHTML(binding.fqdn)}</strong><div class="text-muted font-sm">${escapeHTML(binding.config_state)} / ${escapeHTML(binding.runtime_state)}</div></div><div class="detail-actions">${primaryAction}<button type="button" class="btn btn-danger" onclick="deleteServerDomainBinding('${binding.binding_id}', ${binding.revision})">删除</button></div></div>`;
+  }).join('');
 }
 
 export async function loadServerDomainBindings() {
@@ -127,14 +135,43 @@ export async function createServerDomainBinding() {
 
 export async function disableServerDomainBinding(bindingId, revision) {
   if (!confirm('禁用后 HomeAgent 将停止调和，但 DNS AAAA 不会自动删除。确认继续？')) return;
-  const response = await apiFetch(`${state.serverHost}/api/v1/server/domain-bindings/${encodeURIComponent(bindingId)}/disable`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({expected_revision:revision})});
-  if (!response.ok) { showToast('禁用域名失败', 'error'); return; }
-  await loadServerDomainBindings();
+  await transitionServerDomainBinding(bindingId, 'disable', 'POST', { expected_revision: revision }, '禁用域名失败');
+}
+
+export async function enableServerDomainBinding(bindingId, revision) {
+  if (!confirm('确认其他发布者已停止管理该域名，并由 HomeAgent 创建或更新 AAAA？')) return;
+  await transitionServerDomainBinding(bindingId, 'enable', 'POST', { expected_revision: revision, publisher_disabled_confirmed: true }, '启用域名失败');
+}
+
+export async function deleteServerDomainBinding(bindingId, revision) {
+  if (!confirm('删除绑定不会删除 Cloudflare DNS AAAA 记录，并将释放该域名供重新绑定。确认继续？')) return;
+  await transitionServerDomainBinding(bindingId, '', 'DELETE', { expected_revision: revision }, '删除域名绑定失败');
+}
+
+async function transitionServerDomainBinding(bindingId, action, method, body, fallback) {
+  const url = `${state.serverHost}/api/v1/server/domain-bindings/${encodeURIComponent(bindingId)}${action ? `/${action}` : ''}`;
+  try {
+    const response = await apiFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!response.ok) {
+      let message = fallback;
+      try {
+        message = (await response.json()).error || fallback;
+      } catch (_) {}
+      showToast(message);
+      if (response.status === 404 || response.status === 409) await loadServerDomainBindings();
+      return;
+    }
+    await loadServerDomainBindings();
+  } catch (error) {
+    showToast(error.message === 'Unauthorized' ? '登录状态已失效' : `${fallback}：${error.message}`);
+  }
 }
 
 if (typeof window !== 'undefined') {
   window.createServerDomainBinding = createServerDomainBinding;
+  window.enableServerDomainBinding = enableServerDomainBinding;
   window.disableServerDomainBinding = disableServerDomainBinding;
+  window.deleteServerDomainBinding = deleteServerDomainBinding;
 }
 
 function versionStateText(channel) {
