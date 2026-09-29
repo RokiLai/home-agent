@@ -8,5 +8,7 @@ allowed_paths:
   - cmd/homeagent-server/main_test.go
   - internal/ui/static/js/devices/actions.js
   - internal/ui/testdata/domain-binding.test.mjs
+  - internal/domainbinding/service.go
+  - internal/domainbinding/service_test.go
   - internal/version/version.go
   - internal/version/version_test.go

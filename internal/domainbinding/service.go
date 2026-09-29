@@ -183,7 +183,7 @@ func (service *Service) Enable(ctx context.Context, command EnableCommand) (Bind
 		if err != nil {
 			return Binding{}, err
 		}
-		if !observation.Exists {
+		if current.ConfigState == ConfigObserving && !observation.Exists {
 			return Binding{}, errors.New("provider record disappeared before enable")
 		}
 	}

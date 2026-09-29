@@ -5,8 +5,8 @@
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | 设计 | 已确认 | 2026-09-29 用户确认按本文执行 |
-| 实施 | 已完成 | 后台统一授权、Web 生命周期入口、回归测试和 Server 版本升级已完成 |
-| 验收 | 进行中 | 本地质量门禁通过；提交、部署与生产恢复验收尚未执行 |
+| 实施 | 进行中 | `v0.6.47` 已部署；生产恢复发现禁用绑定缺少 DNS 记录时无法重新启用，正在修复 |
+| 验收 | 进行中 | 本地质量门禁与 `v0.6.47` 部署通过；生产绑定恢复尚未通过 |
 
 对应设计变更清单为 `changes/fix-domain-binding-owner-permission-ui-design.yaml`，实施变更清单为 `changes/fix-domain-binding-owner-permission-ui.yaml`。
 
@@ -231,6 +231,7 @@
 - `check-change-scope` 的范围、静态架构、前端语法、模块测试和全量回归门禁通过；
 - Diff Coverage 为 `72.7%`，高于 `60%` 门槛；
 - 独立 Chrome 布局套件存在与本次变更无关的登录认证夹具失败，现象为 `loginOverlay` 未隐藏及后续数据夹具未加载。本次新增绑定交互测试全部通过，但部署前仍需通过真实页面完成按钮可见性和点击验收。
+- `v0.6.47` 部署后，`router.rokilai.online` 绑定保持 `disabled / waiting_report` revision `2`。重新启用接口在 Cloudflare 尚无同名记录时返回 `500` 且绑定状态不变。直接证据显示 `Service.Enable` 对所有状态统一要求 Provider 记录存在，而第 6.1 节契约要求禁用绑定可重新进入调和并在记录不存在时创建 AAAA；修复必须仅对 `observing` 接管路径保留记录存在检查，并增加正反例测试。
 
 ### 11.2 生产恢复步骤
 
