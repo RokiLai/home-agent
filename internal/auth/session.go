@@ -683,7 +683,10 @@ func (sm *SessionManager) ListUsers() []*User {
 		list = append(list, &uCopy)
 	}
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].ID < list[j].ID
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
 	})
 	return list
 }

@@ -2,6 +2,7 @@ package mysqlstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -197,6 +198,43 @@ func TestMySQLStore_EmptyConfig(t *testing.T) {
 	_, err := NewMySQLStore(Config{})
 	if err == nil {
 		t.Fatal("expected error on empty DSN")
+	}
+}
+
+func TestMySQLStoreListUsersReturnsStableNewestFirstOrder(t *testing.T) {
+	ms, err := NewMySQLStore(Config{DSN: "root:123456@tcp(127.0.0.1:13306)/homeagent_test?charset=utf8mb4&parseTime=True&loc=Local"})
+	if err != nil {
+		t.Skipf("skipping MySQLStore test (MySQL not available: %v)", err)
+	}
+	defer ms.Close()
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	ids := []string{"usr-sort-" + suffix + "-a", "usr-sort-" + suffix + "-b", "usr-sort-" + suffix + "-c"}
+	defer func() {
+		for _, id := range ids {
+			_, _ = ms.DB().Exec("DELETE FROM users WHERE id = ?", id)
+		}
+	}()
+	older := time.Now().UTC().Add(time.Hour)
+	newer := older.Add(time.Second)
+	for index, id := range ids {
+		createdAt := newer
+		if index == 0 {
+			createdAt = older
+		}
+		if err := ms.SaveUser(&auth.User{ID: id, Username: id, UsernameKey: id, PasswordHash: "hash", Role: auth.RoleOwner, Status: auth.UserStatusActive, SessionVersion: 1, CreatedAt: createdAt, UpdatedAt: createdAt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	users, err := ms.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []string{ids[2], ids[1], ids[0]} {
+		if users[index].ID != want {
+			t.Fatalf("users[%d] = %q, want %q", index, users[index].ID, want)
+		}
 	}
 }
 

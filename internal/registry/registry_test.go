@@ -5,12 +5,61 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"homeagent/internal/auth"
 	"homeagent/internal/device"
 	"homeagent/internal/store"
 	"homeagent/internal/store/filestore"
 )
+
+func TestRegistryListsReturnStableNewestFirstOrder(t *testing.T) {
+	older := time.Unix(1, 0).UTC()
+	newer := time.Unix(2, 0).UTC()
+	r := &Registry{
+		devices: map[string]device.Device{
+			"dev-a": {ID: "dev-a", OwnerUserID: "usr-owner", CreatedAt: older},
+			"dev-b": {ID: "dev-b", OwnerUserID: "usr-owner", CreatedAt: newer},
+			"dev-c": {ID: "dev-c", OwnerUserID: "usr-owner", CreatedAt: newer},
+		},
+		grants: map[string]map[string]*device.DeviceGrant{
+			"dev-a": {
+				"usr-a": {DeviceID: "dev-a", UserID: "usr-a", CreatedAt: older},
+				"usr-b": {DeviceID: "dev-a", UserID: "usr-b", CreatedAt: newer},
+				"usr-c": {DeviceID: "dev-a", UserID: "usr-c", CreatedAt: newer},
+			},
+		},
+		userGrants: map[string]map[string]*device.DeviceGrant{
+			"usr-target": {
+				"dev-a": {DeviceID: "dev-a", UserID: "usr-target", CreatedAt: older},
+				"dev-b": {DeviceID: "dev-b", UserID: "usr-target", CreatedAt: newer},
+				"dev-c": {DeviceID: "dev-c", UserID: "usr-target", CreatedAt: newer},
+			},
+		},
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		devices := r.List()
+		visible := r.FilterDevicesForUser("usr-owner", true)
+		grants := r.ListGrants("dev-a")
+		userGrants := r.GetUserGrants("usr-target")
+		for i, want := range []string{"dev-c", "dev-b", "dev-a"} {
+			if devices[i].ID != want || visible[i].ID != want {
+				t.Fatalf("device order at %d = %q/%q, want %q", i, devices[i].ID, visible[i].ID, want)
+			}
+		}
+		for i, want := range []string{"usr-c", "usr-b", "usr-a"} {
+			if grants[i].UserID != want {
+				t.Fatalf("grants[%d] = %q, want %q", i, grants[i].UserID, want)
+			}
+		}
+		for i, want := range []string{"dev-c", "dev-b", "dev-a"} {
+			if userGrants[i].DeviceID != want {
+				t.Fatalf("user grants[%d] = %q, want %q", i, userGrants[i].DeviceID, want)
+			}
+		}
+	}
+}
 
 func TestAttachedControlPlaneIsAuthoritativeForRegistryWrites(t *testing.T) {
 	dir := t.TempDir()

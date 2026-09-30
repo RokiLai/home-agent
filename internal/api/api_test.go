@@ -576,7 +576,7 @@ func TestSSEStreamingAndBroadcast(t *testing.T) {
 			if err := json.Unmarshal([]byte(data), &updatedPayload); err != nil {
 				t.Fatalf("failed to decode broadcast payload: %v", err)
 			}
-			if len(updatedPayload.Keys) != 3 || updatedPayload.Keys[0].DeviceID != "homeagent-admin" || updatedPayload.Keys[1].DeviceID != "dev-a" || updatedPayload.Keys[2].DeviceID != "dev-b" {
+			if len(updatedPayload.Keys) != 3 || updatedPayload.Keys[0].DeviceID != "homeagent-admin" || updatedPayload.Keys[1].DeviceID != "dev-b" || updatedPayload.Keys[2].DeviceID != "dev-a" {
 				t.Fatalf("expected admin, self, and dev-b keys after registration, got %+v", updatedPayload.Keys)
 			}
 			break
