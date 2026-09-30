@@ -185,7 +185,12 @@ func (r *Registry) List() []device.Device {
 	for _, d := range r.devices {
 		list = append(list, d)
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list
 }
 
@@ -223,6 +228,15 @@ func (r *Registry) AllGrants() []device.DeviceGrant {
 			result = append(result, *grant)
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			if result[i].DeviceID == result[j].DeviceID {
+				return result[i].UserID > result[j].UserID
+			}
+			return result[i].DeviceID > result[j].DeviceID
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
 	return result
 }
 
@@ -243,7 +257,12 @@ func (r *Registry) FilterDevicesForUser(userID string, isOwnerRole bool) []devic
 			list = append(list, d)
 		}
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list
 }
 
@@ -395,7 +414,12 @@ func (r *Registry) ListGrants(deviceID string) []*device.DeviceGrant {
 			list = append(list, &gCopy)
 		}
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].UserID > list[j].UserID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list
 }
 
@@ -411,7 +435,12 @@ func (r *Registry) GetUserGrants(userID string) []*device.DeviceGrant {
 			list = append(list, &gCopy)
 		}
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].DeviceID < list[j].DeviceID })
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].DeviceID > list[j].DeviceID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list
 }
 

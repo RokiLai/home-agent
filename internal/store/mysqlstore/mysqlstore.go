@@ -119,7 +119,7 @@ func (s *MySQLStore) GetUserByUsernameKey(key string) (*auth.User, error) {
 }
 
 func (s *MySQLStore) ListUsers() ([]*auth.User, error) {
-	query := `SELECT id, username, username_key, password_hash, role, status, session_version, created_by, created_at, updated_at FROM users ORDER BY created_at ASC`
+	query := `SELECT id, username, username_key, password_hash, role, status, session_version, created_by, created_at, updated_at FROM users ORDER BY created_at DESC, id DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -265,7 +265,7 @@ func (s *MySQLStore) GetDevice(id string) (*device.Device, error) {
 }
 
 func (s *MySQLStore) ListDevices() ([]*device.Device, error) {
-	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices ORDER BY created_at ASC`
+	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices ORDER BY created_at DESC, id DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -353,7 +353,7 @@ func (s *MySQLStore) DeleteDevicesByOwner(ownerUserID string) ([]string, error) 
 
 // Grants
 func (s *MySQLStore) ListGrants(deviceID string) ([]*device.DeviceGrant, error) {
-	query := `SELECT device_id, user_id, level, granted_by, created_at, updated_at FROM device_grants WHERE device_id = ?`
+	query := `SELECT device_id, user_id, level, granted_by, created_at, updated_at FROM device_grants WHERE device_id = ? ORDER BY created_at DESC, user_id DESC`
 	rows, err := s.db.Query(query, deviceID)
 	if err != nil {
 		return nil, err
@@ -446,10 +446,10 @@ func (s *MySQLStore) ListClaimTokens(ownerUserID string) ([]*auth.ClaimToken, er
 	var query string
 	var args []any
 	if ownerUserID != "" {
-		query = `SELECT token_hash, owner_user_id, created_by, description, ttl_seconds, max_uses, used_count, expires_at, created_at FROM claim_tokens WHERE owner_user_id = ? ORDER BY created_at DESC`
+		query = `SELECT token_hash, owner_user_id, created_by, description, ttl_seconds, max_uses, used_count, expires_at, created_at FROM claim_tokens WHERE owner_user_id = ? ORDER BY created_at DESC, token_hash DESC`
 		args = append(args, ownerUserID)
 	} else {
-		query = `SELECT token_hash, owner_user_id, created_by, description, ttl_seconds, max_uses, used_count, expires_at, created_at FROM claim_tokens ORDER BY created_at DESC`
+		query = `SELECT token_hash, owner_user_id, created_by, description, ttl_seconds, max_uses, used_count, expires_at, created_at FROM claim_tokens ORDER BY created_at DESC, token_hash DESC`
 	}
 
 	rows, err := s.db.Query(query, args...)
@@ -521,7 +521,7 @@ func (s *MySQLStore) Recent(limit int) ([]auth.AuditEvent, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	query := `SELECT actor_user_id, actor_role, action, resource_type, resource_id, client_ip, status, detail, created_at FROM audit_logs ORDER BY created_at DESC LIMIT ?`
+	query := `SELECT actor_user_id, actor_role, action, resource_type, resource_id, client_ip, status, detail, created_at FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ?`
 	rows, err := s.db.Query(query, limit)
 	if err != nil {
 		return nil, err

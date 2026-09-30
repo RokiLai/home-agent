@@ -179,3 +179,61 @@ func TestFileStore_ClaimTokenOperations(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got: %v", err)
 	}
 }
+
+func TestFileStoreListsReturnStableNewestFirstOrder(t *testing.T) {
+	fs, err := NewFileStore("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := time.Unix(1, 0).UTC()
+	newer := time.Unix(2, 0).UTC()
+	fs.users = map[string]*auth.User{
+		"usr-a": {ID: "usr-a", CreatedAt: older},
+		"usr-b": {ID: "usr-b", CreatedAt: newer},
+		"usr-c": {ID: "usr-c", CreatedAt: newer},
+	}
+	fs.devices = map[string]*device.Device{
+		"dev-a": {ID: "dev-a", CreatedAt: older},
+		"dev-b": {ID: "dev-b", CreatedAt: newer},
+		"dev-c": {ID: "dev-c", CreatedAt: newer},
+	}
+	fs.grants = map[string]map[string]*device.DeviceGrant{
+		"dev-a": {
+			"usr-a": {DeviceID: "dev-a", UserID: "usr-a", CreatedAt: older},
+			"usr-b": {DeviceID: "dev-a", UserID: "usr-b", CreatedAt: newer},
+			"usr-c": {DeviceID: "dev-a", UserID: "usr-c", CreatedAt: newer},
+		},
+	}
+	fs.claimTokens = map[string]*auth.ClaimToken{
+		"token-a": {TokenHash: "token-a", CreatedAt: older},
+		"token-b": {TokenHash: "token-b", CreatedAt: newer},
+		"token-c": {TokenHash: "token-c", CreatedAt: newer},
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		users, _ := fs.ListUsers()
+		devices, _ := fs.ListDevices()
+		grants, _ := fs.ListGrants("dev-a")
+		tokens, _ := fs.ListClaimTokens("")
+		for i, want := range []string{"usr-c", "usr-b", "usr-a"} {
+			if users[i].ID != want {
+				t.Fatalf("users[%d] = %q, want %q", i, users[i].ID, want)
+			}
+		}
+		for i, want := range []string{"dev-c", "dev-b", "dev-a"} {
+			if devices[i].ID != want {
+				t.Fatalf("devices[%d] = %q, want %q", i, devices[i].ID, want)
+			}
+		}
+		for i, want := range []string{"usr-c", "usr-b", "usr-a"} {
+			if grants[i].UserID != want {
+				t.Fatalf("grants[%d] = %q, want %q", i, grants[i].UserID, want)
+			}
+		}
+		for i, want := range []string{"token-c", "token-b", "token-a"} {
+			if tokens[i].TokenHash != want {
+				t.Fatalf("tokens[%d] = %q, want %q", i, tokens[i].TokenHash, want)
+			}
+		}
+	}
+}

@@ -41,13 +41,13 @@ func TestUsernameNormalizationAndValidation(t *testing.T) {
 	}
 
 	invalidUsernames := []string{
-		"ab",                               // too short (<3)
-		strings.Repeat("a", 33),           // too long (>32)
-		"user name",                       // whitespace inside
-		"user\nname",                      // control char
-		"user$name",                       // special char $
-		"<script>",                        // xss chars
-		"../user",                         // traversal chars
+		"ab",                    // too short (<3)
+		strings.Repeat("a", 33), // too long (>32)
+		"user name",             // whitespace inside
+		"user\nname",            // control char
+		"user$name",             // special char $
+		"<script>",              // xss chars
+		"../user",               // traversal chars
 	}
 	for _, u := range invalidUsernames {
 		if err := ValidateUsernameFormat(u); err == nil {
@@ -56,15 +56,15 @@ func TestUsernameNormalizationAndValidation(t *testing.T) {
 	}
 }
 
-func TestSessionManagerListUsersReturnsUsersInIDOrder(t *testing.T) {
+func TestSessionManagerListUsersReturnsUsersInStableNewestFirstOrder(t *testing.T) {
 	sm, err := NewSessionManager("")
 	if err != nil {
 		t.Fatalf("NewSessionManager: %v", err)
 	}
 	sm.users = map[string]*User{
-		"usr_c": {ID: "usr_c", Username: "charlie", PasswordHash: "hash-c"},
-		"usr_a": {ID: "usr_a", Username: "alice", PasswordHash: "hash-a"},
-		"usr_b": {ID: "usr_b", Username: "bravo", PasswordHash: "hash-b"},
+		"usr_c": {ID: "usr_c", Username: "charlie", PasswordHash: "hash-c", CreatedAt: time.Unix(2, 0)},
+		"usr_a": {ID: "usr_a", Username: "alice", PasswordHash: "hash-a", CreatedAt: time.Unix(1, 0)},
+		"usr_b": {ID: "usr_b", Username: "bravo", PasswordHash: "hash-b", CreatedAt: time.Unix(2, 0)},
 	}
 
 	for attempt := 0; attempt < 10; attempt++ {
@@ -72,7 +72,7 @@ func TestSessionManagerListUsersReturnsUsersInIDOrder(t *testing.T) {
 		if len(users) != 3 {
 			t.Fatalf("ListUsers length = %d, want 3", len(users))
 		}
-		for index, wantID := range []string{"usr_a", "usr_b", "usr_c"} {
+		for index, wantID := range []string{"usr_c", "usr_b", "usr_a"} {
 			if users[index].ID != wantID {
 				t.Fatalf("ListUsers attempt %d user[%d].ID = %q, want %q", attempt, index, users[index].ID, wantID)
 			}

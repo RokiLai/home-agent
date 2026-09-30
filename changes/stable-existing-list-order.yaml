@@ -1,0 +1,17 @@
+task: stable-existing-list-order
+description: 固定存量持久化实体列表的最新优先返回顺序，并保留新增 MySQL 表的主键约定。
+allowed_paths:
+  - AGENTS.md
+  - changes/stable-existing-list-order.yaml
+  - docs/architecture/存量列表稳定排序设计方案.md
+  - internal/auth/session.go
+  - internal/auth/user_test.go
+  - internal/api/api_test.go
+  - internal/registry/registry.go
+  - internal/registry/registry_test.go
+  - internal/store/filestore/filestore.go
+  - internal/store/filestore/filestore_test.go
+  - internal/store/mysqlstore/mysqlstore.go
+  - internal/store/mysqlstore/mysqlstore_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go

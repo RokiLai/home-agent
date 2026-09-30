@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -95,6 +96,12 @@ func (fs *FileStore) ListUsers() ([]*auth.User, error) {
 		cp := *u
 		list = append(list, &cp)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list, nil
 }
 
@@ -233,6 +240,12 @@ func (fs *FileStore) ListDevices() ([]*device.Device, error) {
 		cp := *d
 		list = append(list, &cp)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].ID > list[j].ID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list, nil
 }
 
@@ -285,6 +298,12 @@ func (fs *FileStore) ListGrants(deviceID string) ([]*device.DeviceGrant, error) 
 		cp := *g
 		list = append(list, &cp)
 	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].UserID > list[j].UserID
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list, nil
 }
 
@@ -369,6 +388,12 @@ func (fs *FileStore) ListClaimTokens(ownerUserID string) ([]*auth.ClaimToken, er
 			list = append(list, &cp)
 		}
 	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].TokenHash > list[j].TokenHash
+		}
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
 	return list, nil
 }
 
