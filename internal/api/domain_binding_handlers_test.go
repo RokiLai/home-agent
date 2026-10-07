@@ -167,3 +167,72 @@ func TestDomainBindingHandlersRejectInvalidRequestsAndUnavailableService(t *test
 		t.Fatalf("unknown field status=%d", response.Code)
 	}
 }
+
+func TestDomainBindingAPIListsReturnFQDNOrder(t *testing.T) {
+	repository, err := filestore.OpenControlPlane(filepath.Join(t.TempDir(), "control-plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := store.NewControlPlaneSnapshot()
+	for _, source := range []string{"server", "device"} {
+		for _, name := range []string{"z", "a", "b", "deleted"} {
+			id := source + "-" + name
+			state := "observing"
+			if name == "deleted" {
+				state = "deleted"
+			}
+			sourceID := domainbinding.LocalServerSourceID
+			if source == "device" {
+				sourceID = "device-1"
+			}
+			snapshot.Bindings[id] = &store.DomainBinding{BindingID: id, FQDN: name + "-" + source + ".rokilai.online", SourceType: source, SourceID: sourceID, ConfigState: state, Revision: 1}
+		}
+	}
+	committed, err := repository.Commit(context.Background(), 0, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{DomainBindings: domainbinding.NewService(store.NewControlPlaneService(repository), nil)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/server/domain-bindings", server.listServerDomainBindings)
+	mux.HandleFunc("GET /api/v1/devices/{id}/domain-bindings", server.listDeviceDomainBindings)
+	transport := httptest.NewServer(mux)
+	defer transport.Close()
+	for attempt := 0; attempt < 10; attempt++ {
+		for _, source := range []string{"server", "device"} {
+			path := "/api/v1/server/domain-bindings"
+			if source == "device" {
+				path = "/api/v1/devices/device-1/domain-bindings"
+			}
+			response, err := http.Get(transport.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Bindings []domainbinding.Binding `json:"bindings"`
+				Revision uint64                  `json:"revision"`
+			}
+			err = json.NewDecoder(response.Body).Decode(&result)
+			response.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusOK || len(result.Bindings) != 3 || result.Revision != committed.Revision {
+				t.Fatalf("status=%d result=%+v", response.StatusCode, result)
+			}
+			for i, name := range []string{"a", "b", "z"} {
+				binding := result.Bindings[i]
+				if binding.FQDN != name+"-"+source+".rokilai.online" || string(binding.SourceType) != source || binding.ConfigState == domainbinding.ConfigDeleted {
+					t.Fatalf("bindings[%d]=%+v", i, binding)
+				}
+			}
+		}
+	}
+	before, err := repository.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Revision != committed.Revision || len(before.Bindings) != 8 {
+		t.Fatal("API list modified persistence")
+	}
+}
