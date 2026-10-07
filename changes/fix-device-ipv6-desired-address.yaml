@@ -1,0 +1,14 @@
+task: fix-device-ipv6-desired-address
+description: 修复设备新IPv6已上报但期望地址保留旧值的问题；先补齐两种地址裁决模式并审查确认，再实施和验收；不部署。
+allowed_paths:
+  - changes/fix-device-ipv6-desired-address.yaml
+  - docs/features/设备域名绑定与IPv6-DDNS协调设计方案.md
+  - docs/features/IPv6与DDNS同步集成方案.md
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-server/domain_binding_e2e_test.go
+  - internal/api/api.go
+  - internal/api/device_network_selection_test.go
+  - internal/devicestate/service.go
+  - internal/devicestate/service_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go

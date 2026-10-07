@@ -57,6 +57,7 @@ import (
 
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
+	networkStateMu            sync.Mutex
 	Registry                  *registry.Registry
 	Authorizer                *auth.Authorizer
 	AuditLogger               auth.AuditLogger
@@ -2312,6 +2313,8 @@ type deviceNetworkStateReq struct {
 }
 
 func (s *Server) putDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
+	s.networkStateMu.Lock()
+	defer s.networkStateMu.Unlock()
 	if s.DeviceStateService == nil {
 		http.Error(w, "device state service not configured", http.StatusNotImplemented)
 		return
@@ -2362,24 +2365,13 @@ func (s *Server) putDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Calculate and update desired address against router prefixes
-	if s.PrefixStateService != nil {
-		activePrefixes, isStale, _ := s.PrefixStateService.GetActivePrefixes(req.NetworkID, time.Now().UTC(), 15*time.Minute)
-		if !isStale && len(activePrefixes) > 0 {
-			validCandidates := prefixstate.Intersect(st.ReportedAddresses, activePrefixes)
-			if desiredIP, ok := prefixstate.SelectAddress(validCandidates, st.AppliedAddress); ok {
-				st.DesiredAddress = desiredIP.String()
-			} else {
-				st.DesiredAddress = ""
-			}
-			_ = s.DeviceStateService.Save(*st)
-		} else if len(st.ReportedAddresses) > 0 && st.DesiredAddress == "" {
-			st.DesiredAddress = st.ReportedAddresses[0].Address
-			_ = s.DeviceStateService.Save(*st)
-		}
-	} else if len(st.ReportedAddresses) > 0 && st.DesiredAddress == "" {
-		st.DesiredAddress = st.ReportedAddresses[0].Address
-		_ = s.DeviceStateService.Save(*st)
+	if err := s.selectDeviceDesiredAddress(st); err != nil {
+		http.Error(w, "calculate device address failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.DeviceStateService.Save(*st); err != nil {
+		http.Error(w, "save device address failed", http.StatusInternalServerError)
+		return
 	}
 
 	if changed && s.DDNSService != nil {
@@ -2394,6 +2386,53 @@ func (s *Server) putDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
 		"sync_status":       st.SyncStatus,
 		"desired_address":   st.DesiredAddress,
 	})
+}
+
+// selectDeviceDesiredAddress adjudicates every accepted snapshot, including
+// heartbeats that repair persisted desired addresses after a server restart.
+func (s *Server) selectDeviceDesiredAddress(st *devicestate.DeviceIPv6State) error {
+	now := time.Now().UTC()
+	networkID := strings.TrimSpace(os.Getenv("HOMEAGENT_DDNS_NETWORK_ID"))
+	if networkID == "" {
+		networkID = "home"
+	}
+	associated := strings.TrimSpace(os.Getenv("HOMEAGENT_DDNS_ROUTER_ID")) != "" && st.NetworkID == networkID
+	var candidates []netip.Addr
+	if s.PrefixStateService != nil {
+		prefixState, err := s.PrefixStateService.GetByNetwork(st.NetworkID)
+		if err != nil && !errors.Is(err, prefixstate.ErrNetworkNotFound) {
+			return err
+		}
+		associated = associated || (prefixState != nil && prefixState.RouterDeviceID != "")
+		if associated && prefixState != nil {
+			prefixes, stale, err := s.PrefixStateService.GetActivePrefixes(st.NetworkID, now, 15*time.Minute)
+			if err != nil {
+				return err
+			}
+			if !stale {
+				candidates = prefixstate.Intersect(networkaddr.NormalizeAndFilterCandidates(st.ReportedAddresses, now), prefixes)
+			}
+		}
+	}
+	if !associated {
+		for _, candidate := range networkaddr.NormalizeAndFilterCandidates(st.ReportedAddresses, now) {
+			address, err := netip.ParseAddr(candidate.Address)
+			if err == nil {
+				candidates = append(candidates, address)
+			}
+		}
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].Compare(candidates[j]) < 0 })
+	}
+	previous := st.DesiredAddress
+	st.DesiredAddress = ""
+	if address, ok := prefixstate.SelectAddress(candidates, previous); ok {
+		st.DesiredAddress = address.String()
+	}
+	if previous != st.DesiredAddress {
+		st.SyncStatus = devicestate.SyncStatusPending
+		st.SyncUpdatedAt = now
+	}
+	return nil
 }
 
 func (s *Server) getDeviceNetworkState(w http.ResponseWriter, r *http.Request) {
@@ -2451,6 +2490,8 @@ type routerPrefixesReq struct {
 }
 
 func (s *Server) putRouterPrefixes(w http.ResponseWriter, r *http.Request) {
+	s.networkStateMu.Lock()
+	defer s.networkStateMu.Unlock()
 	if s.PrefixStateService == nil {
 		http.Error(w, "prefix state service not configured", http.StatusNotImplemented)
 		return
@@ -2505,21 +2546,25 @@ func (s *Server) putRouterPrefixes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Recalculate desired address for all devices in this network
+	// Recalculate under the same lock as device reports so an older snapshot
+	// cannot overwrite a newer report while the network prefixes change.
 	if s.DeviceStateService != nil {
-		allDevs, _ := s.DeviceStateService.List()
-		activePrefixes, isStale, _ := s.PrefixStateService.GetActivePrefixes(req.NetworkID, time.Now().UTC(), 15*time.Minute)
+		allDevs, err := s.DeviceStateService.List()
+		if err != nil {
+			http.Error(w, "load device addresses failed", http.StatusInternalServerError)
+			return
+		}
 		for _, dev := range allDevs {
-			if dev.NetworkID == req.NetworkID {
-				if !isStale && len(activePrefixes) > 0 {
-					validCandidates := prefixstate.Intersect(dev.ReportedAddresses, activePrefixes)
-					if desiredIP, ok := prefixstate.SelectAddress(validCandidates, dev.AppliedAddress); ok {
-						dev.DesiredAddress = desiredIP.String()
-					} else {
-						dev.DesiredAddress = ""
-					}
-				}
-				_ = s.DeviceStateService.Save(dev)
+			if dev.NetworkID != req.NetworkID {
+				continue
+			}
+			if err := s.selectDeviceDesiredAddress(&dev); err != nil {
+				http.Error(w, "calculate device address failed", http.StatusInternalServerError)
+				return
+			}
+			if err := s.DeviceStateService.Save(dev); err != nil {
+				http.Error(w, "save device address failed", http.StatusInternalServerError)
+				return
 			}
 		}
 	}
