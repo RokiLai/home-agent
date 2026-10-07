@@ -73,13 +73,15 @@ if (process.env.TEST_SSH_PORT_API_URL) {
     const path = await import('node:path');
     const base = process.env.TEST_SSH_PORT_API_URL;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeagent-ssh-browser-'));
-    const binary = process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    const child = spawn(binary, ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const binary = process.env.CHROME_BIN || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/google-chrome');
+    const child = spawn(binary, ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', 'about:blank'], { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
     let socket;
     try {
       const endpoint = await new Promise((resolve, reject) => {
-        let log = ''; const timer = setTimeout(() => reject(new Error('Chrome launch timeout')), 15000);
-        child.once('error', reject);
+        let log = ''; const fail = error => { clearTimeout(timer); reject(error); };
+        const timer = setTimeout(() => fail(new Error(`Chrome launch timeout: ${log}`)), 15000);
+        child.once('error', fail);
+        child.once('exit', (code, signal) => fail(new Error(`Chrome exited (${code}, ${signal}): ${log}`)));
         child.stderr.on('data', chunk => { log += chunk.toString(); const m = log.match(/DevTools listening on (ws:\/\/\S+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });
       });
       socket = new WebSocket(endpoint); await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
@@ -127,9 +129,12 @@ if (process.env.TEST_SSH_PORT_API_URL) {
       assert.deepEqual(errors, []);
       await send('Browser.close');
     } finally {
-      socket?.close(); child.kill('SIGKILL');
-      await new Promise(resolve => { if (child.exitCode !== null) resolve(); else { child.once('exit', resolve); setTimeout(resolve, 1000); } });
-      fs.rmSync(dir, { recursive: true, force: true });
+      socket?.close();
+      if (child.pid && process.platform !== 'win32') {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      } else child.kill('SIGKILL');
+      await new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once('close', resolve); });
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 }

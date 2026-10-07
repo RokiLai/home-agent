@@ -191,3 +191,15 @@ SaveDevice 保留现有签名，规范化并校验三字段后在同一条 INSER
 - `internal/ui/testdata/ssh-port-settings.test.mjs`
 - `internal/version/version.go`
 - `internal/version/version_test.go`
+
+## CI 发布恢复补充
+
+2026-10-07：PR #52 已合并，工作流 37623644007 未发布任何 Release。用户已授权修复 CI 并继续原推送、合并、部署任务。扩展允许路径为 .github/workflows/release.yml 和 internal/qualitygate/releaseworkflow_test.go；预计修改这两个文件、当前清单、本文及 ssh-port-settings.test.mjs，不修改产品代码或组件版本。
+
+责任分类：测试环境契约缺失，CI 未提供真实 MySQL 13306；浏览器测试清理可能掩盖原始失败，属于测试实现问题。环境修复使用 MySQL 8.0 服务、测试库、健康检查、明确 Chrome 路径和 Node 22。共享测试库清理需包串行，仍执行全部 -race 测试，不弱化断言。浏览器测试在独立进程组启动，等待退出并终止残留子进程后删除临时目录；启动失败保留 stderr 与退出证据。
+
+发布恢复增加 workflow_dispatch，要求显式 base_sha 作为版本比较基线，检出触发提交，保持版本冲突检查、全部回归、SHA256 与草稿完整性检查；任何前置失败均不能发布。原 PR 合并触发行为保持。修复 PR 无版本变更时不发布，随后以原发布基线 824745e4278543ef9b810e00f36f02f230f3fb1d 手动恢复缺失版本。该入口仅运行现有发布职责，不部署、不触发设备升级。
+
+审查结论：功能边界为 CI 环境和测试生命周期；产品接口及端口契约不变，无新增产品依赖；恢复入口只能在成功门禁后发布。验收要求契约测试先失败后通过、本地全部质量门禁、真实 GitHub runner 全量回归及 Release 成功，再执行生产备份、旧版本 self-upgrade 和健康/API 验证。设计补充依据本轮明确修复授权；实施及验收结果待实际运行记录。
+
+本地修复验收：完整质量门禁 /private/tmp/homeagent-ssh-port-ci-recovery-gate2 全部 passed，真实端口全量 -race 回归 116130ms，包含真实 MySQL 和 Chrome；Diff Coverage 通过（本次未新增生产 Go 语句）。原工作流契约断言完整保留，新增环境与恢复入口断言已验证修复前失败、修复后通过。当前修改文件为 .github/workflows/release.yml、changes/ssh-port-settings.yaml、本文、internal/qualitygate/releaseworkflow_test.go、internal/ui/testdata/ssh-port-settings.test.mjs。远程 CI 及生产部署仍待执行。
