@@ -224,3 +224,27 @@ func extractVersionFromContent(content string) string {
 	}
 	return ""
 }
+
+func TestReleaseWorkflowSSHPortEnvironmentAndRecovery(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(raw)
+	block := releaseWorkflowJobBlock(workflow, "test:")
+	for _, fragment := range []string{"mysql:8.0", "13306:3306", "MYSQL_DATABASE: homeagent_test", "--health-cmd", "CHROME_BIN: /usr/bin/google-chrome", "GOFLAGS: -p=1", "actions/setup-node@v4", "node-version: '22'"} {
+		if !strings.Contains(block, fragment) {
+			t.Errorf("missing real test environment: %s", fragment)
+		}
+	}
+	for _, fragment := range []string{"workflow_dispatch:", "base_sha:", "required: true", "github.event.pull_request.merge_commit_sha || github.sha", "github.event.pull_request.base.sha || inputs.base_sha"} {
+		if !strings.Contains(workflow, fragment) {
+			t.Errorf("missing guarded release recovery: %s", fragment)
+		}
+	}
+	for _, job := range []string{"release-server:", "release-agent:"} {
+		if !strings.Contains(releaseWorkflowJobBlock(workflow, job), "needs.test.result == 'success'") {
+			t.Errorf("%s can publish without regression", job)
+		}
+	}
+}

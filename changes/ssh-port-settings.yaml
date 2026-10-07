@@ -29,3 +29,5 @@ allowed_paths:
   - internal/store/mysqlstore/mysqlstore.go
   - internal/store/mysqlstore/mysqlstore_test.go
   - internal/store/contract_test.go
+  - .github/workflows/release.yml
+  - internal/qualitygate/releaseworkflow_test.go

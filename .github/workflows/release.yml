@@ -1,6 +1,12 @@
 name: Create Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Commit before the failed component release
+        required: true
+        type: string
   pull_request:
     branches: [main]
     types: [closed]
@@ -15,8 +21,9 @@ concurrency:
 jobs:
   prepare:
     if: >-
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.head.ref == 'dev'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'dev')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -28,14 +35,14 @@ jobs:
       - name: Check out merged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
 
       - name: Read component versions
         id: version
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
         run: |
           server_version=$(sed -nE 's/^const defaultServerVersion = "([^"]+)"/\1/p' internal/version/version.go)
           agent_version=$(sed -nE 's/^const defaultAgentVersion = "([^"]+)"/\1/p' internal/version/version.go)
@@ -92,17 +99,39 @@ jobs:
     if: needs.prepare.outputs.server_changed == 'true' || needs.prepare.outputs.agent_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      CHROME_BIN: /usr/bin/google-chrome
+      GOFLAGS: -p=1
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+          MYSQL_DATABASE: homeagent_test
+        ports:
+          - 13306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - name: Check out merged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify real browser
+        run: test -x "$CHROME_BIN" && "$CHROME_BIN" --version
       - name: Run full regression tests
         run: go test -count=1 -race ./...
 
@@ -115,7 +144,7 @@ jobs:
       - name: Check out merged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -165,7 +194,7 @@ jobs:
       - name: Check out merged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -229,7 +258,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           VERSION: ${{ needs.prepare.outputs.server_version }}
         run: |
           tag="server-${VERSION}"
@@ -263,7 +292,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
           VERSION: ${{ needs.prepare.outputs.agent_version }}
         run: |
           tag="agent-${VERSION}"
