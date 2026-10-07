@@ -3,9 +3,9 @@
 ## 状态与授权范围
 
 - 设计状态：原方案、MySQL 兼容补充、设备级权限字段及客户端版本联动调整均已获用户确认。
-- 实施状态：代码与本地质量门禁完成；本次提交目标为 dev，提交结果以 Git 记录为准。
-- 验收状态：本地验收通过；未部署、未执行生产验证。
-- 本轮已获清单范围内实施、本地测试及提交 dev 授权；部署另行确认。
+- 实施状态：原端口功能及 CI 修复已合并；启动兼容修复候选 Server v0.6.55 / Agent v0.6.24 已完成本地门禁，提交目标为 dev。
+- 验收状态：本地门禁与独立旧版到候选启动验证通过；v0.6.54 生产启动失败并已回退 v0.6.53，v0.6.55 发布部署待执行。
+- 本轮已获修复、推送、合并及成功后部署授权；不重置生产认证、不批量升级其他设备。
 
 ## 问题与代码证据
 
@@ -207,3 +207,7 @@ SaveDevice 保留现有签名，规范化并校验三字段后在同一条 INSER
 恢复工作流 37630902118 的直接证据：MySQL 与真实 Chrome 测试已通过，仅 TestSSHPortActiveSyncUsesManualPort 报本机无 eligible IPv4。代码 net.InterfaceAddrs → device.FilterAndSortAddresses → 空候选在连接前拒绝；现有产品过滤规则排除 loopback、容器与代理地址。补齐 CI 临时 dummy 网卡 homeagent-test0、仅绑定 RFC 5737 测试地址 192.0.2.10/32，启动后打印实际地址；真实 TCP/OpenSSH 连接仍执行，完成后 always 删除网卡。此为测试环境缺失，修改载体仅工作流、契约测试和本文，不改变产品地址规则或成功/失败断言。验收为本地质量门禁和真实 runner 完整连接回归。
 
 SSH 网络环境补充本地验收：/private/tmp/homeagent-ssh-port-ci-network-gate 全部门禁 passed，全量真实协议 -race 回归 128104ms，Diff Coverage 100.0%（0/0）；未改变产品版本、地址规则或原测试断言。
+
+生产部署证据：Server v0.6.53 self-upgrade 从公开 GitHub Release 成功下载并校验 v0.6.54；新版本启动报 finalize control plane migration: legacy backup devices.json does not match source。部署健康失败后已回退 v0.6.53，localhost 与公网健康恢复，备份位于宿主机 backups/ssh-port-v0654-20261007220016。执行链 Registry.Open → NormalizeSSHPorts → writeLocked 改写 legacy 源文件 → finalizeControlPlaneMigration 对比 .control-plane.bak 失败，旧版重新读取会去掉新增字段而恢复原序列化，故旧服务恢复。责任为存量兼容实现偏差及启动路径测试缺失；修复载体为注册表与其测试，不削弱备份比较。Open 读取仅做内存规范化，不写入源文件；后续业务写入仍持久化三字段。公开签名不变，历史备份不修改。该共享代码同时影响 Agent，按版本门禁将修复候选调整为 Server v0.6.55、Agent v0.6.24。用户修复授权及原部署授权持续有效；增加字节不变/正常写入/重启回归，并验证真实旧版本升级与生产启动。
+
+启动兼容修复本地验收：/private/tmp/homeagent-ssh-port-legacy-startup-gate 全部门禁 passed，全量真实端口 -race 回归 129999ms，Diff Coverage 100.0%（0/0）。真实 v0.6.53 → v0.6.55 独立数据启动及备份字节不变验收通过，证据目录 /var/folders/h6/f7zynzb567zcv4979jqzgwh80000gn/T/homeagent-legacy-startup-j8jfspiu。新增回归 TestSSHPortLegacyOpenPreservesMigrationBackup 已验证修复前失败/修复后通过，并覆盖正常写入仍持久化以及重启。新增修改文件为 internal/registry/registry.go、internal/registry/registry_test.go、internal/version/version.go、internal/version/version_test.go、本文；均在原允许路径内。
