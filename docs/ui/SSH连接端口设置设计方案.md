@@ -3,8 +3,8 @@
 ## 状态与授权范围
 
 - 设计状态：原方案、MySQL 兼容补充、设备级权限字段及客户端版本联动调整均已获用户确认。
-- 实施状态：原端口功能及 CI 修复已合并；启动兼容修复候选 Server v0.6.55 / Agent v0.6.24 已完成本地门禁，提交目标为 dev。
-- 验收状态：本地门禁与独立旧版到候选启动验证通过；v0.6.54 生产启动失败并已回退 v0.6.53，v0.6.55 发布部署待执行。
+- 实施状态：端口功能、CI 与启动兼容修复已提交 dev 并经 PR 合并 main；Server v0.6.55 / Agent v0.6.24 已发布，宿主机 Server 已部署 v0.6.55。
+- 验收状态：本地门禁、真实 CI、公开服务跨版本升级、生产健康与持久化检查通过；生产登录后的端口交互待有效会话，不能标记完整验收通过。
 - 本轮已获修复、推送、合并及成功后部署授权；不重置生产认证、不批量升级其他设备。
 
 ## 问题与代码证据
@@ -211,3 +211,17 @@ SSH 网络环境补充本地验收：/private/tmp/homeagent-ssh-port-ci-network-
 生产部署证据：Server v0.6.53 self-upgrade 从公开 GitHub Release 成功下载并校验 v0.6.54；新版本启动报 finalize control plane migration: legacy backup devices.json does not match source。部署健康失败后已回退 v0.6.53，localhost 与公网健康恢复，备份位于宿主机 backups/ssh-port-v0654-20261007220016。执行链 Registry.Open → NormalizeSSHPorts → writeLocked 改写 legacy 源文件 → finalizeControlPlaneMigration 对比 .control-plane.bak 失败，旧版重新读取会去掉新增字段而恢复原序列化，故旧服务恢复。责任为存量兼容实现偏差及启动路径测试缺失；修复载体为注册表与其测试，不削弱备份比较。Open 读取仅做内存规范化，不写入源文件；后续业务写入仍持久化三字段。公开签名不变，历史备份不修改。该共享代码同时影响 Agent，按版本门禁将修复候选调整为 Server v0.6.55、Agent v0.6.24。用户修复授权及原部署授权持续有效；增加字节不变/正常写入/重启回归，并验证真实旧版本升级与生产启动。
 
 启动兼容修复本地验收：/private/tmp/homeagent-ssh-port-legacy-startup-gate 全部门禁 passed，全量真实端口 -race 回归 129999ms，Diff Coverage 100.0%（0/0）。真实 v0.6.53 → v0.6.55 独立数据启动及备份字节不变验收通过，证据目录 /var/folders/h6/f7zynzb567zcv4979jqzgwh80000gn/T/homeagent-legacy-startup-j8jfspiu。新增回归 TestSSHPortLegacyOpenPreservesMigrationBackup 已验证修复前失败/修复后通过，并覆盖正常写入仍持久化以及重启。新增修改文件为 internal/registry/registry.go、internal/registry/registry_test.go、internal/version/version.go、internal/version/version_test.go、本文；均在原允许路径内。
+
+## 最终发布与生产验收证据
+
+PR #53、#54、#55 均已合并，实现提交为 cccfd08、7252b8a、81c2042。最终发布工作流 37634118461 全部 success：真实全量 -race 回归、两个组件构建、全部资产下载与 SHA256 校验通过。Server v0.6.55 已公开发布 14 个资产，Agent v0.6.24 已公开发布 18 个资产；未自动升级其他设备。
+
+生产宿主机 launchd 服务 online.rokilai.homeagent-server 经授权停服备份数据和 MySQL homeagent 数据库，备份目录 /Users/roki/Library/Application Support/HomeAgent/backups/ssh-port-v0655-20261007221312（0700）。使用原正式 Server v0.6.53 的 self-upgrade --version v0.6.55 连接真实公开 GitHub Release，下载、SHA256、版本预检、替换和启动成功，命令退出码 0；证据 /private/tmp/homeagent-ssh-port-production-v0655-deploy.log。回退恢复旧二进制并重启，保留新增数据库列，不删除或覆盖当前快照。
+
+localhost 与 https://homeagent.rokilai.online/health 连续返回 200 和 status=ok，运行版本 v0.6.55。5 台设备记录未丢失，快照中有效端口与上报/覆盖计算一致。真实 INFORMATION_SCHEMA 验证 ssh_port_reported、ssh_port_override 均 NOT NULL、默认 0。生产 /static/js/devices/actions.js 和 render.js 字节等于合并源码；静态资产检查不证明生产点击或布局。
+
+外部协议审计：公开 Server v0.6.55 darwin/arm64 二进制和 .sha256 分别真实 GET，响应链均为 github.com 302 → 资产服务 200，摘要一致。完整链保存在 /private/tmp/homeagent-v0655-release-protocol/response-chain.json（0600），不提交临时签名 URL。发布/升级不使用协议替身；早期 SSH/MySQL 替身来源及差异见前文。未经认证的设备 GET/PATCH 均返回 401，不产生设置写入。
+
+剩余验收：现有管理员凭据文件登录返回 401，浏览器自动化连接不可用；已请求可用登录方式，未重置密码或改变权限。生产登录后的保存/恢复及两处复制交互仍待执行，不能宣告完整交付。功能交互已在本地及真实 GitHub runner 的真实 API/浏览器链路通过。
+
+本轮修复修改 9 个仓库文件：.github/workflows/release.yml、changes/ssh-port-settings.yaml、本文、internal/qualitygate/releaseworkflow_test.go、internal/ui/testdata/ssh-port-settings.test.mjs、internal/registry/registry.go、internal/registry/registry_test.go、internal/version/version.go、internal/version/version_test.go。均在 allowed_paths 内，未修改 AGENTS.md 或安装升级实现。前文“未发布/未授权部署”仅描述初始本地实施阶段，后续授权、实际发布与验收状态以本节为准。
