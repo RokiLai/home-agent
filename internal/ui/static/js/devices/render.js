@@ -1,6 +1,6 @@
 import { state } from '../state.js';
 import { escapeHTML, formatRelativeTime, getOSInfo, filterAndClassifyIPs } from '../utils.js';
-import { attachDeviceCardEvents } from './actions.js';
+import { attachDeviceCardEvents, isSSHPortSaving } from './actions.js';
 import { mapCommandStatus } from '../commands.js';
 
 export function getDeviceSyncStatus(d) {
@@ -571,7 +571,7 @@ export function renderDeviceDetailView(deviceId, section = 'overview', options =
   const activeEl = document.activeElement;
   const isInputFocused = activeEl && container.contains && container.contains(activeEl) && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
 
-  if (typeof container.querySelectorAll === 'function') {
+  if (!options.resetInputs && typeof container.querySelectorAll === 'function') {
     container.querySelectorAll('input, textarea').forEach(el => {
       if (el.id && (el.value || el === activeEl)) {
         preservedInputs.set(el.id, {
@@ -585,7 +585,7 @@ export function renderDeviceDetailView(deviceId, section = 'overview', options =
   }
 
   // If this render is triggered by background polling and user is actively interacting with an input:
-  if (options.isPolling && (isInputFocused || preservedInputs.size > 0)) {
+  if (options.isPolling && (isInputFocused || preservedInputs.size > 0 || isSSHPortSaving(deviceId))) {
     return;
   }
 
@@ -649,7 +649,7 @@ export function renderDeviceDetailView(deviceId, section = 'overview', options =
               <span class="text-muted">快捷 SSH 命令:</span>
               <div class="code-box mt-1" style="display:flex; justify-content:space-between; align-items:center;">
                 <code class="font-mono">${escapeHTML(sshCmd)}</code>
-                <button class="btn btn-copy" onclick="copyToClipboard('${escapeHTML(sshCmd)}', 'SSH 命令已复制')">复制</button>
+                <button class="btn btn-copy" data-ssh="${escapeHTML(sshCmd)}" onclick="copySSHCommand(this)">复制</button>
               </div>
             </div>
           </div>
@@ -744,6 +744,23 @@ export function renderDeviceDetailView(deviceId, section = 'overview', options =
           <div class="card-body detail-grid">
             <div><span class="text-muted">当前备注名:</span> <strong>${escapeHTML(device.alias || '未设置')}</strong></div>
             <div><span class="text-muted">设备所有权:</span> <span class="font-mono text-indigo">${escapeHTML(device.owner_user_id || '系统默认')}</span></div>
+          </div>
+        </div>
+        <div class="card mb-3 ssh-port-settings">
+          <div class="card-header"><strong>SSH 连接端口</strong></div>
+          <div class="card-body">
+            <p>当前有效端口：<strong id="sshPortEffective">${escapeHTML(device.ssh_port || 22)}</strong> · ${device.ssh_port_override ? '手动设置' : '客户端上报'}</p>
+            <p>最近上报端口：${escapeHTML(device.ssh_port_reported || device.ssh_port || 22)}</p>
+            ${device.can_edit_ssh_port === true ? `
+              <div class="ssh-port-controls">
+                <label for="sshPortInput">连接端口</label>
+                <input id="sshPortInput" class="form-control" type="number" min="1" max="65535" step="1" value="${escapeHTML(device.ssh_port || 22)}" aria-describedby="sshPortHelp sshPortFeedback">
+                <button id="sshPortSave" class="btn btn-primary" ${isSSHPortSaving(deviceId) ? 'disabled' : ''} data-device-id="${escapeHTML(device.id)}" onclick="saveSSHPort(this.dataset.deviceId)">保存端口</button>
+                <button id="sshPortRestore" class="btn btn-secondary" ${!device.ssh_port_override || isSSHPortSaving(deviceId) ? 'disabled' : ''} data-device-id="${escapeHTML(device.id)}" onclick="saveSSHPort(this.dataset.deviceId, true)">恢复上报值</button>
+              </div>
+              <p id="sshPortFeedback" role="status" aria-live="polite"></p>
+            ` : '<p class="text-muted">当前权限仅可查看端口设置。</p>'}
+            <p id="sshPortHelp" class="text-muted font-sm">仅设置连接目标端口，不修改设备 SSH 服务配置；也用于服务端主动 SSH 连接。</p>
           </div>
         </div>
         <div class="card danger-zone" style="border: 1px solid var(--rose); background: rgba(244, 63, 94, 0.05);">

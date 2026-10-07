@@ -79,8 +79,55 @@ export async function monitorUpgradeResults(results, targetVersion, options = {}
   return outcomes;
 }
 
+const pendingSSHPorts = new Set();
+let sshPortGeneration = 0;
+export function isSSHPortSaving(id) { return pendingSSHPorts.has(id); }
+export function copySSHCommand(button) { copyToClipboard(button.dataset.ssh, 'SSH 命令已复制'); }
+
+export async function saveSSHPort(deviceId, restore = false) {
+ if (pendingSSHPorts.has(deviceId)) return;
+ const device = state.devices.find(d => d.id === deviceId);
+ if (!device || device.can_edit_ssh_port !== true) return;
+ const input = document.getElementById('sshPortInput');
+ const value = restore ? 0 : Number(input?.value);
+ const feedback = document.getElementById('sshPortFeedback');
+ if (!restore && (!input?.value.trim() || !Number.isInteger(value) || value < 1 || value > 65535)) {
+  if (feedback) feedback.innerText = '请输入 1–65535 的整数端口';
+  input?.setAttribute('aria-invalid', 'true'); return;
+ }
+ const current = () => state.currentPage === 'deviceDetail' && state.currentDetailDeviceId === deviceId && state.currentDetailSection === 'settings' && document.getElementById('sshPortInput') === input;
+ pendingSSHPorts.add(deviceId); sshPortGeneration++;
+ for (const id of ['sshPortSave', 'sshPortRestore']) { const el = document.getElementById(id); if (el) el.disabled = true; }
+ if (feedback) feedback.innerText = '正在保存…';
+ let updated;
+ try {
+  const res = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ssh_port_override: value }) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const response = await res.json();
+  if (response.id !== deviceId || !Number.isInteger(response.ssh_port) || response.ssh_port < 1 || response.ssh_port > 65535) throw new Error('设备响应不匹配');
+  updated = response;
+  const index = state.devices.findIndex(d => d.id === deviceId);
+  if (index >= 0) state.devices[index] = updated;
+ } catch (err) {
+  if (current() && feedback) feedback.innerText = `保存失败：${err.message}`;
+ } finally {
+  pendingSSHPorts.delete(deviceId); sshPortGeneration++;
+  if (current()) {
+   if (updated) {
+    renderDeviceDetailView(deviceId, 'settings', { resetInputs: true });
+    const message = document.getElementById('sshPortFeedback'); if (message) message.innerText = restore ? '已恢复客户端上报值' : '端口已保存';
+   } else {
+    const save = document.getElementById('sshPortSave'); if (save) save.disabled = false;
+    const reset = document.getElementById('sshPortRestore'); if (reset) reset.disabled = !device.ssh_port_override;
+   }
+  }
+  if (updated) renderDevices();
+ }
+}
+
 export async function fetchDevices() {
-  if (state.isFetching) return;
+  if (state.isFetching || pendingSSHPorts.size > 0) return;
+  const portGeneration = sshPortGeneration;
   state.isFetching = true;
 
   const liveStatusText = document.getElementById('liveStatusText');
@@ -94,6 +141,7 @@ export async function fetchDevices() {
 
     if (liveStatusText) liveStatusText.innerText = '实时连接中';
     const data = await res.json();
+    if (portGeneration !== sshPortGeneration) return;
     state.devices = data.devices || [];
     state.serverHash = data.server_hash || '';
   } catch (err) {
@@ -123,6 +171,9 @@ export async function fetchDevices() {
         curDev.addresses,
         curDev.ssh_user,
         curDev.ssh_port,
+        curDev.ssh_port_reported,
+        curDev.ssh_port_override,
+        curDev.can_edit_ssh_port,
         curDev.sync_status,
         curDev.applied_hash,
         curDev.ddns_domain,
@@ -1102,6 +1153,8 @@ if (typeof window !== 'undefined') {
   window.handleDetailShutdown = handleDetailShutdown;
   window.handleDetailRemove = handleDetailRemove;
   window.handleDetailSync = handleDetailSync;
+  window.saveSSHPort = saveSSHPort;
+  window.copySSHCommand = copySSHCommand;
 	window.loadDeviceDomainBindings = loadDeviceDomainBindings;
 	window.createDeviceDomainBinding = createDeviceDomainBinding;
 	window.enableDeviceDomainBinding = enableDeviceDomainBinding;

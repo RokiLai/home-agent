@@ -251,3 +251,28 @@ func TestCreateDomainBindingReusesFQDNAfterDelete(t *testing.T) {
 		t.Fatalf("created=%+v err=%v", created, err)
 	}
 }
+
+func TestSSHPortClaimRecoveryPreservesManualSetting(t *testing.T) {
+	repo := newMemoryControlPlaneRepository()
+	service := NewControlPlaneService(repo)
+	existing := device.Device{ID: "port-recovery", OwnerUserID: "owner", Hostname: "host", SSHUser: "admin", SSHPort: 2222, SSHPortReported: 22, SSHPortOverride: 2222, PublicKey: "ssh-ed25519 AAAA", LastSeenAt: time.Now().Add(-time.Hour), HardwareIdentity: &device.HardwareFingerprint{Fingerprint: "port-hardware"}}
+	if err := service.ImportLegacy(context.Background(), []device.Device{existing}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := service.CreateClaimToken(context.Background(), time.Minute, 1, "port recovery", "owner", "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := existing
+	candidate.ID = "temporary-port"
+	candidate.SSHPort = 2200
+	candidate.SSHPortOverride = 3333
+	saved, err := service.ClaimDevice(context.Background(), raw, "test-port-token", candidate)
+	if err != nil || saved.ID != existing.ID || saved.SSHPort != 2222 || saved.SSHPortReported != 2200 || saved.SSHPortOverride != 2222 {
+		t.Fatalf("claim recovery: %+v %v", saved, err)
+	}
+	devices, _, err := service.RegistryState(context.Background())
+	if err != nil || len(devices) != 1 || devices[0].SSHPortOverride != 2222 {
+		t.Fatalf("state: %+v %v", devices, err)
+	}
+}

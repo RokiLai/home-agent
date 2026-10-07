@@ -672,3 +672,11 @@ func TestESMModuleImportsResolve(t *testing.T) {
 		t.Fatalf("walk failed: %v", err)
 	}
 }
+
+func TestSSHPortSettingsFrontendContract(t *testing.T) {
+	cmd := exec.Command("node", "--test", "testdata/ssh-port-settings.test.mjs")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("SSH port frontend: %v\n%s", err, output)
+	}
+}

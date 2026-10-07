@@ -88,6 +88,8 @@ func (service *ControlPlaneService) RevokeClaimToken(ctx context.Context, id str
 func (service *ControlPlaneService) ClaimDevice(ctx context.Context, rawClaimToken, rawDeviceToken string, candidate device.Device) (device.Device, error) {
 	tokenHash := auth.HashToken(rawClaimToken)
 	candidate.DeviceTokenHash = auth.HashToken(rawDeviceToken)
+	candidate.SSHPortReported = candidate.SSHPort
+	candidate.SSHPortOverride = 0
 	var saved device.Device
 	_, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
 		token := snapshot.ClaimTokens[tokenHash]
@@ -114,8 +116,12 @@ func (service *ControlPlaneService) ClaimDevice(ctx context.Context, rawClaimTok
 				candidate.CreatedAt = existing.CreatedAt
 				candidate.Alias = existing.Alias
 				candidate.GitHubSyncEnabled = existing.GitHubSyncEnabled
+				candidate.SSHPortOverride = existing.SSHPortOverride
 				break
 			}
+		}
+		if err := device.NormalizeSSHPorts(&candidate); err != nil {
+			return err
 		}
 		if candidate.CreatedAt.IsZero() {
 			candidate.CreatedAt = now
@@ -182,7 +188,13 @@ func (service *ControlPlaneService) RegistryState(ctx context.Context) ([]device
 	}
 	devices := make([]device.Device, 0, len(snapshot.Devices))
 	for _, item := range snapshot.Devices {
-		devices = append(devices, *item)
+		copy := *item
+		if copy.SSHPort != 0 || copy.SSHPortReported != 0 || copy.SSHPortOverride != 0 {
+			if err := device.NormalizeSSHPorts(&copy); err != nil {
+				return nil, nil, err
+			}
+		}
+		devices = append(devices, copy)
 	}
 	grants := make([]device.DeviceGrant, 0, len(snapshot.Grants))
 	for _, item := range snapshot.Grants {

@@ -4,7 +4,9 @@ package mysqlstore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"github.com/go-sql-driver/mysql"
 )
 
 var tableSchemas = []string{
@@ -46,6 +48,8 @@ var tableSchemas = []string{
 		arch VARCHAR(32) DEFAULT '',
 		ssh_user VARCHAR(64) DEFAULT 'root',
 		ssh_port INT NOT NULL DEFAULT 22,
+		ssh_port_reported INT NOT NULL DEFAULT 0,
+		ssh_port_override INT NOT NULL DEFAULT 0,
 		mac VARCHAR(32) DEFAULT '',
 		public_key TEXT NOT NULL,
 		addresses_json JSON NULL,
@@ -181,5 +185,56 @@ func AutoMigrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("auto migrate table %d: %w", idx, err)
 		}
 	}
-	return nil
+	return migrateSSHPorts(ctx, db)
+}
+
+// migrateSSHPorts resumes partial DDL and only initializes legacy automatic records.
+func migrateSSHPorts(ctx context.Context, db *sql.DB) error {
+	for _, name := range []string{"ssh_port_reported", "ssh_port_override"} {
+		exists, err := checkSSHPortColumn(ctx, db, name)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			_, err = db.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN "+name+" INT NOT NULL DEFAULT 0")
+			if err != nil {
+				var mysqlErr *mysql.MySQLError
+				if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1060 {
+					return fmt.Errorf("add %s: %w", name, err)
+				}
+			}
+			exists, err = checkSSHPortColumn(ctx, db, name)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return fmt.Errorf("missing %s", name)
+			}
+		}
+	}
+	var invalid int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices WHERE ssh_port NOT BETWEEN 1 AND 65535 OR ssh_port_reported NOT BETWEEN 0 AND 65535 OR ssh_port_override NOT BETWEEN 0 AND 65535 OR (ssh_port_reported = 0 AND ssh_port_override <> 0)`).Scan(&invalid); err != nil {
+		return err
+	}
+	if invalid != 0 {
+		return fmt.Errorf("invalid legacy SSH ports: %d records", invalid)
+	}
+	_, err := db.ExecContext(ctx, `UPDATE devices SET ssh_port_reported = ssh_port WHERE ssh_port_reported = 0 AND ssh_port_override = 0 AND ssh_port BETWEEN 1 AND 65535`)
+	return err
+}
+
+func checkSSHPortColumn(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	var kind, nullable string
+	var def sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'devices' AND COLUMN_NAME = ?`, name).Scan(&kind, &nullable, &def)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if kind != "int" || nullable != "NO" || !def.Valid || def.String != "0" {
+		return false, fmt.Errorf("incompatible SSH port column %s", name)
+	}
+	return true, nil
 }

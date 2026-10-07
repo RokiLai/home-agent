@@ -65,6 +65,7 @@ func runStoreContractTests(t *testing.T, us store.UserStore, ss store.SessionSto
 	// 3. 设备与授权
 	dev := &device.Device{
 		ID:          "dev-contract-1",
+		SSHPort:     22,
 		OwnerUserID: "usr-contract-1",
 		Hostname:    "server-alpha",
 		CreatedAt:   now,
@@ -185,7 +186,7 @@ func TestStore_AutoMigrationFromFileStoreToMySQL(t *testing.T) {
 	// 写入本地数据
 	now := time.Now().UTC()
 	_ = fs.SaveUser(&auth.User{ID: "usr-mig-1", Username: "mig_user", Role: auth.RoleOwner, Status: auth.UserStatusActive, CreatedAt: now, UpdatedAt: now})
-	_ = fs.SaveDevice(&device.Device{ID: "dev-mig-1", OwnerUserID: "usr-mig-1", Hostname: "host-mig", CreatedAt: now, UpdatedAt: now})
+	_ = fs.SaveDevice(&device.Device{ID: "dev-mig-1", OwnerUserID: "usr-mig-1", Hostname: "host-mig", SSHPort: 2222, SSHPortReported: 22, SSHPortOverride: 2222, CreatedAt: now, UpdatedAt: now})
 
 	dsn := "root:123456@tcp(127.0.0.1:13306)/homeagent_test?charset=utf8mb4&parseTime=True&loc=Local"
 	ms, err := mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: dsn})
@@ -215,7 +216,7 @@ func TestStore_AutoMigrationFromFileStoreToMySQL(t *testing.T) {
 		t.Fatalf("expected user in mysql: %v", err)
 	}
 	gotDev, err := ms.GetDevice("dev-mig-1")
-	if err != nil || gotDev.Hostname != "host-mig" {
+	if err != nil || gotDev.Hostname != "host-mig" || gotDev.SSHPort != 2222 || gotDev.SSHPortReported != 22 || gotDev.SSHPortOverride != 2222 {
 		t.Fatalf("expected device in mysql: %v", err)
 	}
 

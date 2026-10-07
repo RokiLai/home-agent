@@ -246,16 +246,19 @@ func (s *MySQLStore) CleanExpired() error {
 // ================= DeviceStore 实现 =================
 
 func (s *MySQLStore) GetDevice(id string) (*device.Device, error) {
-	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices WHERE id = ? LIMIT 1`
+	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, ssh_port_reported, ssh_port_override, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices WHERE id = ? LIMIT 1`
 	row := s.db.QueryRow(query, id)
 
 	var d device.Device
 	var addrJSON sql.NullString
-	err := row.Scan(&d.ID, &d.OwnerUserID, &d.Hostname, &d.Alias, &d.OS, &d.Arch, &d.SSHUser, &d.SSHPort, &d.MAC, &d.PublicKey, &addrJSON, &d.AgentVersion, &d.AppliedHash, &d.SyncStatus, &d.CreatedAt, &d.UpdatedAt)
+	err := row.Scan(&d.ID, &d.OwnerUserID, &d.Hostname, &d.Alias, &d.OS, &d.Arch, &d.SSHUser, &d.SSHPort, &d.SSHPortReported, &d.SSHPortOverride, &d.MAC, &d.PublicKey, &addrJSON, &d.AgentVersion, &d.AppliedHash, &d.SyncStatus, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
+		return nil, err
+	}
+	if err := device.NormalizeSSHPorts(&d); err != nil {
 		return nil, err
 	}
 	if addrJSON.Valid && addrJSON.String != "" {
@@ -265,7 +268,7 @@ func (s *MySQLStore) GetDevice(id string) (*device.Device, error) {
 }
 
 func (s *MySQLStore) ListDevices() ([]*device.Device, error) {
-	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices ORDER BY created_at DESC, id DESC`
+	query := `SELECT id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, ssh_port_reported, ssh_port_override, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at FROM devices ORDER BY created_at DESC, id DESC`
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
@@ -276,7 +279,10 @@ func (s *MySQLStore) ListDevices() ([]*device.Device, error) {
 	for rows.Next() {
 		var d device.Device
 		var addrJSON sql.NullString
-		if err := rows.Scan(&d.ID, &d.OwnerUserID, &d.Hostname, &d.Alias, &d.OS, &d.Arch, &d.SSHUser, &d.SSHPort, &d.MAC, &d.PublicKey, &addrJSON, &d.AgentVersion, &d.AppliedHash, &d.SyncStatus, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.OwnerUserID, &d.Hostname, &d.Alias, &d.OS, &d.Arch, &d.SSHUser, &d.SSHPort, &d.SSHPortReported, &d.SSHPortOverride, &d.MAC, &d.PublicKey, &addrJSON, &d.AgentVersion, &d.AppliedHash, &d.SyncStatus, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := device.NormalizeSSHPorts(&d); err != nil {
 			return nil, err
 		}
 		if addrJSON.Valid && addrJSON.String != "" {
@@ -288,9 +294,12 @@ func (s *MySQLStore) ListDevices() ([]*device.Device, error) {
 }
 
 func (s *MySQLStore) SaveDevice(dev *device.Device) error {
+	if err := device.NormalizeSSHPorts(dev); err != nil {
+		return err
+	}
 	addrBytes, _ := json.Marshal(dev.Addresses)
-	query := `INSERT INTO devices (id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	query := `INSERT INTO devices (id, owner_user_id, hostname, alias, os, arch, ssh_user, ssh_port, ssh_port_reported, ssh_port_override, mac, public_key, addresses_json, agent_version, applied_hash, sync_status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		owner_user_id = VALUES(owner_user_id),
 		hostname = VALUES(hostname),
@@ -299,6 +308,8 @@ func (s *MySQLStore) SaveDevice(dev *device.Device) error {
 		arch = VALUES(arch),
 		ssh_user = VALUES(ssh_user),
 		ssh_port = VALUES(ssh_port),
+		ssh_port_reported = VALUES(ssh_port_reported),
+		ssh_port_override = VALUES(ssh_port_override),
 		mac = VALUES(mac),
 		public_key = VALUES(public_key),
 		addresses_json = VALUES(addresses_json),
@@ -312,7 +323,7 @@ func (s *MySQLStore) SaveDevice(dev *device.Device) error {
 	}
 	dev.UpdatedAt = time.Now().UTC()
 
-	_, err := s.db.Exec(query, dev.ID, dev.OwnerUserID, dev.Hostname, dev.Alias, dev.OS, dev.Arch, dev.SSHUser, dev.SSHPort, dev.MAC, dev.PublicKey, string(addrBytes), dev.AgentVersion, dev.AppliedHash, dev.SyncStatus, dev.CreatedAt, dev.UpdatedAt)
+	_, err := s.db.Exec(query, dev.ID, dev.OwnerUserID, dev.Hostname, dev.Alias, dev.OS, dev.Arch, dev.SSHUser, dev.SSHPort, dev.SSHPortReported, dev.SSHPortOverride, dev.MAC, dev.PublicKey, string(addrBytes), dev.AgentVersion, dev.AppliedHash, dev.SyncStatus, dev.CreatedAt, dev.UpdatedAt)
 	return err
 }
 

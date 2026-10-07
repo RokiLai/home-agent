@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +40,7 @@ import (
 	"homeagent/internal/versionstatus"
 
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/ssh"
 )
 
 func init() {
@@ -2986,5 +2991,332 @@ func TestGetConfig_UpgradeSource(t *testing.T) {
 	}
 	if res["github_repo"] != "custom/repo" || res["upgrade_source"] != "github" || res["github_mirror_prefix"] != "https://ghproxy.net/" {
 		t.Fatalf("unexpected config output: %+v", res)
+	}
+}
+
+func TestSSHPortAPISettingsAndFacts(t *testing.T) {
+	r, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := device.Device{ID: "port-api", Hostname: "host", SSHUser: "user", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"}
+	if _, err = r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Registry: r, Token: "port-test-token"}
+	h := s.Handler()
+	for _, body := range []string{`{"ssh_port_override":null}`, `{"ssh_port_override":-1,"alias":"invalid"}`, `{"ssh_port_override":65536}`, `{"ssh_port_override":1.5}`, `{"ssh_port_override":"2222"}`, `{"ssh_port_override":true}`} {
+		before, _ := r.Get(d.ID)
+		req := httptest.NewRequest("PATCH", "/api/v1/devices/"+d.ID, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer port-test-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Fatalf("%s: %d %s", body, rec.Code, rec.Body.String())
+		}
+		after, _ := r.Get(d.ID)
+		if before.UpdatedAt != after.UpdatedAt || after.SSHPort != 22 || after.Alias != "" {
+			t.Fatal("partial write")
+		}
+	}
+
+	for _, body := range []string{`{"hostname":"must-not-change","ssh_port":-1}`, `{"hostname":"must-not-change","ssh_port":65536}`, `{"hostname":"must-not-change","ssh_port_override":2222}`} {
+		before, _ := r.Get(d.ID)
+		req := httptest.NewRequest("PUT", "/api/v1/devices/"+d.ID+"/facts", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer port-test-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Fatalf("invalid facts %d %s", rec.Code, rec.Body.String())
+		}
+		after, _ := r.Get(d.ID)
+		if after.Hostname != before.Hostname || after.UpdatedAt != before.UpdatedAt || after.SSHPort != before.SSHPort {
+			t.Fatal("invalid facts partially persisted")
+		}
+	}
+	request := func(method, path, body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer port-test-token")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", method, rec.Code, rec.Body.String())
+		}
+		var result map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	result := request("PATCH", "/api/v1/devices/"+d.ID, `{"ssh_port_override":2222}`)
+	if result["ssh_port"] != float64(2222) || result["ssh_port_reported"] != float64(22) || result["can_edit_ssh_port"] != true {
+		t.Fatalf("patch: %+v", result)
+	}
+	result = request("PUT", "/api/v1/devices/"+d.ID+"/facts", `{"hostname":"host","ssh_port":2200}`)
+	if result["ssh_port"] != float64(2222) || result["ssh_port_reported"] != float64(2200) || result["can_edit_ssh_port"] != false {
+		t.Fatalf("facts: %+v", result)
+	}
+	result = request("PATCH", "/api/v1/devices/"+d.ID, `{"ssh_port_override":0}`)
+	if result["ssh_port"] != float64(2200) || result["ssh_port_override"] != float64(0) {
+		t.Fatalf("restore: %+v", result)
+	}
+}
+
+func TestSSHPortRealBrowserAndAPI(t *testing.T) {
+	s, sm, _, r, _ := setupTestServerWithAuth(t)
+	owner, err := sm.GetUserByUsername("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := sm.CreateUserSession(owner.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := device.Device{ID: "port-device", OwnerUserID: owner.ID, Hostname: "port-host", SSHUser: "admin", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA", Addresses: []string{"192.0.2.10"}}
+	if _, err = r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	cmd := exec.Command("node", "--test", "../ui/testdata/ssh-port-settings.test.mjs")
+	cmd.Env = append(os.Environ(), "TEST_SSH_PORT_API_URL="+server.URL, "TEST_SSH_PORT_COOKIE="+token)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real API/browser: %v\n%s", err, output)
+	}
+	got, _ := r.Get(d.ID)
+	if got.SSHPort != 22 || got.SSHPortOverride != 0 {
+		t.Fatalf("browser restore did not persist: %+v", got)
+	}
+}
+
+func TestSSHPortPermissionMatchesPATCH(t *testing.T) {
+	s, sm, _, r, _ := setupTestServerWithAuth(t)
+	owner, _ := sm.GetUserByUsername("admin")
+	d := device.Device{ID: "permission-port", OwnerUserID: owner.ID, Hostname: "host", SSHUser: "admin", SSHPort: 22, PublicKey: "ssh-ed25519 AAAA"}
+	if _, err := r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+	h := s.Handler()
+	for _, tc := range []struct {
+		name    string
+		role    auth.Role
+		level   device.GrantLevel
+		allowed bool
+	}{
+		{"read", auth.RoleAdmin, device.GrantLevelRead, false},
+		{"operate", auth.RoleAdmin, device.GrantLevelOperate, false},
+		{"manage", auth.RoleAdmin, device.GrantLevelManage, true},
+		{"viewer", auth.RoleViewer, device.GrantLevelManage, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user, err := sm.CreateUser("port-"+tc.name, "PortTestPassword123!", tc.role, owner.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = r.SetGrant(d.ID, user.ID, tc.level, owner.ID); err != nil {
+				t.Fatal(err)
+			}
+			token, _, err := sm.CreateUserSession(user.ID, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := func(method, path, body string) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(method, path, strings.NewReader(body))
+				req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				return rec
+			}
+			rec := request("GET", "/api/v1/devices/"+d.ID, "")
+			if rec.Code != 200 {
+				t.Fatalf("GET %d", rec.Code)
+			}
+			var dto map[string]any
+			if err = json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+				t.Fatal(err)
+			}
+			if dto["can_edit_ssh_port"] != tc.allowed {
+				t.Fatalf("permission %+v", dto)
+			}
+			before, _ := r.Get(d.ID)
+			rec = request("PATCH", "/api/v1/devices/"+d.ID, `{"ssh_port_override":2222}`)
+			if tc.allowed {
+				if rec.Code != 200 {
+					t.Fatalf("manage PATCH %d", rec.Code)
+				}
+			} else {
+				if rec.Code != 403 {
+					t.Fatalf("denied PATCH %d", rec.Code)
+				}
+				after, _ := r.Get(d.ID)
+				if after.UpdatedAt != before.UpdatedAt {
+					t.Fatal("denied write")
+				}
+			}
+			rec = request("PATCH", "/api/v1/devices/invisible", `{"ssh_port_override":2222}`)
+			if rec.Code != 404 {
+				t.Fatalf("IDOR %d", rec.Code)
+			}
+		})
+	}
+}
+
+func TestSSHPortActiveSyncUsesManualPort(t *testing.T) {
+	// Real OpenSSH 10.3p1 keygen/keyscan/ssh talk to an x/crypto SSH transport.
+	// The endpoint only accepts this test key and captures apply-keys JSON; it does
+	// not model a device filesystem, sshd configuration or actual key installation.
+	dir := t.TempDir()
+	private := filepath.Join(dir, "identity")
+	public, err := sshsync.EnsureAdminKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := os.ReadFile(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.ParsePrivateKey(keyBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &ssh.ServerConfig{PublicKeyCallback: func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		if metadata.User() != "admin" || !bytes.Equal(key.Marshal(), signer.PublicKey().Marshal()) {
+			return nil, fmt.Errorf("unknown test key")
+		}
+		return nil, nil
+	}}
+	config.AddHostKey(signer)
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidates []string
+	for _, a := range addresses {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+			candidates = append(candidates, n.IP.String())
+		}
+	}
+	candidates = device.FilterAndSortAddresses(candidates)
+	if len(candidates) == 0 {
+		listener.Close()
+		t.Fatal("a real eligible local IPv4 interface is required")
+	}
+	commands := make(chan string, 4)
+	payloads := make(chan []byte, 4)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
+				server, chans, requests, err := ssh.NewServerConn(conn, config)
+				if err != nil {
+					return
+				}
+				defer server.Close()
+				go ssh.DiscardRequests(requests)
+				for incoming := range chans {
+					if incoming.ChannelType() != "session" {
+						incoming.Reject(ssh.UnknownChannelType, "session only")
+						continue
+					}
+					channel, requests, err := incoming.Accept()
+					if err != nil {
+						return
+					}
+					for req := range requests {
+						if req.Type != "exec" {
+							req.Reply(false, nil)
+							continue
+						}
+						var command struct{ Command string }
+						if err := ssh.Unmarshal(req.Payload, &command); err != nil {
+							req.Reply(false, nil)
+							continue
+						}
+						commands <- command.Command
+						req.Reply(true, nil)
+						data, err := io.ReadAll(channel)
+						if err != nil {
+							channel.Close()
+							return
+						}
+						payloads <- data
+						channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+						channel.Close()
+						break
+					}
+				}
+			}()
+		}
+	}()
+	defer func() { listener.Close(); <-done; wg.Wait() }()
+	r, err := registry.Open(filepath.Join(dir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := device.Device{ID: "active-port", Hostname: "host", SSHUser: "admin", SSHPort: 1, PublicKey: public, Addresses: []string{candidates[0]}}
+	if _, err = r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.UpdateDeviceWithSSHPort(d.ID, nil, nil, nil, &port)
+	if err != nil || got.SSHPort != port || got.SSHPortReported != 1 {
+		t.Fatalf("manual connection port: %+v %v", got, err)
+	}
+	if len(commands) != 0 {
+		t.Fatal("setting port unexpectedly triggered SSH sync")
+	}
+	controller := sshsync.Controller{Registry: r, PrivateKey: private, KnownHosts: filepath.Join(dir, "known_hosts"), ACLPath: filepath.Join(dir, "absent-acl"), AdminPublicKey: public, Timeout: 3 * time.Second}
+	result := controller.SyncDevice(context.Background(), d.ID)
+	if result.Error != "" || result.Address != net.JoinHostPort(candidates[0], strconv.Itoa(port)) {
+		t.Fatalf("real SSH sync: %+v", result)
+	}
+	select {
+	case command := <-commands:
+		if command != "homeagent-agent apply-keys" {
+			t.Fatalf("command %q", command)
+		}
+	default:
+		t.Fatal("SSH callback did not execute")
+	}
+	select {
+	case payload := <-payloads:
+		var keys sshsync.KeySet
+		if err := json.Unmarshal(payload, &keys); err != nil || len(keys.Keys) == 0 {
+			t.Fatalf("payload %s %v", payload, err)
+		}
+	default:
+		t.Fatal("SSH stdin was not delivered")
+	}
+	unused, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := unused.Addr().(*net.TCPAddr).Port
+	unused.Close()
+	if _, err = r.UpdateDeviceWithSSHPort(d.ID, nil, nil, nil, &wrong); err != nil {
+		t.Fatal(err)
+	}
+	result = controller.SyncDevice(context.Background(), d.ID)
+	if result.Error == "" {
+		t.Fatal("wrong-port assumption did not safely fail")
+	}
+	if len(commands) != 0 || len(payloads) != 0 {
+		t.Fatal("failed connection executed remote work")
 	}
 }
