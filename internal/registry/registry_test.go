@@ -580,3 +580,55 @@ func TestSSHPortLegacyRegistryMigration(t *testing.T) {
 		t.Fatal("legacy migration did not survive restart")
 	}
 }
+
+func TestSSHPortLegacyOpenPreservesMigrationBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	source := []byte(`{"devices":[{"id":"legacy-port","hostname":"host","ssh_user":"admin","ssh_port":2222,"public_key":"ssh-ed25519 AAAA"}]}`)
+	if err := os.WriteFile(path, source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".control-plane.bak", source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		r, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := r.Get("legacy-port")
+		if err != nil || got.SSHPortReported != 2222 || got.SSHPort != 2222 || got.SSHPortOverride != 0 {
+			t.Fatalf("normalization: %+v %v", got, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backup, err := os.ReadFile(path + ".control-plane.bak")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != string(source) || string(backup) != string(source) {
+			t.Fatal("opening legacy registry changed immutable migration source or backup")
+		}
+	}
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := 2200
+	if _, err = r.UpdateDeviceWithSSHPort("legacy-port", nil, nil, nil, &port); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := reopened.Get("legacy-port")
+	if got.SSHPortReported != 2222 || got.SSHPortOverride != 2200 || got.SSHPort != 2200 {
+		t.Fatalf("normal business write failed to persist normalized ports: %+v", got)
+	}
+	backup, err := os.ReadFile(path + ".control-plane.bak")
+	if err != nil || string(backup) != string(source) {
+		t.Fatal("business write changed historical backup")
+	}
+}

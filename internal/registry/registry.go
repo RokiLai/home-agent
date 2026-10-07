@@ -69,7 +69,8 @@ func Open(path string) (*Registry, error) {
 		gCopy := g
 		r.addGrantIndexLocked(&gCopy)
 	}
-	_ = r.writeLocked()
+	// Loading must preserve legacy bytes until migration verifies its backup.
+	// Normalized ports are persisted by subsequent business writes.
 	return r, nil
 }
 
