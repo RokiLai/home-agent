@@ -203,3 +203,7 @@ SaveDevice 保留现有签名，规范化并校验三字段后在同一条 INSER
 审查结论：功能边界为 CI 环境和测试生命周期；产品接口及端口契约不变，无新增产品依赖；恢复入口只能在成功门禁后发布。验收要求契约测试先失败后通过、本地全部质量门禁、真实 GitHub runner 全量回归及 Release 成功，再执行生产备份、旧版本 self-upgrade 和健康/API 验证。设计补充依据本轮明确修复授权；实施及验收结果待实际运行记录。
 
 本地修复验收：完整质量门禁 /private/tmp/homeagent-ssh-port-ci-recovery-gate2 全部 passed，真实端口全量 -race 回归 116130ms，包含真实 MySQL 和 Chrome；Diff Coverage 通过（本次未新增生产 Go 语句）。原工作流契约断言完整保留，新增环境与恢复入口断言已验证修复前失败、修复后通过。当前修改文件为 .github/workflows/release.yml、changes/ssh-port-settings.yaml、本文、internal/qualitygate/releaseworkflow_test.go、internal/ui/testdata/ssh-port-settings.test.mjs。远程 CI 及生产部署仍待执行。
+
+恢复工作流 37630902118 的直接证据：MySQL 与真实 Chrome 测试已通过，仅 TestSSHPortActiveSyncUsesManualPort 报本机无 eligible IPv4。代码 net.InterfaceAddrs → device.FilterAndSortAddresses → 空候选在连接前拒绝；现有产品过滤规则排除 loopback、容器与代理地址。补齐 CI 临时 dummy 网卡 homeagent-test0、仅绑定 RFC 5737 测试地址 192.0.2.10/32，启动后打印实际地址；真实 TCP/OpenSSH 连接仍执行，完成后 always 删除网卡。此为测试环境缺失，修改载体仅工作流、契约测试和本文，不改变产品地址规则或成功/失败断言。验收为本地质量门禁和真实 runner 完整连接回归。
+
+SSH 网络环境补充本地验收：/private/tmp/homeagent-ssh-port-ci-network-gate 全部门禁 passed，全量真实协议 -race 回归 128104ms，Diff Coverage 100.0%（0/0）；未改变产品版本、地址规则或原测试断言。

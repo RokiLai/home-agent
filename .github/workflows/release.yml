@@ -132,8 +132,20 @@ jobs:
           node-version: '22'
       - name: Verify real browser
         run: test -x "$CHROME_BIN" && "$CHROME_BIN" --version
+      - name: Configure real SSH test interface
+        run: |
+          sudo ip link add homeagent-test0 type dummy
+          sudo ip addr add 192.0.2.10/32 dev homeagent-test0
+          sudo ip link set homeagent-test0 up
+          ip -4 addr show dev homeagent-test0
       - name: Run full regression tests
         run: go test -count=1 -race ./...
+      - name: Cleanup real SSH test interface
+        if: always()
+        run: |
+          if ip link show homeagent-test0 >/dev/null 2>&1; then
+            sudo ip link delete homeagent-test0
+          fi
 
   build-server:
     needs: prepare

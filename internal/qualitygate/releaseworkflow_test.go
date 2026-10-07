@@ -232,7 +232,7 @@ func TestReleaseWorkflowSSHPortEnvironmentAndRecovery(t *testing.T) {
 	}
 	workflow := string(raw)
 	block := releaseWorkflowJobBlock(workflow, "test:")
-	for _, fragment := range []string{"mysql:8.0", "13306:3306", "MYSQL_DATABASE: homeagent_test", "--health-cmd", "CHROME_BIN: /usr/bin/google-chrome", "GOFLAGS: -p=1", "actions/setup-node@v4", "node-version: '22'"} {
+	for _, fragment := range []string{"mysql:8.0", "13306:3306", "MYSQL_DATABASE: homeagent_test", "--health-cmd", "CHROME_BIN: /usr/bin/google-chrome", "GOFLAGS: -p=1", "actions/setup-node@v4", "node-version: '22'", "sudo ip link add homeagent-test0 type dummy", "sudo ip addr add 192.0.2.10/32 dev homeagent-test0", "sudo ip link set homeagent-test0 up", "Cleanup real SSH test interface", "if: always()", "sudo ip link delete homeagent-test0"} {
 		if !strings.Contains(block, fragment) {
 			t.Errorf("missing real test environment: %s", fragment)
 		}
