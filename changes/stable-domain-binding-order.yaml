@@ -1,0 +1,10 @@
+task: stable-domain-binding-order
+description: 固定服务端与设备域名绑定列表按 fqdn、binding_id 升序返回。
+allowed_paths:
+  - changes/stable-domain-binding-order.yaml
+  - docs/architecture/存量列表稳定排序设计方案.md
+  - internal/domainbinding/service.go
+  - internal/domainbinding/list_order_test.go
+  - internal/api/domain_binding_handlers_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go

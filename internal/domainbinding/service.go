@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -118,6 +119,12 @@ func (service *Service) List(ctx context.Context, sourceType SourceType, sourceI
 			result = append(result, fromStore(item, revision))
 		}
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].FQDN == result[j].FQDN {
+			return result[i].BindingID < result[j].BindingID
+		}
+		return result[i].FQDN < result[j].FQDN
+	})
 	return result, nil
 }
 
