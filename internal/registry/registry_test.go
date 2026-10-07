@@ -3,7 +3,9 @@ package registry
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -438,5 +440,143 @@ func TestRegistry_OwnerAndGrants(t *testing.T) {
 	}
 	if len(r2.ListGrants("dev1")) != 0 {
 		t.Fatal("Grants for dev1 should be purged")
+	}
+}
+
+func TestSSHPortOverrideSurvivesStaleFactsAndRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := sample("ssh-port", "AAAA")
+	if _, err = r.Save(old); err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range []int{1, 22, 65535, 2222} {
+		got, err := r.UpdateDeviceWithSSHPort(old.ID, nil, nil, nil, &port)
+		if err != nil || got.SSHPort != port || got.SSHPortReported != 22 {
+			t.Fatalf("set: %+v %v", got, err)
+		}
+	}
+	stale, _ := r.Get(old.ID)
+	reported := 2022
+	stale.SSHPort = reported
+	got, err := r.SaveWithSSHPortReport(stale, &reported)
+	if err != nil || got.SSHPort != 2222 || got.SSHPortReported != 2022 {
+		t.Fatalf("facts: %+v %v", got, err)
+	}
+	zero := 0
+	got, err = r.UpdateDeviceWithSSHPort(old.ID, nil, nil, nil, &zero)
+	if err != nil || got.SSHPort != 2022 {
+		t.Fatalf("restore: %+v %v", got, err)
+	}
+	// A request read before restore must not resurrect the prior override.
+	got, err = r.SaveWithSSHPortReport(stale, nil)
+	if err != nil || got.SSHPortOverride != 0 || got.SSHPort != 2022 {
+		t.Fatalf("stale: %+v %v", got, err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = reopened.Get(old.ID)
+	if got.SSHPort != 2022 || got.SSHPortReported != 2022 || got.SSHPortOverride != 0 {
+		t.Fatalf("restart: %+v", got)
+	}
+	bad := -1
+	alias := "must not persist"
+	if _, err = r.UpdateDeviceWithSSHPort(old.ID, &alias, nil, nil, &bad); err == nil {
+		t.Fatal("bad port accepted")
+	}
+	after, _ := r.Get(old.ID)
+	if after.Alias != got.Alias || !after.UpdatedAt.Equal(got.UpdatedAt) {
+		t.Fatal("partial invalid write")
+	}
+}
+
+func TestSSHPortConcurrentSettingsAndFailureRollback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "devices.json")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := sample("parallel-port", "AAAA")
+	if _, err = r.Save(d); err != nil {
+		t.Fatal(err)
+	}
+	other := sample("other-port", "BBBB")
+	if _, err = r.Save(other); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			value := 2200 + i
+			if i%2 == 0 {
+				if _, err := r.UpdateDeviceWithSSHPort(d.ID, nil, nil, nil, &value); err != nil {
+					t.Error(err)
+				}
+			} else {
+				if _, err := r.SaveWithSSHPortReport(d, &value); err != nil {
+					t.Error(err)
+				}
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	got, _ := r.Get(d.ID)
+	if got.SSHPort != got.SSHPortOverride || got.SSHPortReported < 2200 || got.SSHPortReported > 2219 {
+		t.Fatalf("concurrency: %+v", got)
+	}
+	second, _ := r.Get(other.ID)
+	if second.SSHPort != 22 || second.SSHPortOverride != 0 {
+		t.Fatal("cross-device write")
+	}
+	// Force a real filesystem persistence failure and verify all properties roll back.
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	port := 3333
+	alias := "must rollback"
+	if _, err = r.UpdateDeviceWithSSHPort(d.ID, &alias, nil, nil, &port); err == nil {
+		t.Fatal("persistence failure hidden")
+	}
+	after, _ := r.Get(d.ID)
+	if after.SSHPort != got.SSHPort || after.SSHPortReported != got.SSHPortReported || after.SSHPortOverride != got.SSHPortOverride || after.Alias != got.Alias || after.UpdatedAt != got.UpdatedAt {
+		t.Fatal("rollback failed")
+	}
+}
+
+func TestSSHPortLegacyRegistryMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.json")
+	data := []byte(`{"devices":[{"id":"legacy-port","hostname":"host","ssh_user":"admin","ssh_port":2222,"public_key":"ssh-ed25519 AAAA"}]}`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Get("legacy-port")
+	if err != nil || got.SSHPort != 2222 || got.SSHPortReported != 2222 || got.SSHPortOverride != 0 {
+		t.Fatalf("legacy: %+v %v", got, err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := reopened.Get("legacy-port")
+	if again.SSHPortReported != 2222 || again.SSHPortOverride != 0 {
+		t.Fatal("legacy migration did not survive restart")
 	}
 }

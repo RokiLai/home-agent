@@ -2931,3 +2931,45 @@ body.sidebar-open {
   .files-table-wrap th:nth-child(3), .files-table-wrap td:nth-child(3) { display: none; }
   .file-actions { gap: 6px; }
 }
+
+.ssh-port-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ssh-port-controls input {
+  width: 120px;
+  max-width: 100%;
+}
+
+.ssh-port-controls :focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .ssh-port-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ssh-port-controls input {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+.detail-section-settings .detail-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ssh-port-settings {
+  margin-block: 16px;
+}
+
+.ssh-port-settings p {
+  margin-block: 8px;
+}

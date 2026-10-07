@@ -2,6 +2,7 @@ package mysqlstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -94,6 +95,7 @@ func TestMySQLStore_AllCRUD(t *testing.T) {
 	// 3. Device & Grants
 	dev := &device.Device{
 		ID:          "dev-mysql-1",
+		SSHPort:     22,
 		OwnerUserID: "usr-mysql-1",
 		Hostname:    "host-mysql",
 		Alias:       "My Server",
@@ -250,5 +252,165 @@ func TestAutoMigrate_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	if err := AutoMigrate(ctx, ms.DB()); err != nil {
 		t.Fatalf("AutoMigrate repeated call failed: %v", err)
+	}
+}
+
+// Real MySQL 8.0.46 observed on local test service; metadata reports int/NO/22.
+// These tests use actual DDL and TCP, without a protocol fake.
+func TestSSHPortMySQLMigrationAndRoundTrip(t *testing.T) {
+	ms, err := NewMySQLStore(Config{DSN: "root:123456@tcp(127.0.0.1:13306)/homeagent_test?parseTime=true"})
+	if err != nil {
+		t.Fatalf("real MySQL required: %v", err)
+	}
+	defer ms.Close()
+	now := time.Now().UTC()
+	d := &device.Device{ID: "ssh-port-mysql", OwnerUserID: "port-owner", Hostname: "ports", SSHUser: "user", SSHPort: 2222, SSHPortReported: 22, SSHPortOverride: 2222, CreatedAt: now}
+	if err = ms.SaveDevice(d); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ms.DeleteDevice(d.ID) })
+	got, err := ms.GetDevice(d.ID)
+	if err != nil || got.SSHPort != 2222 || got.SSHPortReported != 22 || got.SSHPortOverride != 2222 {
+		t.Fatalf("roundtrip: %+v %v", got, err)
+	}
+	if err = AutoMigrate(context.Background(), ms.DB()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ms.GetDevice(d.ID)
+	if err != nil || got.SSHPortOverride != 2222 || got.SSHPortReported != 22 {
+		t.Fatalf("repeat migration: %+v %v", got, err)
+	}
+	d.SSHPortOverride = -1
+	if err = ms.SaveDevice(d); err == nil {
+		t.Fatal("invalid write accepted")
+	}
+	got, _ = ms.GetDevice(d.ID)
+	if got.SSHPortOverride != 2222 {
+		t.Fatal("invalid write changed data")
+	}
+	list, err := ms.ListDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range list {
+		if v.ID == d.ID {
+			found = true
+			if v.SSHPortReported != 22 || v.SSHPortOverride != 2222 {
+				t.Fatal("list lost ports")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing device")
+	}
+	snapshot, err := ms.LoadControlPlane(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := *got
+	snapshot.Devices[copy.ID] = &copy
+	committed, err := ms.CommitControlPlane(context.Background(), snapshot.Revision, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ms.LoadControlPlane(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != committed.Revision || loaded.Devices[copy.ID].SSHPortOverride != 2222 || loaded.Devices[copy.ID].SSHPortReported != 22 {
+		t.Fatal("real MySQL snapshot lost SSH ports")
+	}
+	delete(loaded.Devices, copy.ID)
+	if _, err = ms.CommitControlPlane(context.Background(), loaded.Revision, loaded); err != nil {
+		t.Fatal(err)
+	}
+
+}
+
+func TestSSHPortMySQLLegacyDDLRecovery(t *testing.T) {
+	// Each scenario owns a temporary database; no existing tables are altered.
+	root, err := sql.Open("mysql", "root:123456@tcp(127.0.0.1:13306)/?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for _, scenario := range []string{"old", "partial", "incompatible", "invalid"} {
+		t.Run(scenario, func(t *testing.T) {
+			name := fmt.Sprintf("homeagent_ssh_ports_%d", time.Now().UnixNano())
+			if _, err := root.Exec("CREATE DATABASE " + name); err != nil {
+				t.Fatalf("real MySQL required: %v", err)
+			}
+			defer root.Exec("DROP DATABASE " + name)
+			db, err := sql.Open("mysql", "root:123456@tcp(127.0.0.1:13306)/"+name+"?parseTime=true")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if _, err = db.Exec(`CREATE TABLE devices (id VARCHAR(64) PRIMARY KEY, ssh_port INT NOT NULL, alias VARCHAR(64), updated_at DATETIME(3))`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.Exec(`INSERT INTO devices VALUES ('a',22,'keep-a','2026-01-01'),('b',2222,'keep-b','2026-01-02')`); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "partial" {
+				if _, err = db.Exec(`ALTER TABLE devices ADD COLUMN ssh_port_reported INT NOT NULL DEFAULT 0`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "incompatible" {
+				if _, err = db.Exec(`ALTER TABLE devices ADD COLUMN ssh_port_reported VARCHAR(64) DEFAULT '0'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "invalid" {
+				if _, err = db.Exec(`UPDATE devices SET ssh_port = 70000 WHERE id = 'a'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = migrateSSHPorts(context.Background(), db)
+			if scenario == "incompatible" || scenario == "invalid" {
+				if err == nil {
+					t.Fatal("unsafe migration accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 2; i++ {
+				if err = migrateSSHPorts(context.Background(), db); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows, err := db.Query(`SELECT ssh_port,ssh_port_reported,ssh_port_override,alias,updated_at FROM devices ORDER BY id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			for _, port := range []int{22, 2222} {
+				if !rows.Next() {
+					t.Fatal("missing row")
+				}
+				var effective, reported, override int
+				var alias string
+				var updated time.Time
+				if err = rows.Scan(&effective, &reported, &override, &alias, &updated); err != nil {
+					t.Fatal(err)
+				}
+				expectedAlias := "keep-a"
+				day := 1
+				if port == 2222 {
+					expectedAlias = "keep-b"
+					day = 2
+				}
+				if effective != port || reported != port || override != 0 || alias != expectedAlias || updated.Day() != day {
+					t.Fatalf("migration changed record: %d %d %d %s %s", effective, reported, override, alias, updated)
+				}
+			}
+			if err = rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

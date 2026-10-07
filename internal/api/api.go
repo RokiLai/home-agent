@@ -400,8 +400,14 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 	} else if strings.HasSuffix(req.SSHUser, "$") && s.Log != nil {
 		s.Log.Warn("rejected_machine_account_ssh_user", "device_id", d.ID, "ssh_user", req.SSHUser)
 	}
+	if req.SSHPort < 0 || req.SSHPort > 65535 {
+		http.Error(w, "invalid ssh_port", http.StatusBadRequest)
+		return
+	}
+	var reportedPort *int
 	if req.SSHPort > 0 {
 		d.SSHPort = req.SSHPort
+		reportedPort = &req.SSHPort
 	}
 	d.Addresses = req.Addresses
 	if req.ControlProtocols != nil {
@@ -463,7 +469,7 @@ func (s *Server) putDeviceFacts(w http.ResponseWriter, r *http.Request) {
 		d.HardwareIdentity = fingerprint
 	}
 
-	saved, err := s.Registry.Save(d)
+	saved, err := s.Registry.SaveWithSSHPortReport(d, reportedPort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -561,8 +567,11 @@ func (s *Server) adminKey(w http.ResponseWriter, _ *http.Request) {
 
 type deviceDTO struct {
 	device.Device
-	Connected bool                   `json:"connected"`
-	Health    *health.HealthSnapshot `json:"health,omitempty"`
+	Connected       bool                   `json:"connected"`
+	CanEditSSHPort  bool                   `json:"can_edit_ssh_port"`
+	SSHPortReported int                    `json:"ssh_port_reported"`
+	SSHPortOverride int                    `json:"ssh_port_override"`
+	Health          *health.HealthSnapshot `json:"health,omitempty"`
 }
 
 func (s *Server) toDeviceDTO(d device.Device) deviceDTO {
@@ -577,10 +586,23 @@ func (s *Server) toDeviceDTO(d device.Device) deviceDTO {
 		}
 	}
 	return deviceDTO{
-		Device:    d,
-		Connected: connected,
-		Health:    snap,
+		Device:          d,
+		SSHPortReported: d.SSHPortReported,
+		SSHPortOverride: d.SSHPortOverride,
+		Connected:       connected,
+		Health:          snap,
 	}
+}
+
+func (s *Server) deviceDTOForRequest(r *http.Request, d device.Device) deviceDTO {
+	dto := s.toDeviceDTO(d)
+	actor := auth.GetActorFromContext(r.Context())
+	if actor == nil {
+		dto.CanEditSSHPort = s.SessionManager == nil
+		return dto
+	}
+	dto.CanEditSSHPort = s.Authorizer.Authorize(auth.AuthorizationRequest{Actor: *actor, Permission: auth.PermDevicesUpdate, Resource: auth.DeviceResource(d.ID)}).Allowed
+	return dto
 }
 
 func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
@@ -594,7 +616,7 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	list := s.Registry.FilterDevicesForUser(userID, isOwner)
 	dtos := make([]deviceDTO, 0, len(list))
 	for _, d := range list {
-		dtos = append(dtos, s.toDeviceDTO(d))
+		dtos = append(dtos, s.deviceDTOForRequest(r, d))
 	}
 	writeJSON(w, 200, map[string]any{"devices": dtos, "server_hash": s.serverKeySetHash(list)})
 }
@@ -616,13 +638,14 @@ func (s *Server) getDevice(w http.ResponseWriter, r *http.Request) {
 		statusError(w, err)
 		return
 	}
-	writeJSON(w, 200, s.toDeviceDTO(d))
+	writeJSON(w, 200, s.deviceDTOForRequest(r, d))
 }
 
 type updateDeviceReq struct {
-	Alias             *string `json:"alias,omitempty"`
-	MAC               *string `json:"mac,omitempty"`
-	GitHubSyncEnabled *bool   `json:"github_sync_enabled,omitempty"`
+	Alias             *string         `json:"alias,omitempty"`
+	MAC               *string         `json:"mac,omitempty"`
+	GitHubSyncEnabled *bool           `json:"github_sync_enabled,omitempty"`
+	SSHPortOverride   json.RawMessage `json:"ssh_port_override,omitempty"`
 }
 
 func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
@@ -636,6 +659,15 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var port *int
+	if len(req.SSHPortOverride) > 0 {
+		var value int
+		if string(req.SSHPortOverride) == "null" || json.Unmarshal(req.SSHPortOverride, &value) != nil || value < 0 || value > 65535 {
+			http.Error(w, "invalid ssh_port_override", http.StatusBadRequest)
+			return
+		}
+		port = &value
+	}
 	if req.MAC != nil && strings.TrimSpace(*req.MAC) != "" {
 		if _, _, err := wol.ParseAndValidateMAC(*req.MAC); err != nil {
 			http.Error(w, "invalid MAC address: "+err.Error(), 400)
@@ -643,7 +675,7 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updated, err := s.Registry.UpdateDevice(devID, req.Alias, req.MAC, req.GitHubSyncEnabled)
+	updated, err := s.Registry.UpdateDeviceWithSSHPort(devID, req.Alias, req.MAC, req.GitHubSyncEnabled, port)
 	if err != nil {
 		statusError(w, err)
 		return
@@ -668,7 +700,7 @@ func (s *Server) patchDevice(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, s.toDeviceDTO(updated))
+	writeJSON(w, 200, s.deviceDTOForRequest(r, updated))
 }
 
 type wakeDeviceReq struct {

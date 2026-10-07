@@ -28,6 +28,8 @@ type Device struct {
 	Arch                    string               `json:"arch"`
 	SSHUser                 string               `json:"ssh_user"`
 	SSHPort                 int                  `json:"ssh_port"`
+	SSHPortReported         int                  `json:"ssh_port_reported,omitempty"`
+	SSHPortOverride         int                  `json:"ssh_port_override,omitempty"`
 	PublicKey               string               `json:"public_key"`
 	Addresses               []string             `json:"addresses"`
 	CreatedAt               time.Time            `json:"created_at"`
@@ -228,4 +230,22 @@ func isVirtualOrProxyIP(ip net.IP) bool {
 		return true
 	}
 	return false
+}
+
+// NormalizeSSHPorts migrates legacy ports and derives the effective connection port.
+func NormalizeSSHPorts(d *Device) error {
+	if d.SSHPortOverride < 0 || d.SSHPortOverride > 65535 {
+		return fmt.Errorf("invalid ssh_port_override")
+	}
+	if d.SSHPortReported == 0 && d.SSHPortOverride == 0 {
+		d.SSHPortReported = d.SSHPort
+	}
+	if d.SSHPortReported < 1 || d.SSHPortReported > 65535 {
+		return fmt.Errorf("invalid ssh_port_reported")
+	}
+	d.SSHPort = d.SSHPortReported
+	if d.SSHPortOverride != 0 {
+		d.SSHPort = d.SSHPortOverride
+	}
+	return nil
 }

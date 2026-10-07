@@ -1,0 +1,31 @@
+task: ssh-port-settings
+description: SSH连接端口设置及MySQL兼容补充；原方案、扩展范围、设备级权限字段与客户端版本联动已确认，支持手动覆盖、恢复上报、并发安全与持久化恢复。
+allowed_paths:
+  - changes/ssh-port-settings.yaml
+  - docs/ui/SSH连接端口设置设计方案.md
+  - internal/device/device.go
+  - internal/device/device_test.go
+  - internal/registry/registry.go
+  - internal/registry/registry_test.go
+  - internal/api/api.go
+  - internal/api/api_test.go
+  - internal/store/controlplane_service.go
+  - internal/store/controlplane_service_test.go
+  - internal/store/controlplane.go
+  - internal/store/controlplane_contract_test.go
+  - internal/store/filestore/controlplane_test.go
+  - internal/store/mysqlstore/controlplane_test.go
+  - internal/ui/static/js/devices/render.js
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/style.css
+  - internal/ui/testdata/ssh-port-settings.test.mjs
+  - internal/ui/testdata/device-rendering.test.mjs
+  - internal/ui/testdata/console-ia-phase2.test.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/ui/embed_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - internal/store/mysqlstore/schema.go
+  - internal/store/mysqlstore/mysqlstore.go
+  - internal/store/mysqlstore/mysqlstore_test.go
+  - internal/store/contract_test.go

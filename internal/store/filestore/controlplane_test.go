@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"homeagent/internal/device"
 	"homeagent/internal/store"
 )
 
@@ -51,5 +52,30 @@ func TestControlPlaneRejectsDuplicateFQDNWithoutChangingState(t *testing.T) {
 	after, _ := repository.Load(context.Background())
 	if after.Revision != 0 || len(after.Bindings) != 0 {
 		t.Fatalf("failed commit mutated state: %+v", after)
+	}
+}
+
+func TestSSHPortSnapshotRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "port-snapshot.json")
+	repo, err := OpenControlPlane(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := store.NewControlPlaneSnapshot()
+	next.Devices["port"] = &device.Device{ID: "port", Hostname: "host", SSHPort: 2222, SSHPortReported: 22, SSHPortOverride: 2222}
+	if _, err = repo.Commit(context.Background(), 0, next); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenControlPlane(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := reopened.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := snapshot.Devices["port"]
+	if got.SSHPort != 2222 || got.SSHPortReported != 22 || got.SSHPortOverride != 2222 {
+		t.Fatalf("restart: %+v", got)
 	}
 }

@@ -104,3 +104,32 @@ func TestDeviceUpgradeFactsFields(t *testing.T) {
 		t.Fatalf("unexpected upgrade facts values: %+v", d)
 	}
 }
+
+func TestSSHPortNormalizationContract(t *testing.T) {
+	for _, port := range []int{1, 22, 2222, 65535} {
+		d := Device{SSHPort: port}
+		if err := NormalizeSSHPorts(&d); err != nil || d.SSHPortReported != port || d.SSHPortOverride != 0 || d.SSHPort != port {
+			t.Fatalf("legacy port %d: %+v %v", port, d, err)
+		}
+		d.SSHPortOverride = 2200
+		if err := NormalizeSSHPorts(&d); err != nil || d.SSHPort != 2200 || d.SSHPortReported != port {
+			t.Fatalf("override: %+v %v", d, err)
+		}
+	}
+	for _, d := range []Device{{SSHPort: 0}, {SSHPort: 65536}, {SSHPort: 22, SSHPortReported: -1}, {SSHPort: 22, SSHPortOverride: -1}, {SSHPort: 22, SSHPortOverride: 65536}} {
+		if NormalizeSSHPorts(&d) == nil {
+			t.Fatalf("invalid accepted: %+v", d)
+		}
+	}
+}
+
+func TestSSHPortLegacyAgentPayloadOmitsServerSettings(t *testing.T) {
+	d := Device{ID: "legacy-agent", SSHPort: 2222}
+	body, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "ssh_port_override") || strings.Contains(string(body), "ssh_port_reported") {
+		t.Fatalf("server settings leaked into legacy agent registration: %s", body)
+	}
+}

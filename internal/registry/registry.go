@@ -59,6 +59,9 @@ func Open(path string) (*Registry, error) {
 		return nil, fmt.Errorf("decode registry: %w", err)
 	}
 	for _, d := range data.Devices {
+		if err := device.NormalizeSSHPorts(&d); err != nil {
+			return nil, err
+		}
 		d.Addresses = device.FilterAndSortAddresses(d.Addresses)
 		r.devices[d.ID] = d
 	}
@@ -93,6 +96,12 @@ func (r *Registry) SetDefaultOwnerID(ownerID string) {
 
 // Save 校验并持久化保存设备信息。
 func (r *Registry) Save(d device.Device) (device.Device, error) {
+	report := d.SSHPort
+	return r.SaveWithSSHPortReport(d, &report)
+}
+
+// SaveWithSSHPortReport protects settings from stale facts; nil retains the latest report.
+func (r *Registry) SaveWithSSHPortReport(d device.Device, report *int) (device.Device, error) {
 	if err := device.Validate(d); err != nil {
 		return device.Device{}, err
 	}
@@ -106,6 +115,22 @@ func (r *Registry) Save(d device.Device) (device.Device, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now().UTC()
+	if old, ok := r.devices[d.ID]; ok {
+		d.SSHPortOverride = old.SSHPortOverride
+		d.SSHPortReported = old.SSHPortReported
+		if d.SSHPortReported == 0 {
+			d.SSHPortReported = old.SSHPort
+		}
+	} else {
+		d.SSHPortOverride = 0
+		d.SSHPortReported = d.SSHPort
+	}
+	if report != nil {
+		d.SSHPortReported = *report
+	}
+	if err := device.NormalizeSSHPorts(&d); err != nil {
+		return device.Device{}, err
+	}
 	if old, ok := r.devices[d.ID]; ok {
 		d.CreatedAt = old.CreatedAt
 		if d.OwnerUserID == "" {
@@ -629,11 +654,28 @@ func (r *Registry) UpdateMAC(id string, mac string) (device.Device, error) {
 
 // UpdateDevice 原子更新设备的别名、MAC 地址与 GitHub 同步开关。
 func (r *Registry) UpdateDevice(id string, alias *string, mac *string, gitHubSyncEnabled *bool) (device.Device, error) {
+	return r.UpdateDeviceWithSSHPort(id, alias, mac, gitHubSyncEnabled, nil)
+}
+
+// UpdateDeviceWithSSHPort atomically applies properties and an optional manual port.
+func (r *Registry) UpdateDeviceWithSSHPort(id string, alias *string, mac *string, gitHubSyncEnabled *bool, port *int) (device.Device, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d, ok := r.devices[id]
 	if !ok {
 		return device.Device{}, ErrNotFound
+	}
+	if port != nil {
+		if *port < 0 || *port > 65535 {
+			return device.Device{}, fmt.Errorf("invalid ssh_port_override")
+		}
+		if err := device.NormalizeSSHPorts(&d); err != nil {
+			return device.Device{}, err
+		}
+		d.SSHPortOverride = *port
+		if err := device.NormalizeSSHPorts(&d); err != nil {
+			return device.Device{}, err
+		}
 	}
 	now := time.Now().UTC()
 	if alias != nil {
