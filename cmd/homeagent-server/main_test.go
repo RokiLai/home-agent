@@ -5,17 +5,22 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"homeagent/internal/api"
 	"homeagent/internal/auth"
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
 	"homeagent/internal/domainbinding"
+	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
+	"homeagent/internal/registry"
 	"homeagent/internal/versionstatus"
 )
 
@@ -594,5 +599,47 @@ func TestCheckServerSupervised(t *testing.T) {
 	t.Setenv("HOMEAGENT_SUPERVISED", "true")
 	if !checkServerSupervised() {
 		t.Fatal("expected true when HOMEAGENT_SUPERVISED is true in writable directory")
+	}
+}
+
+func TestFileAccessStartupAndRealBrowser(t *testing.T) {
+	sm, err := auth.NewSessionManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm.InitAdminBootstrap("owner", "StrongPass123!")
+	u, err := sm.AuthenticateUser("owner", "StrongPass123!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := sm.CreateUserSession(u.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "file-access-tokens.json")
+	svc, err := openFileAccess(p, sm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, err := fileshare.Open(t.TempDir(), fileshare.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := registry.Open(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer((&api.Server{Registry: reg, SessionManager: sm, FileAccess: svc, FileShare: fs}).Handler())
+	defer server.Close()
+	cmd := exec.Command("node", "--test", "../../internal/ui/testdata/file-access-tokens.test.mjs")
+	cmd.Env = append(os.Environ(), "TEST_FILE_TOKEN_URL="+server.URL, "TEST_FILE_TOKEN_SESSION="+raw)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("file token browser: %v\n%s", err, output)
+	}
+	if err = os.WriteFile(p, []byte(`{"schema_version":99}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if service, err := openFileAccess(p, sm); err == nil || service != nil {
+		t.Fatal("corrupt store not disabled")
 	}
 }

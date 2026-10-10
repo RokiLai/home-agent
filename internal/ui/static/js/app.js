@@ -1,3 +1,4 @@
+import { initFileAccessTokens } from './file-access-tokens.js';
 import { state } from './state.js';
 import { showToast, spinRefresh, copyToClipboard, addLog } from './utils.js';
 import { setupRouter, openMobileSidebar, closeMobileSidebar } from './router.js';
@@ -13,6 +14,7 @@ import { fetchUsersList } from './users.js';
 import { fetchFiles, initFileShare, loadFileSettings } from './files.js?v=3';
 
 export function bindEventListeners() {
+  initFileAccessTokens();
 	initFileShare();
   const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
   const sidebarCloseBtn = document.getElementById('sidebarCloseBtn');

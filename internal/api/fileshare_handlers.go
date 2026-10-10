@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"homeagent/internal/auth"
+	"homeagent/internal/fileaccess"
 	"homeagent/internal/fileshare"
 )
 
@@ -57,12 +58,8 @@ func (s *Server) uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"single_file_required"}`, http.StatusBadRequest)
 		return
 	}
-	actor := auth.GetActorFromContext(r.Context())
-	userID := ""
-	if actor != nil {
-		userID = actor.UserID
-	}
-	record, err := service.Upload(part.FileName(), part.Header.Get("Content-Type"), userID, 0, part)
+	userID := fileActorID(r)
+	record, err := service.UploadWithCommitGuard(part.FileName(), part.Header.Get("Content-Type"), userID, 0, part, s.fileCommitGuard(r))
 	_ = part.Close()
 	if err != nil {
 		s.writeFileError(w, err)
@@ -135,12 +132,8 @@ func (s *Server) createFileLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 		return
 	}
-	actor := auth.GetActorFromContext(r.Context())
-	actorID := ""
-	if actor != nil {
-		actorID = actor.UserID
-	}
-	link, token, err := service.CreateLink(r.PathValue("id"), actorID, time.Duration(req.ExpiresInSeconds)*time.Second)
+	actorID := fileActorID(r)
+	link, token, err := service.CreateLinkWithCommitGuard(r.PathValue("id"), actorID, time.Duration(req.ExpiresInSeconds)*time.Second, s.fileCommitGuard(r))
 	if err != nil {
 		s.writeFileError(w, err)
 		return
@@ -273,6 +266,10 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request, f http.Fi
 }
 
 func (s *Server) writeFileError(w http.ResponseWriter, err error) {
+	if errors.Is(err, fileaccess.ErrUnauthorized) || errors.Is(err, fileaccess.ErrUnavailable) {
+		s.fileCredentialError(w, err)
+		return
+	}
 	status, code := http.StatusInternalServerError, "file_operation_failed"
 	switch {
 	case errors.Is(err, fileshare.ErrNotFound):

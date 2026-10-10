@@ -37,6 +37,7 @@ import (
 	"homeagent/internal/device"
 	"homeagent/internal/devicestate"
 	"homeagent/internal/domainbinding"
+	"homeagent/internal/fileaccess"
 	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
@@ -106,6 +107,7 @@ type Server struct {
 	ServerIPv6Collector       *servernetwork.Collector
 	ServerNetworkCoordinator  *servernetwork.Coordinator
 	FileShare                 *fileshare.Service
+	FileAccess                *fileaccess.Service
 	HardwareFingerprintKey    []byte
 	serverNetworkValidationMu sync.Mutex
 	serverNetworkDetections   map[string]serverNetworkDetection
@@ -278,14 +280,26 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/commands/{id}", requirePerm(auth.PermCommandsRead, nil)(http.HandlerFunc(s.getCommand)))
 	mux.Handle("POST /api/v1/commands/{id}/cancel", requirePerm(auth.PermCommandsCancel, nil)(http.HandlerFunc(s.cancelCommand)))
 
+	requireFile := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := r.Context().Value(fileCredentialKey{}).(fileCredential); ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+			requireSession(next).ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("POST /api/v1/file-access-tokens", requireSession(http.HandlerFunc(s.createFileAccessToken)))
+	mux.Handle("GET /api/v1/file-access-tokens", requireSession(http.HandlerFunc(s.listFileAccessTokens)))
+	mux.Handle("DELETE /api/v1/file-access-tokens/{id}", requireSession(http.HandlerFunc(s.revokeFileAccessToken)))
 	// Temporary file relay routes. Public downloads are authorized by an expiring capability token.
-	mux.Handle("POST /api/v1/files", requireSession(http.HandlerFunc(s.uploadFile)))
-	mux.Handle("GET /api/v1/files", requireSession(http.HandlerFunc(s.listFiles)))
+	mux.Handle("POST /api/v1/files", requireFile(http.HandlerFunc(s.uploadFile)))
+	mux.Handle("GET /api/v1/files", requireFile(http.HandlerFunc(s.listFiles)))
 	mux.Handle("GET /api/v1/files/settings", requireSession(http.HandlerFunc(s.getFileSettings)))
 	mux.Handle("PUT /api/v1/files/settings", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.putFileSettings)))
-	mux.Handle("GET /api/v1/files/{id}/download", requireSession(http.HandlerFunc(s.downloadFile)))
+	mux.Handle("GET /api/v1/files/{id}/download", requireFile(http.HandlerFunc(s.downloadFile)))
 	mux.Handle("DELETE /api/v1/files/{id}", requireSession(http.HandlerFunc(s.deleteFile)))
-	mux.Handle("POST /api/v1/files/{id}/links", requireSession(http.HandlerFunc(s.createFileLink)))
+	mux.Handle("POST /api/v1/files/{id}/links", requireFile(http.HandlerFunc(s.createFileLink)))
 	mux.Handle("GET /api/v1/files/{id}/links", requireSession(http.HandlerFunc(s.listFileLinks)))
 	mux.Handle("DELETE /api/v1/files/{id}/links/{link_id}", requireSession(http.HandlerFunc(s.revokeFileLink)))
 	mux.HandleFunc("GET /api/v1/public/files/{id}/download", s.downloadPublicFile)
@@ -350,7 +364,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/server/domain-bindings/{binding_id}/disable", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.disableServerDomainBinding)))
 	mux.Handle("DELETE /api/v1/server/domain-bindings/{binding_id}", requirePerm(auth.PermInstanceSettingsManage, nil)(http.HandlerFunc(s.deleteServerDomainBinding)))
 
-	return withCORS(mux)
+	return withCORS(s.fileCredentialBoundary(mux))
 }
 
 type deviceFactsReq struct {

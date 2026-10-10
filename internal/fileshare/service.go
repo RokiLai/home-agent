@@ -209,6 +209,11 @@ func (s *Service) recover() error {
 }
 
 func (s *Service) Upload(name, contentType, uploadedBy string, expectedSize int64, src io.Reader) (FileRecord, error) {
+	return s.UploadWithCommitGuard(name, contentType, uploadedBy, expectedSize, src, nil)
+}
+
+// UploadWithCommitGuard checks authorization around the atomic commit after streaming.
+func (s *Service) UploadWithCommitGuard(name, contentType, uploadedBy string, expectedSize int64, src io.Reader, guard func(func() error) error) (FileRecord, error) {
 	if !validName(name) {
 		return FileRecord{}, ErrInvalidName
 	}
@@ -286,19 +291,31 @@ func (s *Service) Upload(name, contentType, uploadedBy string, expectedSize int6
 	if s.used+written > s.quota {
 		return FileRecord{}, ErrInsufficientStorage
 	}
-	record.ExpiresAt = now.Add(time.Duration(s.state.Settings.RetentionDays) * 24 * time.Hour)
-	if err := os.Rename(partial, s.objectPath(id)); err != nil {
-		return FileRecord{}, err
+	commit := func() error {
+		record.ExpiresAt = now.Add(time.Duration(s.state.Settings.RetentionDays) * 24 * time.Hour)
+		if err := os.Rename(partial, s.objectPath(id)); err != nil {
+			return err
+		}
+		keep = true
+		s.state.Files[id] = record
+		s.used += written
+		if err := s.persistLocked(); err != nil {
+			delete(s.state.Files, id)
+			s.used -= written
+			_ = os.Remove(s.objectPath(id))
+			keep = false
+			return err
+		}
+		return nil
 	}
-	keep = true
-	s.state.Files[id] = record
-	s.used += written
-	if err := s.persistLocked(); err != nil {
-		delete(s.state.Files, id)
-		s.used -= written
-		_ = os.Remove(s.objectPath(id))
-		keep = false
-		return FileRecord{}, err
+	var commitErr error
+	if guard == nil {
+		commitErr = commit()
+	} else {
+		commitErr = guard(commit)
+	}
+	if commitErr != nil {
+		return FileRecord{}, commitErr
 	}
 	return record, nil
 }
@@ -388,6 +405,11 @@ func (s *Service) UpdateSettings(next Settings) (Settings, error) {
 }
 
 func (s *Service) CreateLink(fileID, createdBy string, duration time.Duration) (DownloadLink, string, error) {
+	return s.CreateLinkWithCommitGuard(fileID, createdBy, duration, nil)
+}
+
+// CreateLinkWithCommitGuard serializes authorization and durable link creation.
+func (s *Service) CreateLinkWithCommitGuard(fileID, createdBy string, duration time.Duration, guard func(func() error) error) (DownloadLink, string, error) {
 	allowed := map[time.Duration]bool{10 * time.Minute: true, time.Hour: true, 24 * time.Hour: true, 7 * 24 * time.Hour: true}
 	if !allowed[duration] {
 		return DownloadLink{}, "", ErrInvalidDuration
@@ -416,10 +438,22 @@ func (s *Service) CreateLink(fileID, createdBy string, duration time.Duration) (
 		expires = record.ExpiresAt
 	}
 	link := DownloadLink{ID: id, FileID: fileID, TokenHash: tokenDigest(fileID, token), CreatedBy: createdBy, CreatedAt: now, ExpiresAt: expires}
-	s.state.Links[id] = link
-	if err := s.persistLocked(); err != nil {
-		delete(s.state.Links, id)
-		return DownloadLink{}, "", err
+	commit := func() error {
+		s.state.Links[id] = link
+		if err := s.persistLocked(); err != nil {
+			delete(s.state.Links, id)
+			return err
+		}
+		return nil
+	}
+	var commitErr error
+	if guard == nil {
+		commitErr = commit()
+	} else {
+		commitErr = guard(commit)
+	}
+	if commitErr != nil {
+		return DownloadLink{}, "", commitErr
 	}
 	return publicLink(link), token, nil
 }

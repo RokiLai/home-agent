@@ -2887,6 +2887,7 @@ body.sidebar-open {
 }
 
 .files-toolbar {
+  flex-wrap: wrap;
   justify-content: space-between;
   margin-bottom: 16px;
 }
@@ -2972,4 +2973,24 @@ body.sidebar-open {
 
 .ssh-port-settings p {
   margin-block: 8px;
+}
+
+.file-token-control { flex-shrink: 0; }
+.file-tokens-dialog { box-sizing: border-box; }
+.file-tokens-dialog .modal-body { min-width: 0; overflow-wrap: anywhere; }
+.file-token-form { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.file-token-form label { min-width: 0; flex: 1 1 160px; }
+.file-token-form input, .file-token-form select { width: 100%; box-sizing: border-box; }
+.file-token-form button, .file-tokens-dialog button { min-height: 44px; }
+.file-tokens-list { max-height: 320px; overflow: auto; margin-top: 16px; }
+.file-token-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; border-top: 1px solid var(--border-color); padding: 12px 0; }
+.file-token-row > div { min-width: 0; }
+.file-token-row p { font-size: 0.8rem; }
+.file-token-row button { flex-shrink: 0; }
+#fileTokenSecret { display: block; overflow-wrap: anywhere; margin: 8px 0; user-select: all; }
+.file-tokens-dialog button:focus-visible, .file-tokens-dialog input:focus-visible, .file-tokens-dialog select:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (max-width: 700px) {
+  .file-token-form { flex-direction: column; align-items: stretch; }
+  .file-token-form label { flex: auto; }
+  .file-token-row { flex-direction: column; align-items: stretch; }
 }
