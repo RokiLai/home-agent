@@ -42,8 +42,11 @@ test('file token management uses real HTTP responses, native dialog focus, geome
     }
     await click('#fileTokensOpen'); await wait('document.getElementById("fileTokensDialog").open');
     await evaluate('document.getElementById("fileTokenName").value="iPhone <test>"');
+    assert.equal(await evaluate('document.getElementById("fileTokenDays").value'), "365");
+    await evaluate('document.getElementById("fileTokenDays").value="-1"');
     await click('#fileTokensCreate'); await wait('document.getElementById("fileTokenSecret").textContent.startsWith("agt_file_")');
     await wait('document.getElementById("fileTokensList").textContent.includes("iPhone <test>")');
+    assert.equal(await evaluate('document.getElementById("fileTokensList").textContent.includes("到期：永久")'), true);
     assert.equal(await evaluate('document.querySelector("#fileTokensList test")'), null);
     await evaluate('Object.defineProperty(navigator, "clipboard", {configurable:true,value:{writeText:async()=>{throw new Error("denied")}}})');
     await click('#fileTokenCopy'); await wait('document.getElementById("fileTokensMessage").textContent.includes("复制失败")');

@@ -1117,7 +1117,7 @@
       <p>仅允许上传、列表、下载和创建分享链接。撤销令牌不会撤销已生成的下载链接。修改密码或吊销全部会话后，旧令牌失效。</p>
       <form id="fileTokensForm" class="file-token-form">
         <label>名称<input id="fileTokenName" class="form-control" required maxlength="64" placeholder="例如 iPhone 快捷指令"></label>
-        <label>有效期<select id="fileTokenDays" class="form-control"><option value="30">30 天</option><option value="90">90 天</option><option value="365" selected>一年</option></select></label>
+        <label>有效期<select id="fileTokenDays" class="form-control"><option value="30">30 天</option><option value="90">90 天</option><option value="365" selected>一年</option><option value="-1">永久</option></select></label>
         <button id="fileTokensCreate" type="submit" class="btn btn-primary">创建令牌</button>
       </form>
       <p id="fileTokensMessage" role="status" aria-live="polite"></p>
@@ -1131,6 +1131,6 @@
     <span id="toastMsg">已复制到剪贴板</span>
   </div>
 
-  <script type="module" src="/static/app.js?v=35"></script>
+  <script type="module" src="/static/app.js?v=36"></script>
 </body>
 </html>

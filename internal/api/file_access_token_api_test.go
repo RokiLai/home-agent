@@ -48,7 +48,7 @@ func TestFileAccessTokenHTTPJourney(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, res.Header, b
 	}
-	status, header, b := call("POST", "/api/v1/file-access-tokens", "", strings.NewReader(`{"name":"phone"}`), true)
+	status, header, b := call("POST", "/api/v1/file-access-tokens", "", strings.NewReader(`{"name":"phone","expires_in_days":-1}`), true)
 	if status != 201 || header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("create %d %s", status, b)
 	}
@@ -56,7 +56,7 @@ func TestFileAccessTokenHTTPJourney(t *testing.T) {
 		fileaccess.Record
 		Token string `json:"token"`
 	}
-	if json.Unmarshal(b, &created) != nil || created.Token == "" {
+	if json.Unmarshal(b, &created) != nil || created.Token == "" || !bytes.Contains(b, []byte(`"expires_at":null`)) || !bytes.Contains(b, []byte(`"permanent":true`)) {
 		t.Fatal(string(b))
 	}
 	status, _, b = call("GET", "/api/v1/file-access-tokens", "", nil, true)
@@ -169,7 +169,7 @@ func TestFileTokenUnavailableAndInvalidRequests(t *testing.T) {
 	svc, _ := fileaccess.Open("", fileTokenUserLookup(sm), time.Now)
 	s.FileAccess = svc
 	h = s.Handler()
-	for _, body := range []string{`{`, `{"name":""}`, `{"name":"x","expires_in_days":1}`, `{"name":"x","scopes":["all"]}`, `{"name":"x"} {}`} {
+	for _, body := range []string{`{`, `{"name":""}`, `{"name":"x","expires_in_days":1}`, `{"name":"x","expires_in_days":0}`, `{"name":"x","expires_in_days":-2}`, `{"name":"x","scopes":["all"]}`, `{"name":"x"} {}`} {
 		r := httptest.NewRequest("POST", "/api/v1/file-access-tokens", strings.NewReader(body))
 		r.AddCookie(cookie)
 		w := httptest.NewRecorder()

@@ -1,25 +1,13 @@
 task: file-access-token-design
-description: 实施经用户确认的文件专用令牌及管理界面；不含部署或手机凭据保存。
+description: 新增永久文件专用令牌；不含部署或手机凭据保存。
 allowed_paths:
   - changes/file-access-token-design.yaml
   - docs/features/文件操作专用令牌设计方案.md
   - internal/fileaccess/service.go
   - internal/fileaccess/service_test.go
-  - internal/api/file_access_token_handlers.go
   - internal/api/file_access_token_api_test.go
   - internal/ui/static/js/file-access-tokens.js
   - internal/ui/testdata/file-access-tokens.test.mjs
-  - internal/api/api.go
-  - internal/api/fileshare_handlers.go
-  - internal/api/fileshare_api_test.go
-  - internal/fileshare/service.go
-  - internal/fileshare/service_test.go
-  - cmd/homeagent-server/main.go
-  - cmd/homeagent-server/main_test.go
   - internal/ui/static/index.html
-  - internal/ui/static/style.css
-  - internal/ui/static/js/app.js
-  - internal/ui/embed_test.go
-  - internal/ui/testdata/browser-layout.test.mjs
   - internal/version/version.go
   - internal/version/version_test.go

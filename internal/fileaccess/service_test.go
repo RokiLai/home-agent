@@ -1,6 +1,8 @@
 package fileaccess
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -233,5 +235,99 @@ func TestValidateUsesOneCurrentAccountSnapshot(t *testing.T) {
 	version++
 	if _, err = s.Validate(raw); !errors.Is(err, ErrUnauthorized) {
 		t.Fatal("stale account version accepted")
+	}
+}
+
+func TestPermanentLifecycleAndLegacyCompatibility(t *testing.T) {
+	now := time.Now().UTC()
+	user := User{ID: "u", Version: 1, Active: true}
+	lookup := func(string) (User, error) { return user, nil }
+	p := filepath.Join(t.TempDir(), "tokens.json")
+	s, _ := Open(p, lookup, func() time.Time { return now })
+	finite, finiteRaw, err := s.Create("u", "legacy", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema 1 is the observed v0.6.58 persistence format, without permanent metadata.
+	b, _ := os.ReadFile(p)
+	b = bytes.Replace(b, []byte(`"schema_version":2`), []byte(`"schema_version":1`), 1)
+	if err = os.WriteFile(p, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(p, lookup, func() time.Time { return now })
+	if err != nil {
+		t.Fatal("legacy reopen", err)
+	}
+	rec, raw, err := s.Create("u", "forever", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(rec)
+	if !bytes.Contains(encoded, []byte(`"permanent":true`)) || !bytes.Contains(encoded, []byte(`"expires_at":null`)) {
+		t.Fatal("permanent metadata missing")
+	}
+	now = now.AddDate(100, 0, 0)
+	s, err = Open(p, lookup, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Validate(raw); err != nil {
+		t.Fatal("permanent expired", err)
+	}
+	if _, err = s.Validate(finiteRaw); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("finite did not expire")
+	}
+	list, _ := s.List("u")
+	for _, r := range list {
+		if r.ID == finite.ID && r.Status != Expired {
+			t.Fatal("legacy status")
+		}
+		if r.ID == rec.ID && r.Status != Active {
+			t.Fatal("permanent status")
+		}
+	}
+	user.Active = false
+	if _, err = s.Validate(raw); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("permanent bypassed disabled account")
+	}
+	user.Active = true
+	user.Version++
+	if _, err = s.Validate(raw); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("permanent bypassed account version")
+	}
+	user.Version--
+	if err = s.Revoke("u", rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Validate(raw); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("permanent bypassed revoke")
+	}
+	if err = s.Guard(raw, func() error { t.Fatal("revoked commit executed"); return nil }); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal(err)
+	}
+}
+
+func TestPermanentLimitAndMalformedPersistence(t *testing.T) {
+	lookup := func(string) (User, error) { return User{ID: "u", Version: 1, Active: true}, nil }
+	p := filepath.Join(t.TempDir(), "tokens.json")
+	s, _ := Open(p, lookup, time.Now)
+	for i := 0; i < 20; i++ {
+		if _, _, err := s.Create("u", "forever", -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, raw, err := s.Create("u", "excess", -1); !errors.Is(err, ErrLimit) || raw != "" {
+		t.Fatal("permanent bypassed limit")
+	}
+	b, _ := os.ReadFile(p)
+	for _, bad := range [][]byte{bytes.ReplaceAll(b, []byte(`"expires_at":null`), []byte(`"expires_at":"2099-01-01T00:00:00Z"`)), bytes.ReplaceAll(b, []byte(`"permanent":true`), []byte(`"permanent":false`)), bytes.Replace(b, []byte(`"schema_version":2`), []byte(`"schema_version":1`), 1)} {
+		os.WriteFile(p, bad, 0600)
+		if _, err := Open(p, lookup, time.Now); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("malformed permanent accepted")
+		}
+		after, _ := os.ReadFile(p)
+		if !bytes.Equal(after, bad) {
+			t.Fatal("corrupt storage overwritten")
+		}
 	}
 }

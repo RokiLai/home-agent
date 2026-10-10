@@ -25,7 +25,7 @@ async function refresh(epoch) {
   if (!Array.isArray(result.tokens)) throw new Error('令牌列表响应无效。');
   element('fileTokensList').innerHTML = result.tokens.length ? result.tokens.map(token => {
     if (!labels[token.status]) throw new Error('令牌状态无法识别。');
-    return `<div class="file-token-row"><div><strong>${escapeHTML(token.name)}</strong><p>创建：${escapeHTML(token.created_at)}<br>到期：${escapeHTML(token.expires_at)}<br>${labels[token.status]}</p></div><button type="button" class="btn btn-secondary" data-token-id="${escapeHTML(token.id)}" data-token-name="${escapeHTML(token.name)}" ${token.status === 'revoked' ? 'disabled' : ''}>撤销</button></div>`;
+    return `<div class="file-token-row"><div><strong>${escapeHTML(token.name)}</strong><p>创建：${escapeHTML(token.created_at)}<br>到期：${token.permanent === true && token.expires_at === null ? "永久" : escapeHTML(token.expires_at)}<br>${labels[token.status]}</p></div><button type="button" class="btn btn-secondary" data-token-id="${escapeHTML(token.id)}" data-token-name="${escapeHTML(token.name)}" ${token.status === 'revoked' ? 'disabled' : ''}>撤销</button></div>`;
   }).join('') : '<p>暂无专用令牌</p>';
 }
 

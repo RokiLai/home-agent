@@ -44,7 +44,8 @@ type Record struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	Permanent bool       `json:"permanent,omitempty"`
 	RevokedAt *time.Time `json:"revoked_at"`
 	Status    Status     `json:"status"`
 	Scopes    []string   `json:"scopes"`
@@ -86,12 +87,12 @@ func Open(path string, lookup func(string) (User, error), now func() time.Time) 
 		return nil, ErrUnavailable
 	}
 	var state diskState
-	if json.Unmarshal(b, &state) != nil || state.Schema != 1 || state.Tokens == nil {
+	if json.Unmarshal(b, &state) != nil || (state.Schema != 1 && state.Schema != 2) || state.Tokens == nil {
 		return nil, ErrUnavailable
 	}
 	for id, r := range state.Tokens {
 		hash, e := hex.DecodeString(r.Hash)
-		if id == "" || id != r.ID || r.UserID == "" || r.Version == 0 || e != nil || len(hash) != 32 || r.CreatedAt.IsZero() || !r.ExpiresAt.After(r.CreatedAt) {
+		if id == "" || id != r.ID || r.UserID == "" || r.Version == 0 || e != nil || len(hash) != 32 || r.CreatedAt.IsZero() || (r.Permanent && (state.Schema != 2 || r.ExpiresAt != nil)) || (!r.Permanent && (r.ExpiresAt == nil || !r.ExpiresAt.After(r.CreatedAt))) {
 			return nil, ErrUnavailable
 		}
 	}
@@ -136,14 +137,21 @@ func (s *Service) status(r stored) (Status, error) {
 	if u.Version != r.Version {
 		return AccountInvalid, nil
 	}
-	if !s.now().Before(r.ExpiresAt) {
+	if !r.Permanent && !s.now().Before(*r.ExpiresAt) {
 		return Expired, nil
 	}
 	return Active, nil
 }
+func copyRecord(rec Record) Record {
+	if rec.ExpiresAt != nil {
+		v := *rec.ExpiresAt
+		rec.ExpiresAt = &v
+	}
+	return rec
+}
 func (s *Service) public(r stored) (Record, error) {
 	status, err := s.status(r)
-	rec := r.Record
+	rec := copyRecord(r.Record)
 	rec.Status = status
 	rec.Scopes = scopes()
 	if rec.RevokedAt != nil {
@@ -156,7 +164,7 @@ func (s *Service) persist() error {
 	if s.path == "" {
 		return nil
 	}
-	b, err := json.Marshal(diskState{Schema: 1, Tokens: s.tokens})
+	b, err := json.Marshal(diskState{Schema: 2, Tokens: s.tokens})
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -192,7 +200,7 @@ func (s *Service) Create(userID, name string, days int) (Record, string, error) 
 	if days == 0 {
 		days = 365
 	}
-	if !utf8.ValidString(name) || utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 64 || (days != 30 && days != 90 && days != 365) {
+	if !utf8.ValidString(name) || utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 64 || (days != -1 && days != 30 && days != 90 && days != 365) {
 		return Record{}, "", ErrInvalid
 	}
 	s.mu.Lock()
@@ -225,7 +233,11 @@ func (s *Service) Create(userID, name string, days int) (Record, string, error) 
 		return Record{}, "", err
 	}
 	now := s.now().UTC()
-	r := stored{Record: Record{ID: id, Name: name, CreatedAt: now, ExpiresAt: now.Add(time.Duration(days) * 24 * time.Hour)}, UserID: userID, Version: u.Version, Hash: digest(raw)}
+	r := stored{Record: Record{ID: id, Name: name, CreatedAt: now, Permanent: days == -1}, UserID: userID, Version: u.Version, Hash: digest(raw)}
+	if days != -1 {
+		expires := now.Add(time.Duration(days) * 24 * time.Hour)
+		r.ExpiresAt = &expires
+	}
 	s.tokens[id] = r
 	if err = s.persist(); err != nil {
 		delete(s.tokens, id)
@@ -242,7 +254,7 @@ func (s *Service) Create(userID, name string, days int) (Record, string, error) 
 		}
 		return Record{}, "", ErrUnauthorized
 	}
-	rec := r.Record
+	rec := copyRecord(r.Record)
 	rec.Status = Active
 	rec.Scopes = scopes()
 	return rec, raw, nil
@@ -303,7 +315,7 @@ func (s *Service) validate(raw string) (User, error) {
 			if e != nil {
 				return User{}, e
 			}
-			if r.RevokedAt != nil || u.Version != r.Version || !s.now().Before(r.ExpiresAt) {
+			if r.RevokedAt != nil || u.Version != r.Version || (!r.Permanent && !s.now().Before(*r.ExpiresAt)) {
 				return User{}, ErrUnauthorized
 			}
 			return u, nil
