@@ -487,6 +487,7 @@
               <button id="fileUploadBtn" type="button" class="btn btn-primary">选择并上传文件</button>
               <span id="fileUploadSelection" class="file-upload-selection" title="未选择文件">未选择文件</span>
             </div>
+            <div class="file-token-control"><button id="fileTokensOpen" type="button" class="btn btn-secondary">快捷指令令牌</button></div>
             <div class="files-usage" aria-label="文件存储用量">
               <span id="fileUsageText">0 B / 20 GiB</span>
               <div class="files-usage-track"><div id="fileUsageBar" class="files-usage-bar"></div></div>
@@ -1110,11 +1111,26 @@
     </div>
   </div>
 
+  <dialog id="fileTokensDialog" class="file-links-dialog file-tokens-dialog" aria-labelledby="fileTokensTitle">
+    <div class="modal-header"><h3 id="fileTokensTitle">快捷指令令牌</h3><button id="fileTokensClose" type="button" class="btn btn-secondary" aria-label="关闭令牌管理">关闭</button></div>
+    <div class="modal-body">
+      <p>仅允许上传、列表、下载和创建分享链接。撤销令牌不会撤销已生成的下载链接。修改密码或吊销全部会话后，旧令牌失效。</p>
+      <form id="fileTokensForm" class="file-token-form">
+        <label>名称<input id="fileTokenName" class="form-control" required maxlength="64" placeholder="例如 iPhone 快捷指令"></label>
+        <label>有效期<select id="fileTokenDays" class="form-control"><option value="30">30 天</option><option value="90">90 天</option><option value="365" selected>一年</option><option value="-1">永久</option></select></label>
+        <button id="fileTokensCreate" type="submit" class="btn btn-primary">创建令牌</button>
+      </form>
+      <p id="fileTokensMessage" role="status" aria-live="polite"></p>
+      <div id="fileTokenSecretPanel" hidden><p>仅显示一次，关闭后无法再次查看。</p><code id="fileTokenSecret"></code><button id="fileTokenCopy" type="button" class="btn btn-secondary">复制令牌</button></div>
+      <div id="fileTokensList" class="file-tokens-list" aria-label="专用令牌列表"></div>
+    </div>
+  </dialog>
+
   <!-- Toast Notification -->
   <div id="toast" class="toast hidden">
     <span id="toastMsg">已复制到剪贴板</span>
   </div>
 
-  <script type="module" src="/static/app.js?v=34"></script>
+  <script type="module" src="/static/app.js?v=36"></script>
 </body>
 </html>

@@ -287,3 +287,35 @@ func BenchmarkUploadOneGiBStreaming(b *testing.B) {
 		b.ReportMetric(float64(peak.Load()), "peak_heap_growth_bytes")
 	}
 }
+
+func TestCommitGuardRejectsWithoutFileOrLinkSideEffects(t *testing.T) {
+	s, err := Open(t.TempDir(), Options{QuotaBytes: 1024, DiskAvailable: func(string) (int64, error) { return 1 << 30, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := errors.New("guard denied")
+	guard := func(func() error) error { return denied }
+	if _, err = s.UploadWithCommitGuard("x.txt", "text/plain", "u", 0, strings.NewReader("data"), guard); !errors.Is(err, denied) {
+		t.Fatal(err)
+	}
+	files, usage := s.List()
+	if len(files) != 0 || usage.UsedBytes != 0 || usage.ReservedBytes != 0 {
+		t.Fatal("dirty rejected upload")
+	}
+	partials, _ := os.ReadDir(s.partialsDir)
+	objects, _ := os.ReadDir(s.objectsDir)
+	if len(partials) != 0 || len(objects) != 0 {
+		t.Fatal("orphan objects")
+	}
+	rec, err := s.Upload("x.txt", "text/plain", "u", 0, strings.NewReader("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, token, err := s.CreateLinkWithCommitGuard(rec.ID, "u", time.Hour, guard); !errors.Is(err, denied) || token != "" {
+		t.Fatal("link guard")
+	}
+	links, _ := s.ListLinks(rec.ID)
+	if len(links) != 0 {
+		t.Fatal("dirty links")
+	}
+}

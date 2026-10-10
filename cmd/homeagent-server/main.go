@@ -36,6 +36,7 @@ import (
 	"homeagent/internal/devicestate"
 	"homeagent/internal/domainbinding"
 	domaincloudflare "homeagent/internal/domainbinding/cloudflare"
+	"homeagent/internal/fileaccess"
 	"homeagent/internal/fileshare"
 	"homeagent/internal/githubrelease"
 	"homeagent/internal/githubsync"
@@ -430,6 +431,11 @@ func serve(c config) error {
 		logger.Info("admin_user_bootstrap_created", "username", adminUser, "password", randPass, "hint", "Please login and change your password in the Web Console")
 	}
 
+	fileAccess, fileAccessErr := openFileAccess(filepath.Join(c.dataDir, "file-access-tokens.json"), sessionMgr)
+	if fileAccessErr != nil {
+		logger.Error("file_token_initialization_failed", "error", fileAccessErr)
+	}
+
 	enrollmentMgr, err := auth.NewEnrollmentManager(filepath.Join(c.dataDir, "enrollment.json"))
 	if err != nil {
 		return fmt.Errorf("init enrollment manager: %w", err)
@@ -702,6 +708,7 @@ func serve(c config) error {
 		Registry:                 r,
 		Broker:                   eventBroker,
 		SessionManager:           sessionMgr,
+		FileAccess:               fileAccess,
 		EnrollmentManager:        enrollmentMgr,
 		ControlPlane:             controlPlane,
 		DomainBindings:           domainBindingService,
@@ -1312,4 +1319,17 @@ var checkServerSupervised = func() bool {
 	_ = tmp.Close()
 	_ = os.Remove(tmp.Name())
 	return true
+}
+
+func openFileAccess(path string, sm *auth.SessionManager) (*fileaccess.Service, error) {
+	return fileaccess.Open(path, func(id string) (fileaccess.User, error) {
+		u, err := sm.GetUser(id)
+		if errors.Is(err, auth.ErrUserNotFound) {
+			return fileaccess.User{}, fileaccess.ErrNotFound
+		}
+		if err != nil {
+			return fileaccess.User{}, fileaccess.ErrUnavailable
+		}
+		return fileaccess.User{ID: u.ID, Version: u.SessionVersion, Active: u.Status == auth.UserStatusActive}, nil
+	}, time.Now)
 }
