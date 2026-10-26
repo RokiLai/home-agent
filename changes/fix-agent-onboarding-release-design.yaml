@@ -1,0 +1,5 @@
+task: fix-agent-onboarding-release-design
+description: 补齐快速接入安装脚本的 Agent 版本发现、下载源选择、失败路径及验收契约，待用户审查后另行授权实现。
+allowed_paths:
+  - changes/fix-agent-onboarding-release-design.yaml
+  - docs/deployment/个人公网服务端部署方案.md
