@@ -1,0 +1,12 @@
+task: fix-agent-onboarding-release
+description: 按已确认的部署方案第7.2.1节修复快速接入的Agent版本发现、下载源选择和失败处理。
+allowed_paths:
+  - changes/fix-agent-onboarding-release.yaml
+  - scripts/install.sh
+  - scripts/install.ps1
+  - cmd/homeagent-agent/main_test.go
+  - cmd/homeagent-agent/installer_release_test.go
+  - cmd/homeagent-agent/testdata/安装发布响应.json
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - docs/deployment/个人公网服务端部署方案.md
