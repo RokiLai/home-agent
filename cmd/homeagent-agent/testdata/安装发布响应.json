@@ -1,0 +1,65 @@
+{
+  "source": "https://api.github.com/repos/RokiLai/home-agent/releases/tags/agent-v0.6.24",
+  "observed_at": "2026-10-26T19:50:38.129224+00:00",
+  "release": {
+    "tag_name": "agent-v0.6.24",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {
+        "name": "homeagent-agent-darwin-amd64"
+      },
+      {
+        "name": "homeagent-agent-darwin-amd64.sha256"
+      },
+      {
+        "name": "homeagent-agent-darwin-arm64"
+      },
+      {
+        "name": "homeagent-agent-darwin-arm64.sha256"
+      },
+      {
+        "name": "homeagent-agent-linux-amd64"
+      },
+      {
+        "name": "homeagent-agent-linux-amd64.sha256"
+      },
+      {
+        "name": "homeagent-agent-linux-arm"
+      },
+      {
+        "name": "homeagent-agent-linux-arm.sha256"
+      },
+      {
+        "name": "homeagent-agent-linux-arm64"
+      },
+      {
+        "name": "homeagent-agent-linux-arm64.sha256"
+      },
+      {
+        "name": "homeagent-agent-linux-mips"
+      },
+      {
+        "name": "homeagent-agent-linux-mips.sha256"
+      },
+      {
+        "name": "homeagent-agent-linux-mipsle"
+      },
+      {
+        "name": "homeagent-agent-linux-mipsle.sha256"
+      },
+      {
+        "name": "homeagent-agent-windows-amd64.exe"
+      },
+      {
+        "name": "homeagent-agent-windows-amd64.exe.sha256"
+      },
+      {
+        "name": "homeagent-agent-windows-arm64.exe"
+      },
+      {
+        "name": "homeagent-agent-windows-arm64.exe.sha256"
+      }
+    ]
+  }
+}

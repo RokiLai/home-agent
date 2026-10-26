@@ -3,7 +3,21 @@ set -eu
 
 : "${HOMEAGENT_SERVER:=https://homeagent.rokilai.online}"
 token="${HOMEAGENT_CLAIM_TOKEN:-${HOMEAGENT_JOIN_TOKEN:-}}"
-
+repo="${HOMEAGENT_GITHUB_REPO:-RokiLai/home-agent}"
+version="${HOMEAGENT_AGENT_VERSION:-}"
+valid_version() {
+  printf '%s\n' "$1" | awk '/^(agent-)?v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { ok=1 } END { exit !(ok && NR==1) }'
+}
+if [ -z "${HOMEAGENT_DOWNLOAD_BASE_URL:-}" ] && [ -n "$version" ] && ! valid_version "$version"; then
+  echo "invalid Agent release tag" >&2
+  exit 1
+fi
+case "$repo" in
+  *[!A-Za-z0-9_./-]*|../*|*/../*|*/..|/*) echo "invalid GitHub repository" >&2; exit 1 ;;
+esac
+if ! printf '%s\n' "$repo" | awk '/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/ { ok=1 } END { exit !ok }'; then
+  echo "invalid GitHub repository" >&2; exit 1
+fi
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
 case "$arch" in
@@ -15,38 +29,172 @@ case "$arch" in
   *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
 esac
 case "$os" in darwin|linux) ;; *) echo "unsupported OS: $os" >&2; exit 1 ;; esac
+asset="homeagent-agent-${os}-${arch}"
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/homeagent-install.XXXXXX")
+tmp_file="$tmp_dir/agent"
+tmp_sha="$tmp_dir/checksum"
+cleanup() {
+  if [ -n "${transfer:-}" ]; then kill "$transfer" 2>/dev/null || :; wait "$transfer" 2>/dev/null || :; fi
+  if [ -n "${watchdog:-}" ]; then kill "$watchdog" 2>/dev/null || :; wait "$watchdog" 2>/dev/null || :; fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
-tmp_file=$(mktemp "${TMPDIR:-/tmp}/homeagent-agent.XXXXXX" 2>/dev/null || echo "/tmp/homeagent-agent.$$")
-tmp_sha=$(mktemp "${TMPDIR:-/tmp}/homeagent-agent-sha.XXXXXX" 2>/dev/null || echo "/tmp/homeagent-agent-sha.$$")
-trap 'rm -f "$tmp_file" "$tmp_sha"' EXIT HUP INT TERM
+# Both downloader paths have a wall-clock deadline, including wget retries.
+fetch() {
+  case "$1" in http://*|https://*) ;; *) echo "invalid download URL" >&2; return 1 ;; esac
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time 120 --proto '=http,https' --proto-redir '=http,https' \
+      -A HomeAgent-Installer -D "$tmp_dir/headers" "$1" -o "$2" 2>"$tmp_dir/network-error" &
+  elif command -v wget >/dev/null 2>&1; then
+    wget -T 10 -U HomeAgent-Installer -S -O "$2" "$1" 2>"$tmp_dir/headers" &
+  else
+    echo "curl or wget is required" >&2; return 1
+  fi
+  transfer=$!
+  (
+    sleep 120 & timer=$!
+    trap 'kill "$timer" 2>/dev/null || :; wait "$timer" 2>/dev/null || :; exit' TERM INT
+    wait "$timer" || exit
+    kill -TERM "$transfer" 2>/dev/null || :
+  ) &
+  watchdog=$!
+  result=0
+  wait "$transfer" || result=$?
+  kill "$watchdog" 2>/dev/null || :
+  wait "$watchdog" 2>/dev/null || :
+  transfer=
+  watchdog=
+  if [ "$result" -ne 0 ]; then
+    echo "HTTP download failed (network, timeout or non-2xx response)" >&2
+    return "$result"
+  fi
+}
 
-repo="${HOMEAGENT_GITHUB_REPO:-RokiLai/home-agent}"
-version="${HOMEAGENT_AGENT_VERSION:-v0.6.7}"
+# A recursive JSON parser: object identity and decoded keys matter. Release
+# descriptions and nested author objects must never become release records.
+parse_page() {
+  LC_ALL=C awk -v asset="$asset" '
+  function fail() { print "invalid GitHub release response" > "/dev/stderr"; exit 1 }
+  function ws() { while (substr(s,p,1) ~ /[ \t\r\n]/ && p<=length(s)) p++ }
+  function hex(h, i,n,x) { n=0; for(i=1;i<=length(h);i++){x=index("0123456789abcdef",tolower(substr(h,i,1)))-1;if(x<0)fail();n=n*16+x} return n }
+  function utf8(c, n,need,min,code,i,b) {
+    n=byte[c]
+    if(n>=194 && n<=223){need=1;min=128;code=n-192}
+    else if(n>=224 && n<=239){need=2;min=2048;code=n-224}
+    else if(n>=240 && n<=244){need=3;min=65536;code=n-240}
+    else fail()
+    for(i=1;i<=need;i++) {
+      b=byte[substr(s,p,1)];if(b<128 || b>191)fail()
+      c=c substr(s,p++,1);code=code*64+b-128
+    }
+    if(code<min || code>1114111 || (code>=55296 && code<=57343))fail()
+    return c
+  }
+  function str( c,out,e,h,n) {
+    if(substr(s,p++,1)!="\"")fail()
+    out=""
+    while(p<=length(s)) {
+      c=substr(s,p++,1)
+      if(c=="\"")return out
+      if(c ~ /[[:cntrl:]]/)fail()
+      if(byte[c]>=128)c=utf8(c)
+      if(c=="\\") {
+        e=substr(s,p++,1)
+        if(e=="u") {
+          h=substr(s,p,4);if(length(h)!=4)fail();n=hex(h);p+=4
+          if(n<128)out=out sprintf("%c",n);else out=out "\\u" tolower(h)
+        } else if(e=="\"" || e=="\\" || e=="/")out=out e
+        else if(e=="b")out=out sprintf("%c",8)
+        else if(e=="f")out=out sprintf("%c",12)
+        else if(e=="n")out=out "\n"
+        else if(e=="r")out=out "\r"
+        else if(e=="t")out=out "\t"
+        else fail()
+      } else out=out c
+    }
+    fail()
+  }
+  function value(depth, id,c,key,k,v,start) {
+    if(depth>128)fail()
+    ws();id=++nodes;c=substr(s,p,1)
+    if(c=="{" || c=="[") {
+      typ[id]=c;p++;ws()
+      if(substr(s,p,1)==(c=="{"?"}":"]")){p++;return id}
+      do {
+        ws()
+        if(c=="{"){key=str();ws();if(substr(s,p++,1)!=":")fail()}
+        else key=++count[id]
+        k=id SUBSEP key
+        if(k in child)fail()
+        v=value(depth+1);child[k]=v;ws()
+        if(substr(s,p,1)!=",")break
+        p++
+      } while(1)
+      if(substr(s,p++,1)!=(c=="{"?"}":"]"))fail()
+    } else if(c=="\""){typ[id]="string";val[id]=str()}
+    else if(substr(s,p,4)=="true"){typ[id]="bool";val[id]="true";p+=4}
+    else if(substr(s,p,5)=="false"){typ[id]="bool";val[id]="false";p+=5}
+    else if(substr(s,p,4)=="null"){typ[id]="null";p+=4}
+    else {
+      if(!match(substr(s,p),/^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/))fail()
+      typ[id]="number";p+=RLENGTH
+    }
+    return id
+  }
+  function field(id,key,type, n){n=child[id SUBSEP key];if(!n || typ[n]!=type)fail();return n}
+  BEGIN { for(b=1;b<=255;b++)byte[sprintf("%c",b)]=b }
+  { s=s $0 "\n" }
+  END {
+    p=1;root=value(0);ws();if(p<=length(s) || typ[root]!="[")fail()
+    for(i=1;i<=count[root];i++) {
+      r=child[root SUBSEP i];if(typ[r]!="{")fail()
+      tag=val[field(r,"tag_name","string")]
+      draft=val[field(r,"draft","bool")];pre=val[field(r,"prerelease","bool")]
+      a=field(r,"assets","[");binary=0;sha=0
+      for(j=1;j<=count[a];j++) {
+        item=child[a SUBSEP j];if(typ[item]!="{")fail()
+        name=val[field(item,"name","string")]
+        if(name==asset)binary++
+        if(name==asset ".sha256")sha++
+      }
+      if(draft=="false" && pre=="false" && tag ~ /^agent-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/)print tag,binary,sha
+    }
+    print "COUNT",count[root]+0
+  }' "$tmp_dir/page"
+}
 
 if [ -n "${HOMEAGENT_DOWNLOAD_BASE_URL:-}" ]; then
-  url="${HOMEAGENT_DOWNLOAD_BASE_URL%/}/homeagent-agent-${os}-${arch}"
-elif [ -n "${HOMEAGENT_SERVER:-}" ] && [ "$HOMEAGENT_SERVER" != "https://homeagent.rokilai.online" ]; then
-  url="${HOMEAGENT_SERVER%/}/downloads/homeagent-agent-${os}-${arch}"
+  url="${HOMEAGENT_DOWNLOAD_BASE_URL%/}/$asset"
 else
-  url="https://github.com/${repo}/releases/download/${version}/homeagent-agent-${os}-${arch}"
+  if [ -z "$version" ]; then
+    page=1
+    : >"$tmp_dir/candidates"
+    while :; do
+      fetch "https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}" "$tmp_dir/page"
+      parse_page >"$tmp_dir/parsed"
+      cat "$tmp_dir/parsed" >>"$tmp_dir/candidates"
+      count=$(awk '$1=="COUNT" {print $2}' "$tmp_dir/parsed")
+      if [ "$count" -lt 100 ] && ! awk 'tolower($0) ~ /^[ \t]*link:/ && tolower($0) ~ /rel="?next"?/ {found=1} END {exit !found}' "$tmp_dir/headers"; then break; fi
+      if [ "$page" -eq 10 ]; then echo "incomplete GitHub release scan" >&2; exit 1; fi
+      page=$((page+1))
+    done
+    version=$(awk '
+      function newer(a,b, x,y,i){sub(/^agent-v/,"",a);sub(/^agent-v/,"",b);split(a,x,".");split(b,y,".");for(i=1;i<=3;i++){if(length(x[i])!=length(y[i]))return length(x[i])>length(y[i]);if("x" x[i]!="x" y[i])return "x" x[i]>"x" y[i]}return 0}
+      $1!="COUNT" {if(!best || newer($1,best)){best=$1;binary=$2;sha=$3}else if($1==best && (binary!=$2 || sha!=$3))bad=1}
+      END {if(!best){print "no stable Agent release" > "/dev/stderr";exit 1}if(binary!=1 || sha!=1 || bad){print "Agent release assets missing or duplicated" > "/dev/stderr";exit 1}print best}
+    ' "$tmp_dir/candidates")
+  fi
+  url="https://github.com/${repo}/releases/download/${version}/$asset"
 fi
 sha_url="${url}.sha256"
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$url" -o "$tmp_file"
-  curl -fsSL "$sha_url" -o "$tmp_sha"
-elif command -v wget >/dev/null 2>&1; then
-  wget -q -O "$tmp_file" "$url"
-  wget -q -O "$tmp_sha" "$sha_url"
-else
-  echo "curl or wget is required" >&2
-  exit 1
-fi
-
-expected_sha=$(awk '{print $1}' "$tmp_sha" | tr '[:upper:]' '[:lower:]')
-if [ -z "$expected_sha" ]; then
-  echo "failed to extract SHA256 checksum from $sha_url" >&2
-  exit 1
-fi
+fetch "$url" "$tmp_file"
+fetch "$sha_url" "$tmp_sha"
+expected_sha=$(awk -v asset="$asset" '
+  NF {n++; if(NF>2 || length($1)!=64 || $1 ~ /[^0-9a-fA-F]/ || (NF==2 && $2!=asset && $2!="*" asset))bad=1;digest=tolower($1)}
+  END {if(n!=1 || NR!=1 || bad){print "invalid SHA256 checksum file" > "/dev/stderr";exit 1}print digest}
+' "$tmp_sha")
 
 actual_sha=""
 if command -v sha256sum >/dev/null 2>&1; then
@@ -90,8 +238,7 @@ fi
 
 if [ "$os" = "darwin" ]; then
   app_root=$(dirname "$(dirname "$install_dir")")
-  info_plist_tmp=$(mktemp "${TMPDIR:-/tmp}/homeagent-info.XXXXXX")
-  trap 'rm -f "$tmp_file" "$tmp_sha" "$info_plist_tmp"' EXIT HUP INT TERM
+  info_plist_tmp="$tmp_dir/Info.plist"
   cat >"$info_plist_tmp" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

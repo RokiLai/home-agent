@@ -110,6 +110,11 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then
     shift
     target="$1"
+  elif [ "$1" = "-D" ]; then
+    shift
+    : > "$1"
+  elif [ "$1" = "--connect-timeout" ] || [ "$1" = "--max-time" ] || [ "$1" = "--proto" ] || [ "$1" = "--proto-redir" ] || [ "$1" = "-A" ]; then
+    shift
   elif [ "$1" != "-fsSL" ] && [ -z "$url" ]; then
     url="$1"
   fi
@@ -141,6 +146,7 @@ exit 1
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"HOMEAGENT_SERVER=http://192.168.50.10:8888",
+		"HOMEAGENT_DOWNLOAD_BASE_URL=http://192.168.50.10:8888/downloads",
 		"HOMEAGENT_JOIN_TOKEN=test-token",
 		"HOMEAGENT_INSTALL_DIR="+filepath.Join(appRoot, "Contents", "MacOS"),
 	)
@@ -165,6 +171,7 @@ exit 1
 	invalid.Env = append(os.Environ(),
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"HOMEAGENT_SERVER=http://192.168.50.10:8888",
+		"HOMEAGENT_DOWNLOAD_BASE_URL=http://192.168.50.10:8888/downloads",
 		"HOMEAGENT_JOIN_TOKEN=test-token",
 		"HOMEAGENT_INSTALL_DIR="+filepath.Join(tempDir, "plain-bin"),
 	)
@@ -190,7 +197,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 	t.Run("matching checksum succeeds", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, ".sha256") {
-				fmt.Fprintf(w, "%s  homeagent-agent\n", correctSHA)
+				fmt.Fprintf(w, "%s  homeagent-agent-%s-%s\n", correctSHA, runtime.GOOS, runtime.GOARCH)
 				return
 			}
 			w.Write(dummyBinary)
@@ -203,6 +210,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 		cmd := exec.Command("sh", installScript)
 		cmd.Env = append(os.Environ(),
 			"HOMEAGENT_SERVER="+server.URL,
+			"HOMEAGENT_DOWNLOAD_BASE_URL="+server.URL+"/downloads",
 			"HOMEAGENT_CLAIM_TOKEN=test-claim-token",
 			"HOMEAGENT_INSTALL_DIR="+installDir,
 		)
@@ -210,6 +218,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 			appRoot := filepath.Join(tempDir, "HomeAgent.app")
 			cmd.Env = append(os.Environ(),
 				"HOMEAGENT_SERVER="+server.URL,
+				"HOMEAGENT_DOWNLOAD_BASE_URL="+server.URL+"/downloads",
 				"HOMEAGENT_CLAIM_TOKEN=test-claim-token",
 				"HOMEAGENT_INSTALL_DIR="+filepath.Join(appRoot, "Contents", "MacOS"),
 			)
@@ -223,7 +232,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 	t.Run("mismatched checksum fails safely and cleans up", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, ".sha256") {
-				fmt.Fprintf(w, "%s  homeagent-agent\n", mismatchedSHA)
+				fmt.Fprintf(w, "%s  homeagent-agent-%s-%s\n", mismatchedSHA, runtime.GOOS, runtime.GOARCH)
 				return
 			}
 			w.Write(dummyBinary)
@@ -239,6 +248,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 		cmd := exec.Command("sh", installScript)
 		cmd.Env = append(os.Environ(),
 			"HOMEAGENT_SERVER="+server.URL,
+			"HOMEAGENT_DOWNLOAD_BASE_URL="+server.URL+"/downloads",
 			"HOMEAGENT_CLAIM_TOKEN=test-claim-token",
 			"HOMEAGENT_INSTALL_DIR="+installDir,
 		)
@@ -275,6 +285,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 		cmd := exec.Command("sh", installScript)
 		cmd.Env = append(os.Environ(),
 			"HOMEAGENT_SERVER="+server.URL,
+			"HOMEAGENT_DOWNLOAD_BASE_URL="+server.URL+"/downloads",
 			"HOMEAGENT_CLAIM_TOKEN=test-claim-token",
 			"HOMEAGENT_INSTALL_DIR="+installDir,
 		)
@@ -292,7 +303,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 	t.Run("download base URL override succeeds", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, ".sha256") {
-				fmt.Fprintf(w, "%s  homeagent-agent\n", correctSHA)
+				fmt.Fprintf(w, "%s  homeagent-agent-%s-%s\n", correctSHA, runtime.GOOS, runtime.GOARCH)
 				return
 			}
 			w.Write(dummyBinary)
@@ -324,7 +335,7 @@ func TestInstallScriptChecksumVerification(t *testing.T) {
 	t.Run("zero token binary only install succeeds and prints guidance", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, ".sha256") {
-				fmt.Fprintf(w, "%s  homeagent-agent\n", correctSHA)
+				fmt.Fprintf(w, "%s  homeagent-agent-%s-%s\n", correctSHA, runtime.GOOS, runtime.GOARCH)
 				return
 			}
 			w.Write(dummyBinary)
