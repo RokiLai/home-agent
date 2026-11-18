@@ -97,3 +97,50 @@ func TestOperationManagerConvergesToRolledBackOnPreviousVersion(t *testing.T) {
 		t.Fatalf("unexpected version status = %s, code = %s, want failed", got2.Status, got2.ErrorCode)
 	}
 }
+
+
+func TestOperationManagerRunSigningFailurePersistsFailedStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server-upgrade.json")
+	manager, err := NewOperationManager(path, "v0.6.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, _, err := manager.Start("owner-signing", "v0.6.15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟升级 runner 发生签名错误
+	signingErr := errors.New("candidate fails continuity requirement of current binary")
+	if err := manager.Run(context.Background(), op.ID, func(context.Context, string) error {
+		return signingErr
+	}); err == nil {
+		t.Fatal("expected runner error to be returned")
+	}
+
+	got, err := manager.Get(op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != OperationFailed {
+		t.Fatalf("expected status failed, got: %s", got.Status)
+	}
+	if got.ErrorCode != "upgrade_failed" {
+		t.Fatalf("expected error code upgrade_failed, got: %s", got.ErrorCode)
+	}
+	if got.ErrorMessage != signingErr.Error() {
+		t.Fatalf("expected error message %q, got: %q", signingErr.Error(), got.ErrorMessage)
+	}
+
+	// 重新从磁盘加载，确保持久化有效
+	reloaded, err := NewOperationManager(path, "v0.6.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotReloaded, err := reloaded.Get(op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotReloaded.Status != OperationFailed || gotReloaded.ErrorCode != "upgrade_failed" {
+		t.Fatalf("reloaded operation state mismatch: %+v", gotReloaded)
+	}
+}

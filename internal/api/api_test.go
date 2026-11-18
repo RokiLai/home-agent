@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -3319,4 +3320,95 @@ func TestSSHPortActiveSyncUsesManualPort(t *testing.T) {
 	if len(commands) != 0 || len(payloads) != 0 {
 		t.Fatal("failed connection executed remote work")
 	}
+}
+
+
+func TestSystemUpgradeAPI_CodesignPolicyInherited(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("skipping darwin codesign policy test on API endpoints")
+	}
+
+	t.Run("v1 endpoint rejects invalid codesign env", func(t *testing.T) {
+		t.Setenv("HOMEAGENT_SERVER_CODESIGN_IDENTITY", "invalid-not-a-fingerprint")
+		s := &Server{Token: "admin-token"}
+		h := s.Handler()
+
+		req := httptest.NewRequest("POST", "/api/v1/system/upgrade", strings.NewReader(`{"target_version":"v99.99.99","force":true}`))
+		req.Header.Set("Authorization", "Bearer admin-token")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 on upgrade failure, got %d: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "codesign") && !strings.Contains(w.Body.String(), "HOMEAGENT_SERVER_CODESIGN_IDENTITY") {
+			t.Fatalf("expected error mentioning codesign, got: %s", w.Body.String())
+		}
+	})
+
+	t.Run("v2 endpoint persists failed state on runner codesign error", func(t *testing.T) {
+		manager, err := serverupgrade.NewOperationManager(filepath.Join(t.TempDir(), "server-upgrade.json"), "v0.6.62")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mockGitHub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode([]githubrelease.Release{{
+				ID:      1,
+				TagName: "server-v0.7.0",
+				Assets:  apiTestReleaseAssets(githubrelease.ComponentServer),
+			}})
+		}))
+		defer mockGitHub.Close()
+		client := githubrelease.NewClient(githubrelease.Config{Repo: "RokiLai/home-agent", APIBase: mockGitHub.URL})
+		status, err := versionstatus.NewService(client, versionstatus.FileRepository{Path: filepath.Join(t.TempDir(), "versions.json")}, "v0.6.62", time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := status.Refresh(context.Background(), githubrelease.ComponentServer, true); err != nil {
+			t.Fatal(err)
+		}
+		s := &Server{
+			Token:                   "admin-token",
+			VersionStatus:           status,
+			ServerUpgradeOperations: manager,
+			ServerUpgradeRunner: func(ctx context.Context, target string) error {
+				// 模拟调用 PerformServerSelfUpgrade 时 codesign 失败
+				return fmt.Errorf("codesign execution failed: test failure")
+			},
+		}
+		h := s.Handler()
+
+		req := httptest.NewRequest("POST", "/api/v2/system/server-upgrades", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer admin-token")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("start status = %d: %s", w.Code, w.Body.String())
+		}
+		var started serverupgrade.Operation
+		if err := json.NewDecoder(w.Body).Decode(&started); err != nil {
+			t.Fatal(err)
+		}
+
+		deadline := time.Now().Add(time.Second)
+		for {
+			get := httptest.NewRequest("GET", "/api/v2/system/server-upgrades/"+started.ID, nil)
+			get.Header.Set("Authorization", "Bearer admin-token")
+			got := httptest.NewRecorder()
+			h.ServeHTTP(got, get)
+			var operation serverupgrade.Operation
+			_ = json.NewDecoder(got.Body).Decode(&operation)
+			if operation.Status == serverupgrade.OperationFailed {
+				if operation.ErrorCode != "upgrade_failed" {
+					t.Fatalf("expected error code upgrade_failed, got %s", operation.ErrorCode)
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("operation did not converge to failed: %s", got.Body.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }
