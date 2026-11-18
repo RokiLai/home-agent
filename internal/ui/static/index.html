@@ -474,12 +474,67 @@
           </div>
         </section>
 
-        <!-- 4. PAGE: COMMANDS -->
+        <!-- 4. PAGE: ROUTER MONITOR -->
         <section id="pageRouterMonitor" class="page-view">
-          <button type="button" id="routerMonitorRefresh">刷新状态</button>
-          <p id="routerMonitorStatus" role="status"></p>
-          <p id="routerMonitorUpdated"></p>
-          <ul id="routerMonitorChecks" class="router-monitor-checks"></ul>
+          <div class="content-panel router-monitor-panel">
+            <div class="panel-header router-monitor-header">
+              <div class="panel-title-group">
+                <h2 class="panel-title">路由器监控</h2>
+                <span class="panel-subtitle">Router Guard 探测与多节点只读快照</span>
+              </div>
+              <div class="router-monitor-actions">
+                <button type="button" id="routerMonitorRefresh" class="btn btn-secondary">刷新状态</button>
+              </div>
+            </div>
+
+            <!-- 兼容既有测试/旧访问入口 -->
+            <p id="routerMonitorStatus" role="status" class="visually-hidden"></p>
+            <p id="routerMonitorUpdated" class="visually-hidden"></p>
+            <ul id="routerMonitorChecks" class="router-monitor-checks visually-hidden"></ul>
+
+            <!-- 1. 健康总览 -->
+            <div id="routerMonitorSummary" class="router-monitor-section router-monitor-overview">
+              <div class="overview-grid">
+                <div class="overview-item">
+                  <span class="overview-label">整体健康状态</span>
+                  <div class="overview-value" id="routerMonitorOverviewHealth">正在读取…</div>
+                </div>
+                <div class="overview-item">
+                  <span class="overview-label">采集运行状态</span>
+                  <div class="overview-value" id="routerMonitorOverviewMode">-</div>
+                </div>
+                <div class="overview-item">
+                  <span class="overview-label">最近接收时间</span>
+                  <div class="overview-value" id="routerMonitorOverviewReceived">-</div>
+                </div>
+                <div class="overview-item">
+                  <span class="overview-label">最后成功采集</span>
+                  <div class="overview-value" id="routerMonitorOverviewSuccess">-</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. 监控流程拓扑 -->
+            <div id="routerMonitorFlow" class="router-monitor-section">
+              <h3 class="section-title">监控流程拓扑</h3>
+              <div id="routerMonitorPipeline" class="pipeline-container"></div>
+            </div>
+
+            <!-- 3. 组件状态卡片 -->
+            <div class="router-monitor-section">
+              <h3 class="section-title">组件状态</h3>
+              <div id="routerMonitorCards" class="component-cards-grid"></div>
+            </div>
+
+            <!-- 4. 恢复过程时间线/说明 -->
+            <div id="routerMonitorRecovery" class="router-monitor-section router-monitor-recovery-box">
+              <div class="recovery-header">
+                <h3 class="section-title">恢复过程</h3>
+                <span id="routerMonitorRecoveryNotice" class="badge badge-warning">恢复事件尚未接入</span>
+              </div>
+              <p class="recovery-desc">从部署开始记录状态变化、恢复请求、恢复命令结果、限频和下一轮复查。当前仅展示只读健康快照，恢复事件协议接入后将展示完整排障与复查闭环时间线。</p>
+            </div>
+          </div>
         </section>
         <section id="pageCommands" class="page-view">
           <div class="content-panel">

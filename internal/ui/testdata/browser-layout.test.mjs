@@ -1165,23 +1165,91 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
       const n = ++window.routerMonitorRequests;
       return Promise.resolve(new Response(JSON.stringify({
         state: n === 1 ? 'monitoring' : 'collection_failed',
+        received: '2026-11-18T08:00:05Z',
         last_success: '2026-11-18T08:00:00Z',
-        snapshot: { checks: [{ component: 'learned_sets', status: 'healthy', detail: 'x'.repeat(160) }] }
+        snapshot: {
+          mode: 'monitoring',
+          current_uptime: 1000,
+          checked_uptime: 995,
+          checks: [
+            { component: 'learned_sets', status: 'healthy', detail: 'x'.repeat(160) },
+            { component: 'lan', status: 'healthy', detail: 'ok' },
+            { component: 'custom_service', status: 'unknown_status', detail: 'custom info' }
+          ]
+        }
       })));
     };
     document.getElementById('navRouterMonitor').click();
   })()`);
-  await waitFor('document.getElementById("routerMonitorChecks").textContent.includes("学习分流")');
-  for (const width of [1280, 390]) {
+  await waitFor('document.getElementById("routerMonitorOverviewHealth").textContent.includes("检查不完整")');
+  for (const width of [1440, 768, 375]) {
     await setViewport(width, 850, width < 500);
-    const fits = await evalJS(`(() => {
+    const layout = await evalJS(`(() => {
+      window.scrollTo(0, 0);
       const page = document.getElementById('pageRouterMonitor');
-      return page.classList.contains('active') && page.clientWidth > 0 && page.scrollWidth <= page.clientWidth + 1;
+      const panel = page.querySelector('.router-monitor-panel');
+      const overview = document.getElementById('routerMonitorSummary');
+      const flow = document.getElementById('routerMonitorFlow');
+      const recovery = document.getElementById('routerMonitorRecovery');
+      const refreshBtn = document.getElementById('routerMonitorRefresh');
+
+      const pRect = panel.getBoundingClientRect();
+      const oRect = overview.getBoundingClientRect();
+      const fRect = flow.getBoundingClientRect();
+      const rRect = recovery.getBoundingClientRect();
+
+      // 验证左边缘偏差不超过 1 CSS 像素
+      const leftDiffOverview = Math.abs(oRect.left - pRect.left - parseFloat(getComputedStyle(panel).paddingLeft));
+      const leftDiffFlow = Math.abs(fRect.left - pRect.left - parseFloat(getComputedStyle(panel).paddingLeft));
+      const leftDiffRecovery = Math.abs(rRect.left - pRect.left - parseFloat(getComputedStyle(panel).paddingLeft));
+
+      // 验证区域顺序：Overview 在 Flow 上方，Flow 在 Recovery 上方
+      const orderOk = oRect.top <= fRect.top && fRect.top <= rRect.top;
+
+      const refreshRect = refreshBtn.getBoundingClientRect();
+      const hitElement = document.elementFromPoint(refreshRect.left + refreshRect.width / 2, refreshRect.top + refreshRect.height / 2);
+      const btnHitOk = hitElement === refreshBtn || refreshBtn.contains(hitElement);
+
+      return {
+        active: page.classList.contains('active'),
+        clientWidth: page.clientWidth,
+        scrollWidth: page.scrollWidth,
+        leftDiffOverview,
+        leftDiffFlow,
+        leftDiffRecovery,
+        orderOk,
+        btnHitOk,
+        hitTag: hitElement ? hitElement.tagName + '.' + hitElement.className : 'null',
+        refreshRect: { top: refreshRect.top, left: refreshRect.left, width: refreshRect.width, height: refreshRect.height },
+        cardsCount: document.querySelectorAll('#routerMonitorCards .component-card').length,
+        pipelineCount: document.querySelectorAll('#routerMonitorPipeline .pipeline-step').length
+      };
     })()`);
-    assert.equal(fits, true, 'router page must fit at ' + width);
+
+    assert.equal(layout.active, true, `page must be active at ${width}`);
+    assert.ok(layout.clientWidth > 0, `clientWidth must be positive at ${width}`);
+    assert.ok(layout.scrollWidth <= layout.clientWidth + 1, `router page must not horizontally overflow at ${width}: ${layout.scrollWidth} vs ${layout.clientWidth}`);
+    assert.ok(layout.leftDiffOverview <= 1, `overview left alignment diff must be <= 1px at ${width}: ${layout.leftDiffOverview}`);
+    assert.ok(layout.leftDiffFlow <= 1, `flow left alignment diff must be <= 1px at ${width}: ${layout.leftDiffFlow}`);
+    assert.ok(layout.leftDiffRecovery <= 1, `recovery left alignment diff must be <= 1px at ${width}: ${layout.leftDiffRecovery}`);
+    assert.equal(layout.orderOk, true, `sections vertical order must be intact at ${width}`);
+    assert.equal(layout.btnHitOk, true, `refresh button must be clickable at ${width}, but hit ${layout.hitTag} at rect ${JSON.stringify(layout.refreshRect)}`);
+    assert.ok(layout.cardsCount >= 11, `must render all expected cards at ${width}`);
+    assert.equal(layout.pipelineCount, 5, `must render 5 pipeline steps at ${width}`);
   }
+
+  // 验证键盘 Tab 焦点与刷新行为
+  await evalJS(`document.getElementById('routerMonitorRefresh').focus()`);
+  const focusOutline = await evalJS(`getComputedStyle(document.getElementById('routerMonitorRefresh')).outlineWidth`);
+  assert.ok(parseFloat(focusOutline) >= 2, `refresh button keyboard focus must be visible: ${focusOutline}`);
+
   await evalJS('document.getElementById("routerMonitorRefresh").click()');
   await waitFor('document.getElementById("routerMonitorStatus").textContent === "采集失败"');
   assert.match(await evalJS('document.getElementById("routerMonitorChecks").textContent'), /上次 正常/);
+  assert.match(await evalJS('document.getElementById("routerMonitorRecoveryNotice").textContent'), /恢复事件尚未接入/);
+
+  const focusedAfterRefresh = await evalJS(`document.activeElement === document.getElementById('routerMonitorRefresh')`);
+  assert.equal(focusedAfterRefresh, true, 'refresh button must retain focus after refresh');
+
   assert.deepEqual(cdp.runtimeErrors, []);
 });
