@@ -196,8 +196,10 @@ func writeDomainBindingError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domainbinding.ErrInvalidFQDN):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_fqdn"})
-	case errors.Is(err, domainbinding.ErrFQDNConflict), errors.Is(err, domainbinding.ErrBindingRevisionConflict):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "conflict"})
+	case errors.Is(err, domainbinding.ErrFQDNConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "conflict", "code": "fqdn_already_exists"})
+	case errors.Is(err, domainbinding.ErrBindingRevisionConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "conflict", "code": "revision_conflict"})
 	case errors.Is(err, domainbinding.ErrBindingNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
 	case errors.Is(err, domainbinding.ErrPublisherConfirmationRequired):

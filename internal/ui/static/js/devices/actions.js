@@ -1097,18 +1097,48 @@ export function renderDeviceDomainBindingRows(deviceId, bindings) {
   }).join('');
 }
 
+let deviceDomainBindingSubmitting = false;
+
 export async function createDeviceDomainBinding(deviceId) {
+  if (deviceDomainBindingSubmitting) return;
   const input = document.getElementById('deviceDomainBindingInput');
   const panel = document.getElementById('deviceDomainBindings');
   const fqdn = input?.value.trim(); if (!fqdn) return;
-  const preflightResponse = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/preflight`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn})});
-  const preflight = await preflightResponse.json();
-  if (!preflightResponse.ok || !preflight.available) { showToast('域名预检失败或已被占用', 'error'); return; }
-  const existingRecord = confirm(`预检通过：${preflight.fqdn}\n该域名是否已有需要迁移的 DNS 记录？`);
-  if (!confirm(`确认保存 ${preflight.fqdn}？保存不会立即写入 DNS。`)) return;
-  const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn:preflight.fqdn, expected_revision:Number(panel?.dataset.revision || 0), existing_record:existingRecord})});
-  if (!response.ok) { showToast('保存设备域名失败', 'error'); return; }
-  input.value = ''; await loadDeviceDomainBindings(deviceId);
+
+  deviceDomainBindingSubmitting = true;
+  try {
+    const preflightResponse = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings/preflight`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn})});
+    const preflight = await preflightResponse.json();
+    if (!preflightResponse.ok || !preflight.available) {
+      showToast('域名预检失败或已被占用', 'error');
+      await loadDeviceDomainBindings(deviceId);
+      return;
+    }
+    const existingRecord = confirm(`预检通过：${preflight.fqdn}\n该域名是否已有需要迁移的 DNS 记录？`);
+    if (!confirm(`确认保存 ${preflight.fqdn}？保存不会立即写入 DNS。`)) return;
+    const response = await apiFetch(`${state.serverHost}/api/v1/devices/${encodeURIComponent(deviceId)}/domain-bindings`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fqdn:preflight.fqdn, expected_revision:Number(panel?.dataset.revision || 0), existing_record:existingRecord})});
+    if (!response.ok) {
+      let message = '保存设备域名失败';
+      try {
+        const errData = await response.json();
+        if (errData.code === 'fqdn_already_exists') {
+          message = '域名已被占用或已存在，请检查列表';
+        } else if (errData.error) {
+          message = errData.error;
+        }
+      } catch (_) {}
+      showToast(message, 'error');
+      await loadDeviceDomainBindings(deviceId);
+      return;
+    }
+    input.value = '';
+    await loadDeviceDomainBindings(deviceId);
+  } catch (error) {
+    showToast(error.message || '网络异常，保存设备域名失败', 'error');
+    await loadDeviceDomainBindings(deviceId);
+  } finally {
+    deviceDomainBindingSubmitting = false;
+  }
 }
 
 export async function enableDeviceDomainBinding(deviceId, bindingId, revision) {

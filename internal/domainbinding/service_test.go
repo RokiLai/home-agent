@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"homeagent/internal/device"
@@ -65,14 +66,70 @@ func TestEnableRequiresExplicitPublisherExclusionAndCurrentRevision(t *testing.T
 	}
 }
 
-func TestCreateMapsControlPlaneRevisionConflict(t *testing.T) {
+func TestCreateIgnoresStaleRevisionAndRejectsDuplicateFQDN(t *testing.T) {
 	service, _ := newTestService(t)
 	if _, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "first.rokilai.online", ExpectedRevision: 0, ExistingRecord: true}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "second.rokilai.online", ExpectedRevision: 0, ExistingRecord: true})
-	if !errors.Is(err, ErrBindingRevisionConflict) {
-		t.Fatalf("create error=%v, want ErrBindingRevisionConflict", err)
+	// A different FQDN with stale ExpectedRevision 0 succeeds because creation does not depend on stale global control revision
+	if _, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "second.rokilai.online", ExpectedRevision: 0, ExistingRecord: true}); err != nil {
+		t.Fatalf("second create error=%v, want success", err)
+	}
+	// An identical FQDN with any revision returns ErrFQDNConflict
+	_, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: "first.rokilai.online", ExpectedRevision: 999, ExistingRecord: true})
+	if !errors.Is(err, ErrFQDNConflict) {
+		t.Fatalf("duplicate create error=%v, want ErrFQDNConflict", err)
+	}
+}
+
+func TestConcurrentCreateSameFQDNOpsAtomically(t *testing.T) {
+	service, _ := newTestService(t)
+	const concurrent = 10
+	var wg sync.WaitGroup
+	successCount := 0
+	conflictCount := 0
+	var mu sync.Mutex
+
+	for i := 0; i < concurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.Create(context.Background(), CreateCommand{
+				SourceType:       SourceServer,
+				SourceID:         LocalServerSourceID,
+				FQDN:             "concurrent.rokilai.online",
+				ExpectedRevision: 0,
+				ExistingRecord:   true,
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				successCount++
+			} else if errors.Is(err, ErrFQDNConflict) {
+				conflictCount++
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 success, got %d", successCount)
+	}
+	if conflictCount != concurrent-1 {
+		t.Fatalf("expected %d conflicts, got %d", concurrent-1, conflictCount)
+	}
+	list, err := service.List(context.Background(), SourceServer, LocalServerSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := 0
+	for _, b := range list {
+		if b.FQDN == "concurrent.rokilai.online" {
+			matching++
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("expected exactly 1 binding persisted in storage, got %d", matching)
 	}
 }
 
