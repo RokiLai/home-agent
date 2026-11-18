@@ -9,9 +9,11 @@ allowed_paths:
   - internal/api/api.go
   - internal/ui/static/index.html
   - internal/ui/static/style.css
+  - internal/ui/static/js/auth.js
   - internal/ui/static/js/router.js
   - internal/ui/static/js/router-monitor.js
   - internal/ui/testdata/router-monitor*.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
   - cmd/homeagent-server/main.go
   - cmd/homeagent-agent/main.go
   - internal/version/version.go

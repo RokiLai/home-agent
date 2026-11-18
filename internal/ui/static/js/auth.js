@@ -1,3 +1,4 @@
+import { openRouterMonitor } from './router-monitor.js';
 import { state } from './state.js';
 import { apiFetch, setAuthFailureHandler } from './api.js';
 import { showToast, addLog } from './utils.js';
@@ -33,6 +34,13 @@ export function showLoginError(msg) {
 export function updateRBACVisibility() {
   const isOwner = state.currentUser && state.currentUser.role === 'owner';
   const isViewer = state.currentUser && state.currentUser.role === 'viewer';
+
+  const routerNav = document.getElementById('navRouterMonitor');
+  if (routerNav) {
+    if (isOwner || state.currentUser?.role === 'admin') routerNav.classList.remove('hidden');
+    else routerNav.classList.add('hidden');
+  }
+  if (state.currentPage === 'routerMonitor') openRouterMonitor();
 
   // 1. 用户管理入口仅对 Owner 可见
   const navUsers = document.getElementById('navUsers');
