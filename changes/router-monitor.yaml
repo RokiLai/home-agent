@@ -1,0 +1,24 @@
+task: router-monitor
+description: 实现已确认的只读路由器监控方案
+design: docs/features/路由器监控设计方案.md
+allowed_paths:
+  - changes/router-monitor.yaml
+  - docs/features/路由器监控设计方案.md
+  - internal/routermonitor/**
+  - internal/api/router_monitor*.go
+  - internal/api/api.go
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router.js
+  - internal/ui/static/js/router-monitor.js
+  - internal/ui/testdata/router-monitor*.mjs
+  - cmd/homeagent-server/main.go
+  - cmd/homeagent-agent/main.go
+  - internal/version/version.go
+  - internal/version/version_test.go
+  - /Users/roki/router-guard/changes/router-guard.yaml
+  - /Users/roki/router-guard/lib/policy.sh
+  - /Users/roki/router-guard/lib/runtime.sh
+  - /Users/roki/router-guard/lib/router-monitor.sh
+  - /Users/roki/router-guard/router-guard.sh
+  - /Users/roki/router-guard/tests/**
