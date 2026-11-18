@@ -1,0 +1,10 @@
+task: fix-router-nav-icon
+description: 补充左侧栏路由器导航项图标与文本样式，与其他项目保持对齐
+design: docs/features/路由器监控设计方案.md
+allowed_paths:
+  - changes/fix-router-nav-icon.yaml
+  - docs/features/路由器监控设计方案.md
+  - internal/ui/static/index.html
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

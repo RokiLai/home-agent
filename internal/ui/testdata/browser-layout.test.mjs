@@ -1179,7 +1179,11 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
         }
       })));
     };
-    document.getElementById('navRouterMonitor').click();
+    const routerNav = document.getElementById('navRouterMonitor');
+    if (!routerNav.querySelector('.nav-icon') || !routerNav.querySelector('.nav-text')) {
+      throw new Error('navRouterMonitor must contain .nav-icon and .nav-text for visual alignment');
+    }
+    routerNav.click();
   })()`);
   await waitFor('document.getElementById("routerMonitorOverviewHealth").textContent.includes("检查不完整")');
   for (const width of [1440, 768, 375]) {
