@@ -1155,3 +1155,33 @@ test('13. Device action menu keeps a shared icon/text grid and fits a short view
   await cdp.send('Emulation.setEmulatedOSTextScale', { scale: 1 }, targetSessionId);
   assert.equal(runtimeErrors.length, 0, `menu interaction must not emit runtime errors: ${runtimeErrors.join('; ')}`);
 });
+
+test('Router monitor renders snapshots without overflow and refreshes by click', async () => {
+  await evalJS(`(() => {
+    const original = window.fetch;
+    window.routerMonitorRequests = 0;
+    window.fetch = (url, options) => {
+      if (url !== '/api/v1/router-monitor') return original(url, options);
+      const n = ++window.routerMonitorRequests;
+      return Promise.resolve(new Response(JSON.stringify({
+        state: n === 1 ? 'monitoring' : 'collection_failed',
+        last_success: '2026-11-18T08:00:00Z',
+        snapshot: { checks: [{ component: 'learned_sets', status: 'healthy', detail: 'x'.repeat(160) }] }
+      })));
+    };
+    document.getElementById('navRouterMonitor').click();
+  })()`);
+  await waitFor('document.getElementById("routerMonitorChecks").textContent.includes("学习分流")');
+  for (const width of [1280, 390]) {
+    await setViewport(width, 850, width < 500);
+    const fits = await evalJS(`(() => {
+      const page = document.getElementById('pageRouterMonitor');
+      return page.classList.contains('active') && page.clientWidth > 0 && page.scrollWidth <= page.clientWidth + 1;
+    })()`);
+    assert.equal(fits, true, 'router page must fit at ' + width);
+  }
+  await evalJS('document.getElementById("routerMonitorRefresh").click()');
+  await waitFor('document.getElementById("routerMonitorStatus").textContent === "采集失败"');
+  assert.match(await evalJS('document.getElementById("routerMonitorChecks").textContent'), /上次 正常/);
+  assert.deepEqual(cdp.runtimeErrors, []);
+});

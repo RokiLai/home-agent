@@ -45,6 +45,7 @@ import (
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/routermonitor"
 	"homeagent/internal/servernetwork"
 	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
@@ -58,6 +59,9 @@ import (
 
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
+	RouterMonitor             *routermonitor.Latest
+	RouterMonitorAgent        string
+	RouterMonitorID           string
 	networkStateMu            sync.Mutex
 	Registry                  *registry.Registry
 	Authorizer                *auth.Authorizer
@@ -329,6 +333,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/devices/{id}/events", requireDevice(http.HandlerFunc(s.deviceEvents)))
 	mux.Handle("POST /api/v1/devices/{id}/ack", requireDevice(http.HandlerFunc(s.deviceAck)))
 	mux.Handle("GET /api/v1/devices/{id}/keys", requireDevice(http.HandlerFunc(s.deviceKeys)))
+	mux.Handle("GET /api/v1/router-monitor", requireSession(http.HandlerFunc(s.readRouterMonitor)))
+	if s.Registry != nil {
+		mux.Handle("PUT /api/v1/devices/{id}/router-monitor/{router}", requireDevice(http.HandlerFunc(s.putRouterMonitor)))
+	}
 	mux.Handle("PUT /api/v1/devices/{id}/facts", requireDevice(http.HandlerFunc(s.putDeviceFacts)))
 
 	// IPv6 & DDNS Control Plane routes (Admin or Device)

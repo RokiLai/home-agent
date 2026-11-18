@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -44,6 +45,7 @@ import (
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
 	"homeagent/internal/registry"
+	"homeagent/internal/routermonitor"
 	"homeagent/internal/servernetwork"
 	"homeagent/internal/serverupgrade"
 	"homeagent/internal/sshsync"
@@ -704,7 +706,16 @@ func serve(c config) error {
 		}
 	}
 
+	monitorAgent, monitorID := os.Getenv("HOMEAGENT_ROUTER_MONITOR_AGENT"), os.Getenv("HOMEAGENT_ROUTER_MONITOR_ID")
+	var monitor *routermonitor.Latest
+	if monitorAgent != "" && monitorID != "" {
+		binding := sha256.Sum256([]byte(monitorAgent + "\x00" + monitorID))
+		monitor = routermonitor.NewLatest(filepath.Join(c.dataDir, fmt.Sprintf("router-monitor-%x.json", binding)))
+	}
 	handler := (&api.Server{
+		RouterMonitor:            monitor,
+		RouterMonitorAgent:       monitorAgent,
+		RouterMonitorID:          monitorID,
 		Registry:                 r,
 		Broker:                   eventBroker,
 		SessionManager:           sessionMgr,

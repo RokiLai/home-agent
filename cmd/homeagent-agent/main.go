@@ -29,6 +29,7 @@ import (
 	"homeagent/internal/device"
 	"homeagent/internal/networkaddr"
 	"homeagent/internal/prefixstate"
+	"homeagent/internal/routermonitor"
 	"homeagent/internal/sshsync"
 	"homeagent/internal/version"
 	"homeagent/internal/wol"
@@ -456,6 +457,28 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 			startIPv6Reporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, *networkID, *iface, revStore, logger)
 		}
 	}
+	if host, router := os.Getenv("HOMEAGENT_ROUTER_MONITOR_SSH_HOST"), os.Getenv("HOMEAGENT_ROUTER_MONITOR_ID"); host != "" && router != "" {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for ctx.Err() == nil {
+				report := routermonitor.Collect(ctx, host)
+				server := d.GetActiveServerURL()
+				if server == "" && len(serverURLs) > 0 {
+					server = serverURLs[0]
+				}
+				if err := routermonitor.Publish(ctx, server, devID, router, *token, report); err != nil {
+					logger.Warn("router_monitor_upload_failed", "error", err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
+
 	startDeviceFactsReporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, finalSSHUser, finalSSHPort, logger)
 
 	return d.Run(ctx)

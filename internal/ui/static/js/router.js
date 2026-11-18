@@ -1,3 +1,4 @@
+import { openRouterMonitor } from './router-monitor.js';
 import { state } from './state.js';
 import { fetchOrRefreshClaimToken } from './onboarding.js';
 
@@ -10,6 +11,7 @@ export const pageMeta = {
     title: '设备管理',
     desc: '已接入主机的集中控制、配置同步与快捷操作'
   },
+  routerMonitor: { title: "路由器", desc: "查看路由器健康和学习分流状态" },
   commands: {
     title: '操作记录',
     desc: '控制命令的投递、接受与最终执行状态'
@@ -119,6 +121,7 @@ export function switchPage(pageName, routeParams = {}) {
 
   if (!pageMeta[pageName]) pageName = 'dashboard';
   state.currentPage = pageName;
+  if (pageName === "routerMonitor") openRouterMonitor();
   if (routeParams.deviceId) {
     state.currentDetailDeviceId = routeParams.deviceId;
     state.currentDetailSection = routeParams.section || 'overview';

@@ -2994,3 +2994,5 @@ body.sidebar-open {
   .file-token-form label { flex: auto; }
   .file-token-row { flex-direction: column; align-items: stretch; }
 }
+
+.router-monitor-checks { overflow-wrap: anywhere; }
