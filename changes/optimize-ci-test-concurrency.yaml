@@ -1,0 +1,9 @@
+task: optimize-ci-test-concurrency
+description: 优化 CI 与测试并发性能：修复 Agent 测试配置环境泄漏、隔离 store 测试库并解除全量单线程限制
+design: docs/features/路由器监控设计方案.md
+allowed_paths:
+  - changes/optimize-ci-test-concurrency.yaml
+  - cmd/homeagent-agent/main_test.go
+  - internal/store/contract_test.go
+  - .github/workflows/release.yml
+  - internal/qualitygate/releaseworkflow_test.go

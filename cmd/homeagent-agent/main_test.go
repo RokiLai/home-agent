@@ -57,6 +57,7 @@ func TestRunServiceValidation(t *testing.T) {
 func TestRunDaemonRequiresArgs(t *testing.T) {
 	t.Setenv("HOMEAGENT_SERVER", "")
 	t.Setenv("HOMEAGENT_JOIN_TOKEN", "")
+	t.Setenv("HOMEAGENT_DEVICE_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
 	if err := runDaemon(nil); err == nil {
 		t.Fatal("expected error when server and token missing")
 	}

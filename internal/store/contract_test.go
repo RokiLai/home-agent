@@ -2,8 +2,11 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,26 +152,34 @@ func TestStore_FileStoreContract(t *testing.T) {
 
 func TestStore_MySQLStoreContract(t *testing.T) {
 	// 如果本地配置了 MySQL 测试环境（如 rent-mysql），自动执行集成契约测试
-	dsn := os.Getenv("HOMEAGENT_TEST_MYSQL_DSN")
-	if dsn == "" {
+	baseDSN := os.Getenv("HOMEAGENT_TEST_MYSQL_DSN")
+	if baseDSN == "" {
 		// 尝试测试直连本地已有的 docker rent-mysql (13306 端口)
-		dsn = "root:123456@tcp(127.0.0.1:13306)/homeagent_test?charset=utf8mb4&parseTime=True&loc=Local"
+		baseDSN = "root:123456@tcp(127.0.0.1:13306)/?charset=utf8mb4&parseTime=True&loc=Local"
 	}
-
-	ms, err := mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: dsn})
+	rootDB, err := sql.Open("mysql", baseDSN)
 	if err != nil {
 		t.Skipf("skipping MySQLStore contract test (MySQL not available: %v)", err)
 		return
 	}
-	defer ms.Close()
+	defer rootDB.Close()
+	dbName := fmt.Sprintf("homeagent_contract_%d", time.Now().UnixNano())
+	if _, err := rootDB.Exec("CREATE DATABASE " + dbName); err != nil {
+		t.Skipf("skipping MySQLStore contract test (cannot create database %s: %v)", dbName, err)
+		return
+	}
+	defer rootDB.Exec("DROP DATABASE " + dbName)
 
-	// 清理测试库
-	_, _ = ms.DB().Exec("DELETE FROM audit_logs")
-	_, _ = ms.DB().Exec("DELETE FROM claim_tokens")
-	_, _ = ms.DB().Exec("DELETE FROM device_grants")
-	_, _ = ms.DB().Exec("DELETE FROM devices")
-	_, _ = ms.DB().Exec("DELETE FROM sessions")
-	_, _ = ms.DB().Exec("DELETE FROM users")
+	targetDSN := strings.Replace(baseDSN, "/?", "/"+dbName+"?", 1)
+	if !strings.Contains(baseDSN, "/?") {
+		targetDSN = "root:123456@tcp(127.0.0.1:13306)/" + dbName + "?charset=utf8mb4&parseTime=True&loc=Local"
+	}
+
+	ms, err := mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: targetDSN})
+	if err != nil {
+		t.Fatalf("failed to connect to newly created test db %s: %v", dbName, err)
+	}
+	defer ms.Close()
 
 	runStoreContractTests(t, ms, ms, ms, ms, ms)
 }
@@ -188,18 +199,33 @@ func TestStore_AutoMigrationFromFileStoreToMySQL(t *testing.T) {
 	_ = fs.SaveUser(&auth.User{ID: "usr-mig-1", Username: "mig_user", Role: auth.RoleOwner, Status: auth.UserStatusActive, CreatedAt: now, UpdatedAt: now})
 	_ = fs.SaveDevice(&device.Device{ID: "dev-mig-1", OwnerUserID: "usr-mig-1", Hostname: "host-mig", SSHPort: 2222, SSHPortReported: 22, SSHPortOverride: 2222, CreatedAt: now, UpdatedAt: now})
 
-	dsn := "root:123456@tcp(127.0.0.1:13306)/homeagent_test?charset=utf8mb4&parseTime=True&loc=Local"
-	ms, err := mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: dsn})
+	baseDSN := os.Getenv("HOMEAGENT_TEST_MYSQL_DSN")
+	if baseDSN == "" {
+		baseDSN = "root:123456@tcp(127.0.0.1:13306)/?charset=utf8mb4&parseTime=True&loc=Local"
+	}
+	rootDB, err := sql.Open("mysql", baseDSN)
 	if err != nil {
 		t.Skipf("skipping migration test (MySQL not available: %v)", err)
 		return
 	}
-	defer ms.Close()
+	defer rootDB.Close()
+	dbName := fmt.Sprintf("homeagent_mig_%d", time.Now().UnixNano())
+	if _, err := rootDB.Exec("CREATE DATABASE " + dbName); err != nil {
+		t.Skipf("skipping migration test (cannot create database %s: %v)", dbName, err)
+		return
+	}
+	defer rootDB.Exec("DROP DATABASE " + dbName)
 
-	// 清空测试库
-	_, _ = ms.DB().Exec("DELETE FROM device_grants")
-	_, _ = ms.DB().Exec("DELETE FROM devices")
-	_, _ = ms.DB().Exec("DELETE FROM users")
+	targetDSN := strings.Replace(baseDSN, "/?", "/"+dbName+"?", 1)
+	if !strings.Contains(baseDSN, "/?") {
+		targetDSN = "root:123456@tcp(127.0.0.1:13306)/" + dbName + "?charset=utf8mb4&parseTime=True&loc=Local"
+	}
+
+	ms, err := mysqlstore.NewMySQLStore(mysqlstore.Config{DSN: targetDSN})
+	if err != nil {
+		t.Fatalf("failed to connect to migration test db %s: %v", dbName, err)
+	}
+	defer ms.Close()
 
 	ctx := context.Background()
 	migrated, err := store.AutoMigrateFileStoreToMySQL(ctx, fs, fs, ms, ms, authPath, devPath)
