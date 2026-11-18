@@ -2996,3 +2996,191 @@ body.sidebar-open {
 }
 
 .router-monitor-checks { overflow-wrap: anywhere; }
+
+/* Router Monitor Styles */
+.router-monitor-panel {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+}
+
+.router-monitor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.overview-item {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.overview-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.overview-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.pipeline-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.pipeline-card {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.pipeline-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.pipeline-status {
+  font-size: 0.8rem;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.pipeline-time {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.pipeline-arrow {
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.component-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.component-card {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.component-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.component-card-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-main);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.component-card-detail {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.router-monitor-recovery-box {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.recovery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.recovery-desc {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#routerMonitorRefresh:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .pipeline-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pipeline-step {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pipeline-arrow {
+    text-align: center;
+    transform: rotate(90deg);
+    margin: 2px 0;
+  }
+}
