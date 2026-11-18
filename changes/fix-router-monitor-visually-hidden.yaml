@@ -1,0 +1,11 @@
+task: fix-router-monitor-visually-hidden
+description: 修复路由器监控旧节点隐藏样式与静态资源缓存版本
+design: docs/features/路由器监控设计方案.md
+allowed_paths:
+  - changes/fix-router-monitor-visually-hidden.yaml
+  - docs/features/路由器监控设计方案.md
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

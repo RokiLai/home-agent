@@ -3,7 +3,7 @@ package version
 
 import "strings"
 
-const defaultServerVersion = "v0.6.61"
+const defaultServerVersion = "v0.6.62"
 const defaultAgentVersion = "v0.6.27"
 
 // ServerVersion 与 AgentVersion 是两个组件可独立注入的当前版本号。

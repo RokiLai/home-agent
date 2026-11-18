@@ -1198,6 +1198,11 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
       const fRect = flow.getBoundingClientRect();
       const rRect = recovery.getBoundingClientRect();
 
+      // 验证兼容旧节点的 visually-hidden 属性（尺寸不超过 1px 且不占用文档正常高度）
+      const legacyStatus = document.getElementById('routerMonitorStatus').getBoundingClientRect();
+      const legacyChecks = document.getElementById('routerMonitorChecks').getBoundingClientRect();
+      const legacyHiddenOk = legacyStatus.width <= 1 && legacyStatus.height <= 1 && legacyChecks.width <= 1 && legacyChecks.height <= 1;
+
       // 验证左边缘偏差不超过 1 CSS 像素
       const leftDiffOverview = Math.abs(oRect.left - pRect.left - parseFloat(getComputedStyle(panel).paddingLeft));
       const leftDiffFlow = Math.abs(fRect.left - pRect.left - parseFloat(getComputedStyle(panel).paddingLeft));
@@ -1218,6 +1223,7 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
         leftDiffFlow,
         leftDiffRecovery,
         orderOk,
+        legacyHiddenOk,
         btnHitOk,
         hitTag: hitElement ? hitElement.tagName + '.' + hitElement.className : 'null',
         refreshRect: { top: refreshRect.top, left: refreshRect.left, width: refreshRect.width, height: refreshRect.height },
@@ -1229,6 +1235,7 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
     assert.equal(layout.active, true, `page must be active at ${width}`);
     assert.ok(layout.clientWidth > 0, `clientWidth must be positive at ${width}`);
     assert.ok(layout.scrollWidth <= layout.clientWidth + 1, `router page must not horizontally overflow at ${width}: ${layout.scrollWidth} vs ${layout.clientWidth}`);
+    assert.equal(layout.legacyHiddenOk, true, `legacy status and checks must be visually hidden without consuming layout space at ${width}`);
     assert.ok(layout.leftDiffOverview <= 1, `overview left alignment diff must be <= 1px at ${width}: ${layout.leftDiffOverview}`);
     assert.ok(layout.leftDiffFlow <= 1, `flow left alignment diff must be <= 1px at ${width}: ${layout.leftDiffFlow}`);
     assert.ok(layout.leftDiffRecovery <= 1, `recovery left alignment diff must be <= 1px at ${width}: ${layout.leftDiffRecovery}`);
