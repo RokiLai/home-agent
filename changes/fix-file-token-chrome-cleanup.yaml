@@ -1,0 +1,5 @@
+task: fix-file-token-chrome-cleanup
+description: 在真实浏览器测试中有界等待 Chrome 退出，并处理后台进程的目录写入竞争
+allowed_paths:
+  - changes/fix-file-token-chrome-cleanup.yaml
+  - internal/ui/testdata/file-access-tokens.test.mjs
