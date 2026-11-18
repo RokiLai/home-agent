@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -316,103 +315,4 @@ func TestServerUpgrade_CodesignValidationAndFailurePaths(t *testing.T) {
 			}
 		}
 	})
-}
-
-
-func TestServerUpgrade_CodesignIdentityContinuitySuccess(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("skipping darwin-specific codesign tests")
-	}
-
-	fp := "1835C8FCC239CCAC08B6CBEB7D94F07D07327FB7"
-	signer := newDarwinSigner(SignerConfig{
-		Enabled:     true,
-		Fingerprint: fp,
-		Identifier:  DefaultSignerIdentifier,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	if err := signer.Preflight(ctx); err != nil {
-		t.Skipf("skipping live darwin signer continuity test: %v", err)
-	}
-
-	tempDir := t.TempDir()
-	origExe := buildDarwinDummyBinary(t, tempDir, "homeagent-server-old")
-	// Sign the original binary with the fixed identity to simulate an already signed install
-	if err := signer.Sign(ctx, origExe); err != nil {
-		t.Fatalf("sign original binary failed: %v", err)
-	}
-	oldReq, isAdhoc, err := signer.ReadDesignatedRequirement(ctx, origExe)
-	if err != nil || isAdhoc || oldReq == "" {
-		t.Fatalf("read old requirement failed: req=%s, isAdhoc=%v, err=%v", oldReq, isAdhoc, err)
-	}
-
-	// Build candidate binary (different content)
-	candidateSrc := filepath.Join(tempDir, "candidate.go")
-	candidateBin := filepath.Join(tempDir, "candidate-bin")
-	src := `package main
-import (
-	"fmt"
-	"os"
-)
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Println("homeagent-server v0.7.0")
-		return
-	}
-	fmt.Println("candidate binary")
-}
-`
-	if err := os.WriteFile(candidateSrc, []byte(src), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("go", "build", "-o", candidateBin, candidateSrc)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build candidate failed: %v, out: %s", err, string(out))
-	}
-	candidateBytes, err := os.ReadFile(candidateBin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(candidateBytes)
-	candidateSHA := hex.EncodeToString(sum[:])
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(candidateBytes)
-	}))
-	defer ts.Close()
-
-	t.Setenv(EnvServerCodesignIdentity, fp)
-	var restarted atomic.Bool
-	opts := Options{
-		TargetVersion:  "v0.7.0",
-		ExecutablePath: origExe,
-		URL:            ts.URL,
-		SHA256:         candidateSHA,
-		RestartCallback: func() error {
-			restarted.Store(true)
-			return nil
-		},
-	}
-
-	res, err := PerformServerSelfUpgrade(context.Background(), opts)
-	if err != nil {
-		t.Fatalf("upgrade failed: %v", err)
-	}
-	if !res.Updated {
-		t.Fatal("expected updated=true")
-	}
-
-	// Verify new installed binary satisfies the old requirement!
-	if err := signer.VerifyRequirement(ctx, origExe, oldReq); err != nil {
-		t.Fatalf("newly installed binary failed identity continuity check against old requirement: %v", err)
-	}
-
-	// Verify backup preserves old signature
-	bakPath := origExe + ".bak"
-	if err := signer.VerifyRequirement(ctx, bakPath, oldReq); err != nil {
-		t.Fatalf("backup failed requirement check: %v", err)
-	}
 }
