@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import cp from 'node:child_process';
+import { rm } from 'node:fs/promises';
 
 test('file token management uses real HTTP responses, native dialog focus, geometry and click callbacks', async () => {
   const base = process.env.TEST_FILE_TOKEN_URL;
@@ -12,6 +13,7 @@ test('file token management uses real HTTP responses, native dialog focus, geome
   assert.ok(chrome, 'Chrome required');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-token-browser-'));
   const child = cp.spawn(chrome, ['--headless=new', '--no-sandbox', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--disable-gpu', '--no-first-run', 'about:blank'], { stdio: 'ignore' });
+  const closed = new Promise(resolve => child.once('close', resolve));
   let ws;
   try {
     let port;
@@ -60,6 +62,15 @@ test('file token management uses real HTTP responses, native dialog focus, geome
     const rejected = await fetch(`${base}/api/v1/files`, { headers: { Authorization: `Bearer ${raw}` } }); assert.equal(rejected.status, 401);
     assert.deepEqual(errors, []);
   } finally {
-    if (ws) ws.close(); child.kill('SIGKILL'); await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve)); fs.rmSync(dir, { recursive: true, force: true });
+    if (ws) ws.close();
+    const forceExit = setTimeout(() => child.kill('SIGKILL'), 3000);
+    try {
+      child.kill('SIGTERM');
+      await closed;
+    } finally {
+      clearTimeout(forceExit);
+    }
+    // Chromium helper processes can finish writing after the parent closes.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
