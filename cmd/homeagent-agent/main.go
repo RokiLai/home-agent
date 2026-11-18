@@ -457,17 +457,23 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 			startIPv6Reporter(ctx, serverURLs, d.GetActiveServerURL, *token, devID, *networkID, *iface, revStore, logger)
 		}
 	}
-	if host, router := os.Getenv("HOMEAGENT_ROUTER_MONITOR_SSH_HOST"), os.Getenv("HOMEAGENT_ROUTER_MONITOR_ID"); host != "" && router != "" {
+	collector, monitorErr := routermonitor.NewCollector(
+		os.Getenv("HOMEAGENT_ROUTER_MONITOR_MODE"), os.Getenv("HOMEAGENT_ROUTER_MONITOR_SSH_HOST"),
+		os.Getenv("HOMEAGENT_ROUTER_MONITOR_ID"), devID,
+	)
+	if monitorErr != nil {
+		logger.Warn("router_monitor_configuration_invalid", "error", monitorErr)
+	} else if collector.RouterID != "" {
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for ctx.Err() == nil {
-				report := routermonitor.Collect(ctx, host)
+				report := collector.Collect(ctx)
 				server := d.GetActiveServerURL()
 				if server == "" && len(serverURLs) > 0 {
 					server = serverURLs[0]
 				}
-				if err := routermonitor.Publish(ctx, server, devID, router, *token, report); err != nil {
+				if err := routermonitor.Publish(ctx, server, devID, collector.RouterID, *token, report); err != nil {
 					logger.Warn("router_monitor_upload_failed", "error", err)
 				}
 				select {

@@ -13,14 +13,52 @@ import (
 	"time"
 )
 
-// Collect reads a fixed status command using a locally provisioned SSH host alias.
+// Collector selects a fixed local probe or the existing SSH probe.
+type Collector struct {
+	RouterID string
+	host     string
+	local    bool
+}
+
+func NewCollector(mode, host, router, device string) (Collector, error) {
+	switch mode {
+	case "local":
+		if host != "" || device == "" || (router != "" && router != device) {
+			return Collector{}, errors.New("local router monitor must use its own device ID and cannot specify an SSH host")
+		}
+		return Collector{RouterID: device, local: true}, nil
+	case "", "ssh":
+		if host == "" && router == "" && mode == "" {
+			return Collector{}, nil
+		}
+		if host == "" || strings.HasPrefix(host, "-") || router == "" {
+			return Collector{}, errors.New("SSH router monitor requires a host alias and router ID")
+		}
+		return Collector{RouterID: router, host: host}, nil
+	default:
+		return Collector{}, errors.New("unknown router monitor mode")
+	}
+}
+
+func (c Collector) command(ctx context.Context) *exec.Cmd {
+	if c.local {
+		return exec.CommandContext(ctx, "/bin/ash", "/data/router-guard/router-guard.sh", "status")
+	}
+	return exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=5", "--", c.host, "/bin/ash /data/router-guard/router-guard.sh status")
+}
+
+// Collect reads status using a locally provisioned SSH host alias.
 func Collect(ctx context.Context, host string) Report {
 	if host == "" || strings.HasPrefix(host, "-") {
 		return Report{Failed: true}
 	}
+	return (Collector{host: host}).Collect(ctx)
+}
+
+func (c Collector) Collect(ctx context.Context) Report {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=5", "--", host, "/bin/ash /data/router-guard/router-guard.sh status")
+	cmd := c.command(ctx)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil || cmd.Start() != nil {
 		return Report{Failed: true}
