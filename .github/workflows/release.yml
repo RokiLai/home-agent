@@ -101,7 +101,6 @@ jobs:
     timeout-minutes: 15
     env:
       CHROME_BIN: /usr/bin/google-chrome
-      GOFLAGS: -p=1
     services:
       mysql:
         image: mysql:8.0
