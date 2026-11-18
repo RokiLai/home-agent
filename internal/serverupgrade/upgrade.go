@@ -83,6 +83,19 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 		}, nil
 	}
 
+	// 0. 读取并校验代码签名配置
+	signerCfg, err := LoadSignerConfig()
+	if err != nil {
+		return Result{}, fmt.Errorf("load codesign configuration: %w", err)
+	}
+	var signer Signer
+	if signerCfg.Enabled {
+		signer = newSigner(signerCfg)
+		if err := signer.Preflight(ctx); err != nil {
+			return Result{}, fmt.Errorf("codesign preflight failed: %w", err)
+		}
+	}
+
 	// 1. 确定自身可执行文件路径
 	exePath := opts.ExecutablePath
 	if exePath == "" {
@@ -92,7 +105,7 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 			return Result{}, fmt.Errorf("resolve current executable: %w", err)
 		}
 	}
-	exePath, err := filepath.Abs(exePath)
+	exePath, err = filepath.Abs(exePath)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve executable absolute path: %w", err)
 	}
@@ -177,6 +190,29 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 		return Result{}, fmt.Errorf("chmod executable: %w", err)
 	}
 
+	// 4.1. 若启用了代码签名，捕获当前程序指定要求并对候选进行签名与验证
+	if signer != nil {
+		currentReq, isAdhoc, err := signer.ReadDesignatedRequirement(ctx, exePath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read current binary designated requirement: %w", err)
+		}
+
+		if err := signer.Sign(ctx, tmpPath); err != nil {
+			return Result{}, fmt.Errorf("sign candidate binary failed: %w", err)
+		}
+
+		if err := signer.VerifyCandidate(ctx, tmpPath); err != nil {
+			return Result{}, fmt.Errorf("verify candidate signature failed: %w", err)
+		}
+
+		// 若当前程序已具备固定证书签名（非 adhoc），必须满足身份连续性（原 designated requirement）
+		if !isAdhoc && currentReq != "" {
+			if err := signer.VerifyRequirement(ctx, tmpPath, currentReq); err != nil {
+				return Result{}, fmt.Errorf("candidate fails continuity requirement of current binary: %w", err)
+			}
+		}
+	}
+
 	// 5. 冒烟自检
 	if !opts.SkipSmoke {
 		smokeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -191,6 +227,16 @@ func PerformServerSelfUpgrade(ctx context.Context, opts Options) (Result, error)
 		}
 		if !strings.Contains(out.String(), "homeagent-server") {
 			return Result{}, fmt.Errorf("smoke preflight output invalid: %s", out.String())
+		}
+	}
+
+	// 5.1. 冒烟后重检上下文与候选程序签名
+	if err := ctx.Err(); err != nil {
+		return Result{}, fmt.Errorf("upgrade canceled after smoke preflight: %w", err)
+	}
+	if signer != nil {
+		if err := signer.VerifyCandidate(ctx, tmpPath); err != nil {
+			return Result{}, fmt.Errorf("post-smoke candidate signature verification failed: %w", err)
 		}
 	}
 

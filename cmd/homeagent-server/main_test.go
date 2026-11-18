@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -642,4 +643,31 @@ func TestFileAccessStartupAndRealBrowser(t *testing.T) {
 	if service, err := openFileAccess(p, sm); err == nil || service != nil {
 		t.Fatal("corrupt store not disabled")
 	}
+}
+
+
+func TestSelfUpgradeCommandCodesignPolicyInherited(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("skipping darwin codesign policy test on CLI")
+	}
+
+	t.Run("check-only succeeds without requiring codesign identity", func(t *testing.T) {
+		t.Setenv("HOMEAGENT_SERVER_CODESIGN_IDENTITY", "invalid-not-a-fingerprint")
+		// --check-only does not invoke PerformServerSelfUpgrade, so it must not fail on invalid codesign env
+		err := selfUpgradeCommand([]string{"--check-only", "--repo", "RokiLai/home-agent"})
+		if err != nil {
+			t.Logf("check-only result: %v", err)
+		}
+	})
+
+	t.Run("upgrade execution rejects invalid codesign env", func(t *testing.T) {
+		t.Setenv("HOMEAGENT_SERVER_CODESIGN_IDENTITY", "invalid-not-a-fingerprint")
+		err := selfUpgradeCommand([]string{"-version", "v99.99.99", "-force"})
+		if err == nil {
+			t.Fatal("expected error when invalid codesign identity is configured")
+		}
+		if !strings.Contains(err.Error(), "HOMEAGENT_SERVER_CODESIGN_IDENTITY") {
+			t.Fatalf("expected error mentioning HOMEAGENT_SERVER_CODESIGN_IDENTITY, got: %v", err)
+		}
+	})
 }

@@ -1,0 +1,18 @@
+task: macos-server-code-signing
+description: macOS 服务端本机固定证书签名、升级身份连续性与可移除宗卷授权保留；当前仅授权方案，实施待设计审查及用户确认。
+allowed_paths:
+  - changes/macos-server-code-signing.yaml
+  - docs/features/macOS服务端固定签名与升级授权保留设计方案.md
+  - internal/serverupgrade/signing.go
+  - internal/serverupgrade/signing_test.go
+  - internal/serverupgrade/signing_darwin.go
+  - internal/serverupgrade/signing_darwin_test.go
+  - internal/serverupgrade/signing_other.go
+  - internal/serverupgrade/signing_other_test.go
+  - internal/serverupgrade/upgrade.go
+  - internal/serverupgrade/upgrade_test.go
+  - internal/serverupgrade/operation_test.go
+  - cmd/homeagent-server/main_test.go
+  - internal/api/api_test.go
+  - internal/version/version.go
+  - internal/version/version_test.go
