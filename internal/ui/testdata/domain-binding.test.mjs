@@ -149,6 +149,43 @@ test('server domain binding cancellation and failures have no false success', as
   assert.equal(list.innerHTML, 'original');
 });
 
+test('createServerDomainBinding guards in-flight requests and refreshes on fqdn conflict', async () => {
+  const toast = { classList: { remove() {}, add() {} } };
+  const toastMsg = { innerText: '' };
+  const input = { value: 'srv-vps.rokilai.online' };
+  const panel = { dataset: { revision: '5' } };
+  let loadCalled = false;
+  const elements = new Map([
+    ['toast', toast],
+    ['toastMsg', toastMsg],
+    ['serverDomainBindingInput', input],
+    ['serverDomainBindings', panel],
+    ['serverDomainBindingProvider', { textContent: '' }],
+    ['serverDomainBindingList', { innerHTML: '' }]
+  ]);
+  globalThis.document = { getElementById(id) { return elements.get(id) || null; } };
+  globalThis.confirm = () => true;
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.includes('/preflight')) {
+      return new Response(JSON.stringify({ fqdn: 'srv-vps.rokilai.online', available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/server/domain-bindings') && options.method === 'POST') {
+      return new Response(JSON.stringify({ error: 'conflict', code: 'fqdn_already_exists' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
+    // GET reload
+    loadCalled = true;
+    return new Response(JSON.stringify({ revision: 6, bindings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const module = await import('../static/js/settings.js');
+  await module.createServerDomainBinding();
+  assert.equal(loadCalled, true);
+  assert.match(toastMsg.innerText, /已被占用或已存在/);
+  // Input should not be cleared on failure
+  assert.equal(input.value, 'srv-vps.rokilai.online');
+});
+
 test('device domain binding renders lifecycle actions and executes revision-safe requests', async () => {
   const elements = new Map([
     ['deviceDomainBindings', { dataset: {} }],
@@ -221,4 +258,41 @@ test('device domain binding surfaces API conflict without speculative reload', a
   await module.disableDeviceDomainBinding('device-1', 'binding-1', 4);
   assert.equal(requestCount, 1);
   assert.equal(toastMsg.innerText, 'binding revision conflict');
+});
+
+test('createDeviceDomainBinding guards in-flight requests and refreshes on fqdn conflict', async () => {
+  const toast = { classList: { remove() {}, add() {} } };
+  const toastMsg = { innerText: '' };
+  const input = { value: 'hk-vps.rokilai.online' };
+  const panel = { dataset: { revision: '5' } };
+  let loadCalled = false;
+  const elements = new Map([
+    ['toast', toast],
+    ['toastMsg', toastMsg],
+    ['deviceDomainBindingInput', input],
+    ['deviceDomainBindings', panel]
+  ]);
+  globalThis.document = { getElementById(id) { return elements.get(id) || null; } };
+  globalThis.confirm = () => true;
+
+  const urls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    urls.push(url);
+    if (url.includes('/preflight')) {
+      return new Response(JSON.stringify({ fqdn: 'hk-vps.rokilai.online', available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/domain-bindings') && options.method === 'POST') {
+      return new Response(JSON.stringify({ error: 'conflict', code: 'fqdn_already_exists' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
+    // GET domain-bindings (reload)
+    loadCalled = true;
+    return new Response(JSON.stringify({ revision: 6, bindings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const module = await import('../static/js/devices/actions.js');
+  await module.createDeviceDomainBinding('device-1');
+  assert.equal(loadCalled, true);
+  assert.match(toastMsg.innerText, /已被占用或已存在/);
+  // Input should not be cleared on failure
+  assert.equal(input.value, 'hk-vps.rokilai.online');
 });

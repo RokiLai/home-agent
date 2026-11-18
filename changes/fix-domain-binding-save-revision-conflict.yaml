@@ -1,0 +1,16 @@
+task: fix-domain-binding-save-revision-conflict
+description: 修复域名绑定保存全局版本冲突的问题，解耦全局版本推进与新实体创建，保证并发安全。
+allowed_paths:
+  - changes/fix-domain-binding-save-revision-conflict.yaml
+  - docs/fixes/域名保存全局版本冲突修复方案.md
+  - internal/store/controlplane_service.go
+  - internal/store/controlplane_service_test.go
+  - internal/domainbinding/service.go
+  - internal/domainbinding/service_test.go
+  - internal/api/domain_binding_handlers.go
+  - internal/api/domain_binding_handlers_test.go
+  - internal/ui/static/js/devices/actions.js
+  - internal/ui/static/js/settings.js
+  - internal/ui/testdata/domain-binding.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

@@ -59,7 +59,7 @@ func TestServerDomainBindingPreflightIsReadOnlyAndCreateObservesExistingRecord(t
 	}
 }
 
-func TestCreateServerDomainBindingReturnsConflictForStaleControlPlaneRevision(t *testing.T) {
+func TestCreateServerDomainBindingRejectsDuplicateFQDNAndIgnoresStaleRevision(t *testing.T) {
 	server := newDomainBindingAPIServer(t)
 	if _, err := server.DomainBindings.Create(context.Background(), domainbinding.CreateCommand{
 		SourceType:       domainbinding.SourceServer,
@@ -71,21 +71,30 @@ func TestCreateServerDomainBindingReturnsConflictForStaleControlPlaneRevision(t 
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/server/domain-bindings", bytes.NewBufferString(`{"fqdn":"second.rokilai.online","expected_revision":0,"existing_record":true}`))
+	// Stale revision for a different FQDN should succeed
+	reqDiff := httptest.NewRequest(http.MethodPost, "/api/v1/server/domain-bindings", bytes.NewBufferString(`{"fqdn":"second.rokilai.online","expected_revision":0,"existing_record":true}`))
+	respDiff := httptest.NewRecorder()
+	server.createServerDomainBinding(respDiff, reqDiff)
+	if respDiff.Code != http.StatusCreated {
+		t.Fatalf("create second status=%d body=%s", respDiff.Code, respDiff.Body.String())
+	}
+
+	// Duplicate FQDN returns 409 conflict
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/server/domain-bindings", bytes.NewBufferString(`{"fqdn":"first.rokilai.online","expected_revision":999,"existing_record":true}`))
 	response := httptest.NewRecorder()
 	server.createServerDomainBinding(response, request)
 	if response.Code != http.StatusConflict {
-		t.Fatalf("stale create status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("duplicate create status=%d body=%s", response.Code, response.Body.String())
 	}
 	var body map[string]string
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["error"] != "conflict" {
-		t.Fatalf("stale create body=%v", body)
+	if body["error"] != "conflict" || body["code"] != "fqdn_already_exists" {
+		t.Fatalf("duplicate create body=%v", body)
 	}
 	bindings, err := server.DomainBindings.List(context.Background(), domainbinding.SourceServer, domainbinding.LocalServerSourceID)
-	if err != nil || len(bindings) != 1 || bindings[0].FQDN != "first.rokilai.online" {
+	if err != nil || len(bindings) != 2 {
 		t.Fatalf("bindings=%+v err=%v", bindings, err)
 	}
 }

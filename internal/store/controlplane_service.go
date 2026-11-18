@@ -215,24 +215,20 @@ func (service *ControlPlaneService) Devices(ctx context.Context) ([]device.Devic
 	return result, nil
 }
 
-func (service *ControlPlaneService) CreateDomainBinding(ctx context.Context, expectedControlRevision uint64, binding DomainBinding) (DomainBinding, uint64, error) {
-	snapshot, err := service.repository.Load(ctx)
+func (service *ControlPlaneService) CreateDomainBinding(ctx context.Context, _ uint64, binding DomainBinding) (DomainBinding, uint64, error) {
+	var copy DomainBinding
+	committed, err := service.update(ctx, func(snapshot *ControlPlaneSnapshot) error {
+		for _, existing := range snapshot.Bindings {
+			if existing.FQDN == binding.FQDN && existing.ConfigState != "deleted" {
+				return ErrConflict
+			}
+		}
+		copy = binding
+		snapshot.Bindings[binding.BindingID] = &copy
+		return nil
+	})
 	if err != nil {
 		return DomainBinding{}, 0, err
-	}
-	if snapshot.Revision != expectedControlRevision {
-		return DomainBinding{}, snapshot.Revision, ErrRevisionConflict
-	}
-	for _, existing := range snapshot.Bindings {
-		if existing.FQDN == binding.FQDN && existing.ConfigState != "deleted" {
-			return DomainBinding{}, snapshot.Revision, ErrConflict
-		}
-	}
-	copy := binding
-	snapshot.Bindings[binding.BindingID] = &copy
-	committed, err := service.repository.Commit(ctx, snapshot.Revision, snapshot)
-	if err != nil {
-		return DomainBinding{}, snapshot.Revision, err
 	}
 	return copy, committed.Revision, nil
 }

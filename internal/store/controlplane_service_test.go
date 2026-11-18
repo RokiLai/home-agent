@@ -232,6 +232,22 @@ func TestDomainBindingReconcileLifecycleAndRecovery(t *testing.T) {
 	}
 }
 
+func TestCreateDomainBindingIgnoresGlobalControlRevision(t *testing.T) {
+	repository := newMemoryControlPlaneRepository()
+	service := NewControlPlaneService(repository)
+	now := time.Now().UTC()
+	binding := DomainBinding{BindingID: "binding-1", SourceType: "server", SourceID: "local-server", OwnerUserID: "owner", FQDN: "host.rokilai.online", ConfigState: "enabled", RuntimeState: "waiting_report", Revision: 1, UpdatedAt: now}
+	// Initial control revision is 0, passing stale 999 should still succeed because creation does not depend on stale global revision
+	created, revision, err := service.CreateDomainBinding(context.Background(), 999, binding)
+	if err != nil || created.OwnerUserID != "owner" || revision != 1 {
+		t.Fatalf("created=%+v revision=%d err=%v", created, revision, err)
+	}
+	// Duplicate FQDN returns ErrConflict regardless of revision
+	if _, _, err := service.CreateDomainBinding(context.Background(), 0, DomainBinding{BindingID: "binding-2", FQDN: binding.FQDN, Revision: 1}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate error=%v", err)
+	}
+}
+
 func TestCreateDomainBindingReusesFQDNAfterDelete(t *testing.T) {
 	repository := newMemoryControlPlaneRepository()
 	service := NewControlPlaneService(repository)
