@@ -1,0 +1,19 @@
+task: router-events
+description: 实现路由器恢复事件接入、Agent补采、服务端原子持久化、授权查询与控制台时间线展示
+design: docs/features/路由器监控设计方案.md
+allowed_paths:
+  - changes/router-events.yaml
+  - docs/features/路由器监控设计方案.md
+  - cmd/homeagent-agent/main.go
+  - cmd/homeagent-server/main.go
+  - internal/api/api.go
+  - internal/api/router_monitor.go
+  - internal/api/router_monitor_test.go
+  - internal/routermonitor/**
+  - internal/ui/static/index.html
+  - internal/ui/static/style.css
+  - internal/ui/static/js/router-monitor.js
+  - internal/ui/testdata/router-monitor*.mjs
+  - internal/ui/testdata/browser-layout.test.mjs
+  - internal/version/version.go
+  - internal/version/version_test.go

@@ -66,7 +66,8 @@ const nodeIds = [
   'routerMonitorStatus', 'routerMonitorUpdated', 'routerMonitorChecks', 'routerMonitorRefresh',
   'routerMonitorSummary', 'routerMonitorOverviewHealth', 'routerMonitorOverviewMode',
   'routerMonitorOverviewReceived', 'routerMonitorOverviewSuccess', 'routerMonitorFlow',
-  'routerMonitorPipeline', 'routerMonitorCards', 'routerMonitorRecovery', 'routerMonitorRecoveryNotice'
+  'routerMonitorPipeline', 'routerMonitorCards', 'routerMonitorRecovery', 'routerMonitorRecoveryNotice',
+  'routerMonitorTimeline'
 ];
 
 const nodes = new Map();
@@ -93,17 +94,22 @@ test('unconfigured state displays unconfigured text, unobservable flow and retai
   state.isAuthenticated = true;
   state.currentPage = 'routerMonitor';
   state.currentUser.role = 'owner';
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    state: 'unconfigured',
-    received: '',
-    last_success: '',
-    snapshot: null
-  }));
+  globalThis.fetch = async (url) => {
+    if (url.includes('/router-monitor/events')) {
+      return new Response(JSON.stringify({ items: [] }));
+    }
+    return new Response(JSON.stringify({
+      state: 'unconfigured',
+      received: '',
+      last_success: '',
+      snapshot: null
+    }));
+  };
 
   await openRouterMonitor();
   assert.equal(nodes.get('routerMonitorStatus').textContent, '尚未配置采集节点');
   assert.match(nodes.get('routerMonitorOverviewHealth').textContent, /未配置/);
-  assert.match(nodes.get('routerMonitorRecoveryNotice').textContent, /恢复事件尚未接入/);
+  assert.match(nodes.get('routerMonitorRecoveryNotice').textContent, /暂无恢复事件|恢复事件尚未接入/);
   assert.equal(nodes.get('routerMonitorRefresh').disabled, false);
 });
 
@@ -135,7 +141,12 @@ test('monitoring state with all healthy components displays all healthy, renders
       ]
     }
   };
-  globalThis.fetch = async () => new Response(JSON.stringify(payload));
+  globalThis.fetch = async (url) => {
+    if (url.includes('/router-monitor/events')) {
+      return new Response(JSON.stringify({ items: [] }));
+    }
+    return new Response(JSON.stringify(payload));
+  };
 
   await openRouterMonitor();
   assert.equal(nodes.get('routerMonitorStatus').textContent, '监控运行中');
@@ -148,8 +159,8 @@ test('monitoring state with all healthy components displays all healthy, renders
   // 流程节点检查
   const pipeline = nodes.get('routerMonitorPipeline');
   assert.ok(pipeline.children.length >= 5);
-  // 恢复区域明确标明尚未接入
-  assert.match(nodes.get('routerMonitorRecoveryNotice').textContent, /恢复事件尚未接入/);
+  // 恢复区域展示状态
+  assert.match(nodes.get('routerMonitorRecoveryNotice').textContent, /暂无恢复事件|恢复事件尚未接入/);
 });
 
 test('missing, skipped or unknown component prevents all-healthy summary and maps status correctly', async () => {
@@ -222,4 +233,67 @@ test('concurrent requests, page switch, logout and unauthorized role protection'
   finishFetch(new Response(JSON.stringify({ state: 'monitoring' })));
   await pendingPromise;
   assert.notEqual(nodes.get('routerMonitorStatus').textContent, '监控运行中');
+});
+
+test('timeline rendering maps recovered, failure and unverified events strictly', async () => {
+  resetMocks();
+  state.isAuthenticated = true;
+  state.currentPage = 'routerMonitor';
+  state.currentUser.role = 'admin';
+
+  const monitorPayload = {
+    state: 'monitoring',
+    received: '2026-11-18T08:00:05Z',
+    last_success: '2026-11-18T08:00:00Z',
+    snapshot: {
+      mode: 'monitoring',
+      current_uptime: 1000,
+      checked_uptime: 995,
+      checks: [{ component: 'wan', status: 'healthy', detail: 'ok' }]
+    }
+  };
+
+  const eventsPayload = {
+    items: [
+      {
+        version: 1,
+        boot_id: 'b1',
+        generation: 'g1',
+        seq: 1,
+        cycle: 1,
+        component: 'wan',
+        event_type: 'action_requested',
+        display_status: '已请求',
+        description: '已通过检查并请求执行恢复命令，结果待定'
+      },
+      {
+        version: 1,
+        boot_id: 'b1',
+        generation: 'g1',
+        seq: 2,
+        cycle: 2,
+        component: 'wan',
+        event_type: 'recovered',
+        display_status: '已恢复',
+        description: '后续轮次对同一组件复查健康，恢复成功'
+      }
+    ]
+  };
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/router-monitor/events')) {
+      return new Response(JSON.stringify(eventsPayload));
+    }
+    return new Response(JSON.stringify(monitorPayload));
+  };
+
+  await openRouterMonitor();
+  const notice = nodes.get('routerMonitorRecoveryNotice');
+  assert.match(notice.textContent, /已接入 \(2 条记录\)/);
+  assert.equal(notice.className, 'badge badge-success');
+
+  const timeline = nodes.get('routerMonitorTimeline');
+  assert.equal(timeline.children.length, 2);
+  assert.match(timeline.children[0].textContent, /已请求/);
+  assert.match(timeline.children[1].textContent, /已恢复/);
 });

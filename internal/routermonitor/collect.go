@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -99,4 +101,67 @@ func Publish(ctx context.Context, server, device, router, token string, report R
 		return errors.New("router monitor report rejected")
 	}
 	return nil
+}
+
+func (c Collector) eventsCommand(ctx context.Context, generation string, cursor int64, limit int) *exec.Cmd {
+	genArg := generation
+	if genArg == "" {
+		genArg = "-"
+	}
+	cursorArg := strconv.FormatInt(cursor, 10)
+	limitArg := strconv.Itoa(limit)
+	if c.local {
+		return exec.CommandContext(ctx, "/bin/ash", "/data/router-guard/router-guard.sh", "events", genArg, cursorArg, limitArg)
+	}
+	remoteCmd := fmt.Sprintf("/bin/ash /data/router-guard/router-guard.sh events %s %s %s", genArg, cursorArg, limitArg)
+	return exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ConnectTimeout=5", "--", c.host, remoteCmd)
+}
+
+func (c Collector) CollectEvents(ctx context.Context, generation string, cursor int64, limit int) (EventBatch, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cmd := c.eventsCommand(ctx, generation, cursor, limit)
+	pipe, err := cmd.StdoutPipe()
+	if err != nil || cmd.Start() != nil {
+		return EventBatch{}, errors.New("failed to start events collector")
+	}
+	raw, err := io.ReadAll(io.LimitReader(pipe, 65536))
+	_ = pipe.Close()
+	if cmd.Wait() != nil || err != nil || len(raw) > 65535 {
+		return EventBatch{}, errors.New("events command failed or exceeded size limit")
+	}
+	return ParseEvents(bytes.NewReader(raw))
+}
+
+func PublishEvents(ctx context.Context, server, device, router, token string, batch EventBatch) (int64, error) {
+	raw, err := json.Marshal(batch)
+	if err != nil {
+		return 0, err
+	}
+	endpoint := strings.TrimRight(server, "/") + "/api/v1/devices/" + url.PathEscape(device) + "/router-monitor/" + url.PathEscape(router) + "/events"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return 0, err
+	}
+	if req.URL.Scheme != "https" {
+		return 0, errors.New("router monitor upload requires HTTPS")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("events upload rejected with status %d", res.StatusCode)
+	}
+	var resp struct {
+		AckCursor int64 `json:"ack_cursor"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return 0, err
+	}
+	return resp.AckCursor, nil
 }

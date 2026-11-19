@@ -60,3 +60,44 @@ func TestCollectorSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectorEventsCommand(t *testing.T) {
+	c, err := NewCollector("local", "", "device", "device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := c.eventsCommand(context.Background(), "gen-1", 10, 64)
+	expected := []string{"/bin/ash", "/data/router-guard/router-guard.sh", "events", "gen-1", "10", "64"}
+	if !reflect.DeepEqual(cmd.Args, expected) {
+		t.Fatalf("expected args %+v, got %+v", expected, cmd.Args)
+	}
+}
+
+func TestCollectEventsPOSIXFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fixture := `#!/bin/sh
+case "$*" in
+ *"events gen-1 0 64"*)
+  printf 'generation=gen-1 earliest_seq=1 latest_seq=1 boot_id=boot-1\n1\tboot-1\tgen-1\t1\t1\twan\tobserved\tok\t\t\t100\n';;
+ *) exit 1;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(fixture), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewCollector("ssh", "router-host", "router-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := c.CollectEvents(context.Background(), "gen-1", 0, 64)
+	if err != nil {
+		t.Fatalf("unexpected CollectEvents error: %v", err)
+	}
+	if len(batch.Events) != 1 || batch.Events[0].Component != "wan" {
+		t.Fatalf("unexpected batch: %+v", batch)
+	}
+}

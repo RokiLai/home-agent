@@ -60,6 +60,7 @@ import (
 // Server 协调服务端 HTTP 路由、SSE 推送、身份鉴权、网络唤醒分发、DDNS 以及设备状态管理。
 type Server struct {
 	RouterMonitor             *routermonitor.Latest
+	RouterEvents              *routermonitor.EventStore
 	RouterMonitorAgent        string
 	RouterMonitorID           string
 	networkStateMu            sync.Mutex
@@ -334,8 +335,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/devices/{id}/ack", requireDevice(http.HandlerFunc(s.deviceAck)))
 	mux.Handle("GET /api/v1/devices/{id}/keys", requireDevice(http.HandlerFunc(s.deviceKeys)))
 	mux.Handle("GET /api/v1/router-monitor", requireSession(http.HandlerFunc(s.readRouterMonitor)))
+	mux.Handle("GET /api/v1/router-monitor/events", requireSession(http.HandlerFunc(s.readRouterMonitorEvents)))
 	if s.Registry != nil {
 		mux.Handle("PUT /api/v1/devices/{id}/router-monitor/{router}", requireDevice(http.HandlerFunc(s.putRouterMonitor)))
+		mux.Handle("POST /api/v1/devices/{id}/router-monitor/{router}/events", requireDevice(http.HandlerFunc(s.postRouterMonitorEvents)))
 	}
 	mux.Handle("PUT /api/v1/devices/{id}/facts", requireDevice(http.HandlerFunc(s.putDeviceFacts)))
 

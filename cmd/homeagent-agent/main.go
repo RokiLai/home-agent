@@ -467,15 +467,33 @@ func runDaemonWithContext(ctx context.Context, args []string, logger *slog.Logge
 		go func() {
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
+			var currentGen string
+			var currentCursor int64
+
 			for ctx.Err() == nil {
-				report := collector.Collect(ctx)
 				server := d.GetActiveServerURL()
 				if server == "" && len(serverURLs) > 0 {
 					server = serverURLs[0]
 				}
+
+				// 1. 采集并上报状态快照
+				report := collector.Collect(ctx)
 				if err := routermonitor.Publish(ctx, server, devID, collector.RouterID, *token, report); err != nil {
 					logger.Warn("router_monitor_upload_failed", "error", err)
 				}
+
+				// 2. 采集并上报恢复事件批次（串行采集会话）
+				batch, err := collector.CollectEvents(ctx, currentGen, currentCursor, 64)
+				if err == nil && len(batch.Events) > 0 {
+					ack, pubErr := routermonitor.PublishEvents(ctx, server, devID, collector.RouterID, *token, batch)
+					if pubErr == nil {
+						currentGen = batch.Generation
+						currentCursor = ack
+					} else {
+						logger.Warn("router_events_upload_failed", "error", pubErr)
+					}
+				}
+
 				select {
 				case <-ctx.Done():
 					return
