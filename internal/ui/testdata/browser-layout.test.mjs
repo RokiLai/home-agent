@@ -1161,6 +1161,9 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
     const original = window.fetch;
     window.routerMonitorRequests = 0;
     window.fetch = (url, options) => {
+      if (url === '/api/v1/router-monitor/events') {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] })));
+      }
       if (url !== '/api/v1/router-monitor') return original(url, options);
       const n = ++window.routerMonitorRequests;
       return Promise.resolve(new Response(JSON.stringify({
@@ -1257,7 +1260,7 @@ test('Router monitor renders snapshots without overflow and refreshes by click',
   await evalJS('document.getElementById("routerMonitorRefresh").click()');
   await waitFor('document.getElementById("routerMonitorStatus").textContent === "采集失败"');
   assert.match(await evalJS('document.getElementById("routerMonitorChecks").textContent'), /上次 正常/);
-  assert.match(await evalJS('document.getElementById("routerMonitorRecoveryNotice").textContent'), /恢复事件尚未接入/);
+  assert.match(await evalJS('document.getElementById("routerMonitorRecoveryNotice").textContent'), /暂无恢复事件|恢复事件尚未接入/);
 
   const focusedAfterRefresh = await evalJS(`document.activeElement === document.getElementById('routerMonitorRefresh')`);
   assert.equal(focusedAfterRefresh, true, 'refresh button must retain focus after refresh');

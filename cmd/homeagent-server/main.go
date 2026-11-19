@@ -708,12 +708,15 @@ func serve(c config) error {
 
 	monitorAgent, monitorID := os.Getenv("HOMEAGENT_ROUTER_MONITOR_AGENT"), os.Getenv("HOMEAGENT_ROUTER_MONITOR_ID")
 	var monitor *routermonitor.Latest
+	var routerEvents *routermonitor.EventStore
 	if monitorAgent != "" && monitorID != "" {
 		binding := sha256.Sum256([]byte(monitorAgent + "\x00" + monitorID))
 		monitor = routermonitor.NewLatest(filepath.Join(c.dataDir, fmt.Sprintf("router-monitor-%x.json", binding)))
+		routerEvents = routermonitor.NewEventStore(c.dataDir, monitorAgent, monitorID)
 	}
 	handler := (&api.Server{
 		RouterMonitor:            monitor,
+		RouterEvents:             routerEvents,
 		RouterMonitorAgent:       monitorAgent,
 		RouterMonitorID:          monitorID,
 		Registry:                 r,

@@ -290,9 +290,56 @@ export async function openRouterMonitor() {
       }
     }
 
-    // 恢复区域明确标明尚未接入
-    if (recoveryNotice) {
-      recoveryNotice.textContent = '恢复事件尚未接入';
+    // 恢复区域事件时间线渲染
+    const timeline = document.getElementById('routerMonitorTimeline');
+    if (timeline) {
+      timeline.replaceChildren();
+    }
+    try {
+      const eventsRes = await apiFetch('/api/v1/router-monitor/events');
+      if (eventsRes.ok) {
+        const eventsData = await eventsRes.json();
+        if (eventsData && eventsData.items && eventsData.items.length > 0) {
+          if (recoveryNotice) {
+            recoveryNotice.textContent = `已接入 (${eventsData.items.length} 条记录)`;
+            recoveryNotice.className = 'badge badge-success';
+          }
+          if (timeline) {
+            eventsData.items.forEach(ev => {
+              const itemEl = document.createElement('div');
+              itemEl.className = 'timeline-item';
+
+              const badge = document.createElement('span');
+              badge.className = 'badge ' + (ev.display_status === '已恢复' ? 'badge-success' : (ev.display_status === '执行失败或超时' ? 'badge-danger' : 'badge-info'));
+              badge.textContent = ev.display_status;
+
+              const title = document.createElement('strong');
+              title.textContent = ` [${labels[ev.component] || ev.component}] `;
+
+              const desc = document.createElement('span');
+              desc.textContent = ev.description + (ev.uptime != null ? ` (开机 ${ev.uptime}s)` : '');
+
+              itemEl.append(badge, title, desc);
+              timeline.append(itemEl);
+            });
+          }
+        } else {
+          if (recoveryNotice) {
+            recoveryNotice.textContent = '暂无恢复事件';
+            recoveryNotice.className = 'badge badge-secondary';
+          }
+        }
+      } else {
+        if (recoveryNotice) {
+          recoveryNotice.textContent = '事件读取失败';
+          recoveryNotice.className = 'badge badge-danger';
+        }
+      }
+    } catch {
+      if (recoveryNotice) {
+        recoveryNotice.textContent = '事件读取失败';
+        recoveryNotice.className = 'badge badge-danger';
+      }
     }
   } catch {
     if (request === revision && state.currentPage === 'routerMonitor') {
@@ -302,6 +349,9 @@ export async function openRouterMonitor() {
   } finally {
     if (request === revision) {
       refresh.disabled = false;
+      if (document.activeElement === document.body || !document.activeElement) {
+        refresh.focus();
+      }
     }
   }
 }
