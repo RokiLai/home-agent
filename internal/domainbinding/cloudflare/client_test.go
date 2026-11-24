@@ -239,3 +239,60 @@ func TestClientDoesNotReportSyncedWhenAuthoritativeDNSDiffers(t *testing.T) {
 		t.Fatalf("DNS convergence failure must retain applied record identity, result=%+v", result)
 	}
 }
+
+func TestClientDefaultVerificationDelayAndProxiedSkipsAuthoritativeLookup(t *testing.T) {
+	defaultClient, err := New(Config{APIToken: "token", ZoneID: "zone", ManagedSuffix: "rokilai.online"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultClient.verificationDelay != 3*time.Second {
+		t.Fatalf("default verificationDelay=%v, want 3s", defaultClient.verificationDelay)
+	}
+
+	proxiedRecord := `{"success":true,"errors":[],"messages":[],"result":{"id":"record-id-proxied","name":"proxy.rokilai.online","type":"AAAA","content":"2001:db8::2","proxiable":true,"proxied":true,"ttl":1}}`
+	proxiedList := `{"success":true,"errors":[],"messages":[],"result":[{"id":"record-id-proxied","name":"proxy.rokilai.online","type":"AAAA","content":"2001:db8::1","proxiable":true,"proxied":true,"ttl":1}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone":
+			w.Write(fixture(t, "zone-success.json"))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone/dns_records":
+			w.Write([]byte(proxiedList))
+		case r.Method == http.MethodPatch && r.URL.Path == "/zones/zone/dns_records/record-id-proxied":
+			w.Write([]byte(proxiedRecord))
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone/dns_records/record-id-proxied":
+			w.Write([]byte(proxiedRecord))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Use a huge VerificationDelay and a failing DNSVerifier to prove proxied records skip both.
+	client, err := New(Config{
+		APIToken:          "token",
+		ZoneID:            "zone",
+		ManagedSuffix:     "rokilai.online",
+		BaseURL:           server.URL,
+		HTTPClient:        server.Client(),
+		DNSVerifier:       fakeDNSVerifier{err: errors.New("must not query authoritative DNS for proxied records")},
+		VerificationDelay: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := client.Apply(ctx, domainbinding.ApplyRequest{
+		FQDN:             "proxy.rokilai.online",
+		ProviderRecordID: "record-id-proxied",
+		DesiredIPv6:      "2001:db8::2",
+		TTL:              1,
+		Proxied:          true,
+	})
+	if err != nil {
+		t.Fatalf("proxied apply failed: %v", err)
+	}
+	if result.RecordID != "record-id-proxied" || result.IPv6 != "2001:db8::2" || !result.Proxied {
+		t.Fatalf("unexpected proxied result=%+v", result)
+	}
+}
