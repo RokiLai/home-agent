@@ -23,7 +23,10 @@ type Coordinator struct {
 	provider Provider
 	resolver SourceResolver
 	mu       sync.Mutex
+	storeMu  sync.Mutex
 }
+
+const maxReconcileConcurrency = 8
 
 func NewCoordinator(service *Service, provider Provider, resolver SourceResolver) *Coordinator {
 	return &Coordinator{service: service, provider: provider, resolver: resolver}
@@ -74,12 +77,35 @@ func (coordinator *Coordinator) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, task := range tasks {
-		if err := coordinator.process(ctx, task); err != nil && !errors.Is(err, store.ErrRevisionConflict) && !errors.Is(err, store.ErrNotFound) {
-			return err
-		}
+	if len(tasks) == 0 {
+		return nil
 	}
-	return nil
+	workers := len(tasks)
+	if workers > maxReconcileConcurrency {
+		workers = maxReconcileConcurrency
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for _, task := range tasks {
+		task := task
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := coordinator.process(ctx, task); err != nil && !errors.Is(err, store.ErrRevisionConflict) && !errors.Is(err, store.ErrNotFound) {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
 }
 
 func observationFromBinding(binding Binding) RecordObservation {
@@ -87,10 +113,13 @@ func observationFromBinding(binding Binding) RecordObservation {
 }
 
 func (coordinator *Coordinator) process(ctx context.Context, task store.ReconcileTask) error {
+	coordinator.storeMu.Lock()
 	if _, err := coordinator.service.MarkTaskSyncing(ctx, task.TaskID); err != nil {
+		coordinator.storeMu.Unlock()
 		return err
 	}
 	bindings, err := coordinator.service.List(ctx, "", "")
+	coordinator.storeMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -105,6 +134,8 @@ func (coordinator *Coordinator) process(ctx context.Context, task store.Reconcil
 		return store.ErrRevisionConflict
 	}
 	observation, reconcileErr := NewReconciler(coordinator.provider).Reconcile(ctx, *binding)
+	coordinator.storeMu.Lock()
+	defer coordinator.storeMu.Unlock()
 	if reconcileErr != nil && observation.RecordID != "" {
 		if _, err := coordinator.service.RecordObservation(ctx, *binding, observation, RuntimeFailed, safeError(reconcileErr)); err != nil {
 			return err

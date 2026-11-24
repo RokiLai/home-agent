@@ -3,7 +3,9 @@ package domainbinding
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"homeagent/internal/store"
 	"homeagent/internal/store/filestore"
@@ -187,5 +189,93 @@ func TestCoordinatorObservesWithoutWritingAndReconcilesEnabledBinding(t *testing
 	}
 	if len(bindings) != 1 || bindings[0].RuntimeState != RuntimeSynced || bindings[0].LastAppliedIPv6 != "2001:db8::2" || enabled.Revision != 2 {
 		t.Fatalf("bindings=%+v", bindings)
+	}
+}
+
+type concurrentProvider struct {
+	mu          sync.Mutex
+	inFlight    int
+	maxInFlight int
+	failFQDN    string
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (p *concurrentProvider) Observe(context.Context, ObserveRequest) (RecordObservation, error) {
+	return RecordObservation{}, nil
+}
+
+func (p *concurrentProvider) Apply(ctx context.Context, req ApplyRequest) (RecordObservation, error) {
+	p.mu.Lock()
+	p.inFlight++
+	if p.inFlight > p.maxInFlight {
+		p.maxInFlight = p.inFlight
+	}
+	p.mu.Unlock()
+	p.entered <- struct{}{}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return RecordObservation{}, ctx.Err()
+	}
+	p.mu.Lock()
+	p.inFlight--
+	p.mu.Unlock()
+	if req.FQDN == p.failFQDN {
+		return RecordObservation{Exists: true, RecordID: "rec-" + req.FQDN, IPv6: req.DesiredIPv6, TTL: 120}, classifiedTestError{}
+	}
+	return RecordObservation{Exists: true, RecordID: "rec-" + req.FQDN, IPv6: req.DesiredIPv6, TTL: 120}, nil
+}
+
+func TestCoordinatorReconcilesMultipleBindingsConcurrentlyAndIsolatesFailures(t *testing.T) {
+	repository, err := filestore.OpenControlPlane(filepath.Join(t.TempDir(), "control-plane.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store.NewControlPlaneService(repository), nil)
+	fqdns := []string{"a.rokilai.online", "b.rokilai.online", "c.rokilai.online", "d.rokilai.online"}
+	for _, fqdn := range fqdns {
+		if _, err := service.Create(context.Background(), CreateCommand{SourceType: SourceServer, SourceID: LocalServerSourceID, FQDN: fqdn}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &concurrentProvider{
+		failFQDN: "b.rokilai.online",
+		entered:  make(chan struct{}, len(fqdns)),
+		release:  make(chan struct{}),
+	}
+	coordinator := NewCoordinator(service, provider, fixedResolver{address: "2001:db8::2"})
+	done := make(chan error, 1)
+	go func() {
+		done <- coordinator.RunOnce(context.Background())
+	}()
+	for i := 0; i < len(fqdns); i++ {
+		select {
+		case <-provider.entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("expected all %d tasks to run concurrently, only %d entered", len(fqdns), i)
+		}
+	}
+	close(provider.release)
+	if err := <-done; err != nil {
+		t.Fatalf("RunOnce err=%v", err)
+	}
+	if provider.maxInFlight < 2 {
+		t.Fatalf("maxInFlight=%d, want >= 2", provider.maxInFlight)
+	}
+	bindings, err := service.List(context.Background(), SourceServer, LocalServerSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range bindings {
+		if b.FQDN == "b.rokilai.online" {
+			if b.RuntimeState != RuntimeFailed {
+				t.Fatalf("failing binding %s state=%s, want failed", b.FQDN, b.RuntimeState)
+			}
+			continue
+		}
+		if b.RuntimeState != RuntimeSynced || b.LastAppliedIPv6 != "2001:db8::2" {
+			t.Fatalf("binding %s state=%s applied=%s, want synced/2001:db8::2", b.FQDN, b.RuntimeState, b.LastAppliedIPv6)
+		}
 	}
 }

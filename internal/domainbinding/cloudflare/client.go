@@ -111,7 +111,7 @@ func New(config Config) (*Client, error) {
 	}
 	delay := config.VerificationDelay
 	if delay == 0 {
-		delay = 2 * time.Minute
+		delay = 3 * time.Second
 	}
 	return &Client{token: strings.TrimSpace(config.APIToken), zoneID: strings.TrimSpace(config.ZoneID), managedSuffix: strings.TrimSpace(config.ManagedSuffix), baseURL: baseURL, httpClient: httpClient, dnsVerifier: verifier, verificationDelay: delay}, nil
 }
@@ -176,7 +176,7 @@ func (client *Client) Apply(ctx context.Context, request domainbinding.ApplyRequ
 	if applied.ID == "" {
 		return domainbinding.RecordObservation{}, &Error{Kind: ErrorMalformed, Message: "missing record id"}
 	}
-	if client.verificationDelay > 0 {
+	if !applied.Proxied && client.verificationDelay > 0 {
 		timer := time.NewTimer(client.verificationDelay)
 		defer timer.Stop()
 		select {
@@ -191,6 +191,9 @@ func (client *Client) Apply(ctx context.Context, request domainbinding.ApplyRequ
 	}
 	if reread.Content != desired.String() || reread.TTL != applied.TTL || reread.Proxied != applied.Proxied {
 		return domainbinding.RecordObservation{}, &Error{Kind: ErrorRecordIdentity, Message: "record changed after apply"}
+	}
+	if reread.Proxied {
+		return observation(reread), nil
 	}
 	addresses, err := client.dnsVerifier.LookupAAAA(ctx, request.FQDN)
 	if err != nil {
